@@ -158,6 +158,20 @@ def test_rc002_calendar_prev_next_across_holiday(standard_world, reader):
     assert t["next_trading_day"] == dt.date(2024, 2, 19)
 
 
+@pytest.mark.parametrize("populated", [False, True])
+def test_invalid_extras_type_raises_valueerror_consistently(root, reader, populated):
+    # Copilot review: empty-dataset path raised KeyError while with-data raised
+    # ValueError. Both must now raise ValueError for an unknown extras type.
+    if populated:
+        ingest.ingest_fundamentals(records=[{
+            "symbol": "A", "report_period": dt.date(2024, 9, 30), "period_type": "Q3",
+            "publish_date": dt.date(2024, 10, 25), "currency": "CNY",
+            "_extras": {"roe": "1.0"}}], root=root)
+    with pytest.raises(ValueError):
+        reader.read_fundamentals(["A"], as_of_date=dt.date(2025, 1, 1),
+                                 extras_as_columns={"roe": "NOT_A_TYPE"})
+
+
 def test_rs001_read_symbols_active_filter(standard_world, reader):
     # 600145.SH is delisted/inactive in the standard world
     active = set(reader.read_symbols(active_only=True).column("symbol").to_pylist())

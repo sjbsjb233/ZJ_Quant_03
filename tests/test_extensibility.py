@@ -76,6 +76,29 @@ def test_migration_records_audit_batch(root):
     assert b["source"] == "internal:schema-migration" and b["status"] == "success"
 
 
+def test_migration_is_idempotent(root, reader):
+    # running promote_field_to_core twice must not error or lose the value
+    _ingest_roe(root)
+    migration.promote_field_to_core("raw.fundamentals", "roe", root=root)
+    migration.promote_field_to_core("raw.fundamentals", "roe", root=root)  # re-run
+    t = reader.read_fundamentals(["000001.SZ"], as_of_date=dt.date(2025, 1, 1),
+                                 extras_as_columns={"roe": "DOUBLE"})
+    assert t.column("roe").to_pylist() == [15.32]
+
+
+def test_migration_quotes_special_char_field_name(root, reader):
+    # a field name with spaces/symbols must be safely identifier-quoted in the
+    # COPY rewrite (Copilot review: unquoted alias was an injection/breakage risk)
+    ingest.ingest_fundamentals(records=[fundamental(_extras={"roe (%)": "15.32"})], root=root)
+    migration.promote_field_to_core("raw.fundamentals", "roe (%)", root=root)
+    f = storage.list_data_files(get_spec("raw.fundamentals"), root=root)[0]
+    row = pq.read_table(f).to_pylist()[0]
+    assert row["roe (%)"] == 15.32 and "roe (%)" not in dict(row["_extras"])
+    t = reader.read_fundamentals(["000001.SZ"], as_of_date=dt.date(2025, 1, 1),
+                                 extras_as_columns={"roe (%)": "DOUBLE"})
+    assert t.column("roe (%)").to_pylist() == [15.32]
+
+
 def test_deprecation_marks_status(root):
     _ingest_roe(root)
     field_registry.update_field_status("raw.fundamentals", "roe", "deprecated", root=root)

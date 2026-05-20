@@ -96,6 +96,7 @@ class DataReader:
         order_by: str | None = None,
         dedup_order: str | None = None,
     ) -> pa.Table:
+        self._validate_extras_types(extras_as_columns)
         files = storage.list_data_files(spec, self.root)
         valid_ids = [
             b["batch_id"]
@@ -146,6 +147,14 @@ class DataReader:
         FROM ranked WHERE rn = 1{order_sql}
         """
         return con.execute(sql, [files]).to_arrow_table()
+
+    @staticmethod
+    def _validate_extras_types(extras_as_columns: dict[str, str] | None) -> None:
+        """Reject unknown extras types up front so the empty-dataset path and the
+        with-data path raise the same ValueError (not a KeyError)."""
+        for type_name in (extras_as_columns or {}).values():
+            if type_name.upper() not in ARROW_TYPE_BY_NAME:
+                raise ValueError(f"unsupported extras type {type_name!r}")
 
     def _extras_select(
         self, extras_as_columns: dict[str, str], spec: TableSpec, present: set[str]
@@ -356,6 +365,7 @@ class DataReader:
                                     order_by="classification_system, code")
 
     def _read_reference(self, spec, filters, extras_as_columns=None, order_by=None) -> pa.Table:
+        self._validate_extras_types(extras_as_columns)
         path = storage.single_file_path(spec, self.root)
         if not path.exists():
             return self._empty(spec, extras_as_columns)
