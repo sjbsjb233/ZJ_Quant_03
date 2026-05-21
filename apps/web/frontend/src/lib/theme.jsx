@@ -3,12 +3,16 @@ import { createContext, useContext, useEffect, useState } from 'react';
 
 const ThemeCtx = createContext(null);
 
+function readStoredTheme() {
+  try { return localStorage.getItem('zjq_theme') || 'light'; } catch { return 'light'; }
+}
+
 export function ThemeProvider({ children }) {
-  const [theme, setThemeState] = useState(localStorage.getItem('zjq_theme') || 'light');
+  const [theme, setThemeState] = useState(readStoredTheme);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
-    localStorage.setItem('zjq_theme', theme);
+    try { localStorage.setItem('zjq_theme', theme); } catch { /* storage unavailable */ }
   }, [theme]);
 
   const setTheme = (t) => setThemeState(t);

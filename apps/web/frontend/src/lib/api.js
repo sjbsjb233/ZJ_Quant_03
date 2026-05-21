@@ -22,7 +22,10 @@ export const api = axios.create({ baseURL: '/api/v1' });
 
 api.interceptors.request.use((cfg) => {
   const t = tokenStore.get();
-  if (t) cfg.headers.Authorization = `Bearer ${t}`;
+  if (t) {
+    cfg.headers = cfg.headers || {};
+    cfg.headers.Authorization = `Bearer ${t}`;
+  }
   return cfg;
 });
 

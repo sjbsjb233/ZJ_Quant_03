@@ -36,7 +36,7 @@ export function AuthProvider({ children }) {
     location.assign('/login');
   };
 
-  const hasRole = (min) => user && ROLE_RANK[user.role] >= ROLE_RANK[min];
+  const hasRole = (min) => !!user && ROLE_RANK[user.role] >= ROLE_RANK[min];
 
   return <AuthCtx.Provider value={{ user, loading, login, logout, hasRole }}>{children}</AuthCtx.Provider>;
 }

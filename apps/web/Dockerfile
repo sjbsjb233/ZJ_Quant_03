@@ -5,7 +5,7 @@
 FROM node:20-alpine AS frontend
 WORKDIR /fe
 COPY apps/web/frontend/package.json apps/web/frontend/package-lock.json* ./
-RUN npm install
+RUN npm ci
 COPY apps/web/frontend/ ./
 RUN npm run build
 

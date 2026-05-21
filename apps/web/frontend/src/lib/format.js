@@ -28,7 +28,7 @@ export function fmtPct(v, digits = 1) {
 }
 
 export function relTime(value) {
-  if (!value) return '—';
+  if (value == null) return '—';
   const t = typeof value === 'string' ? new Date(value) : value;
   const sec = (Date.now() - t.getTime()) / 1000;
   if (sec < 0) return '刚刚';
@@ -40,7 +40,7 @@ export function relTime(value) {
 }
 
 export function absTime(value) {
-  if (!value) return '—';
+  if (value == null) return '—';
   const t = typeof value === 'string' ? new Date(value) : value;
   const p = (n) => String(n).padStart(2, '0');
   return `${t.getFullYear()}-${p(t.getMonth() + 1)}-${p(t.getDate())} ${p(t.getHours())}:${p(t.getMinutes())}:${p(t.getSeconds())}`;
