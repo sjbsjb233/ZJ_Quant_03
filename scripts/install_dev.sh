@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
-# install_dev.sh — install every packages/* and services/* in editable mode into
-# the active venv.
+# install_dev.sh — install every packages/* and apps/*/backend in editable mode
+# into the active venv.
 #
-# Order matters: packages (core libs) MUST be installed before services, because
-# services declare their dependency on the packages by distribution name
+# Order matters: packages (core libs) MUST be installed before the apps, because
+# an app's backend declares its dependency on the packages by distribution name
 # (e.g. quant-web depends on "quant-data>=0.2.0"). Installing a package editable
 # first makes that name resolvable from the local working tree instead of PyPI.
 #
@@ -26,14 +26,14 @@ install_editable() {
   pip install --quiet -e "${dir}[test]" || pip install --quiet -e "${dir}"
 }
 
-# --- step 1: packages (core libs, depended on by services) -----------------
+# --- step 1: packages (core libs, depended on by the apps) -----------------
 for pkg in packages/*/; do
   install_editable "${pkg%/}"
 done
 
-# --- step 2: services (depend on packages) ---------------------------------
-for svc in services/*/; do
-  install_editable "${svc%/}"
+# --- step 2: apps (each app's Python distribution lives in <app>/backend) --
+for app in apps/*/; do
+  [[ -f "${app}backend/pyproject.toml" ]] && install_editable "${app}backend"
 done
 
 log "done. Try:  python -c 'import quant_data, quant_web; print(quant_data.__file__)'"

@@ -78,10 +78,10 @@ log "target: ${VENV_DIR}"
 "${VENV_PY}" -m pip install --quiet --upgrade pip setuptools wheel || \
   log "WARNING: could not upgrade pip/setuptools/wheel (network?); continuing"
 
-# monorepo: install all packages/* then services/* in dependency order.
+# monorepo: install all packages/* then apps/*/backend in dependency order.
 INSTALL_SCRIPT="${PROJECT_ROOT}/scripts/install_dev.sh"
 if [[ -f "${INSTALL_SCRIPT}" ]]; then
-  log "running install_dev.sh (packages first, then services)"
+  log "running install_dev.sh (packages first, then apps' backends)"
   PATH="${VENV_DIR}/bin:${PATH}" bash "${INSTALL_SCRIPT}"
 elif [[ -f "${PROJECT_ROOT}/requirements.txt" ]]; then
   log "installing from requirements.txt"
