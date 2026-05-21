@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quant-strategy"
+version = "0.0.1"
+description = "Strategy & backtest library for ZJ Quant (P2, predeclared)."
+requires-python = ">=3.11"
+dependencies = [
+    "quant-data>=0.2.0",
+    "quant-factor>=0.0.1",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["quant_strategy*"]

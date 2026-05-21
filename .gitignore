@@ -15,7 +15,7 @@ __pycache__/
 
 # --- Node / frontend ---
 node_modules/
-apps/web/frontend/dist/
+services/web/frontend/dist/
 
 # --- local runtime / secrets (not data we ever commit) ---
 .env

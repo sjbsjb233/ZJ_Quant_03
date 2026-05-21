@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "quant-data"
 version = "0.2.0"
-description = "Data layer for a multi-factor quantitative trading system (raw/reference/metadata governance, append-only + current-view, PIT, field extensibility)."
+description = "Data layer for the multi-factor quantitative trading system (raw/reference/metadata governance, append-only + current-view, PIT, field extensibility)."
 requires-python = ">=3.11"
 dependencies = [
     "duckdb>=1.0",
@@ -14,23 +14,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-test = ["pytest>=8.0", "httpx>=0.27"]
-web = [
-    "fastapi>=0.110",
-    "uvicorn[standard]>=0.29",
-    "sqlalchemy>=2.0",
-    "pydantic>=2.6",
-    "pydantic-settings>=2.0",
-    "python-jose>=3.3",
-    "python-multipart>=0.0.9",
-    "httpx>=0.27",
-]
+test = ["pytest>=8.0"]
 
-# monorepo layout: core lib under packages/, web backend under apps/web/backend/.
-# package names (quant_data / quant_web) are unchanged, so all imports stay the same.
 [tool.setuptools.packages.find]
-where = ["packages", "apps/web/backend"]
-include = ["quant_data*", "quant_web*"]
+where = ["src"]
+include = ["quant_data*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

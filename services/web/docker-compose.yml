@@ -3,8 +3,8 @@
 services:
   web:
     build:
-      context: ../../              # repo root — Dockerfile COPYs packages/ + apps/web/backend/
-      dockerfile: apps/web/Dockerfile
+      context: ../../              # repo root — Dockerfile COPYs packages/ + services/web/
+      dockerfile: services/web/Dockerfile
     ports:
       - "8000:8000"
     environment:
@@ -19,8 +19,8 @@ services:
 
 volumes:
   quant_data:
-# Run from apps/web/. First seed a demo world:
-#   cd apps/web && docker compose run --rm web python -m quant_web.seed_demo
+# Run from services/web/. First seed a demo world:
+#   cd services/web && docker compose run --rm web python -m quant_web.seed_demo
 # Then:
-#   cd apps/web && docker compose up
+#   cd services/web && docker compose up
 # Open http://localhost:8000  (admin / admin123)

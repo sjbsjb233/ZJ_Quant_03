@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quant-factor"
+version = "0.0.1"
+description = "Factor library for ZJ Quant (P1, predeclared)."
+requires-python = ">=3.11"
+dependencies = [
+    "quant-data>=0.2.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["quant_factor*"]

@@ -78,17 +78,16 @@ log "target: ${VENV_DIR}"
 "${VENV_PY}" -m pip install --quiet --upgrade pip setuptools wheel || \
   log "WARNING: could not upgrade pip/setuptools/wheel (network?); continuing"
 
-if [[ -f "${PROJECT_ROOT}/pyproject.toml" ]]; then
-  log "installing project (editable) with test extras"
-  if ! "${VENV_PY}" -m pip install --quiet -e "${PROJECT_ROOT}[test]"; then
-    log "no [test] extra or install failed; installing project without extras"
-    "${VENV_PY}" -m pip install --quiet -e "${PROJECT_ROOT}"
-  fi
+# monorepo: install all packages/* then services/* in dependency order.
+INSTALL_SCRIPT="${PROJECT_ROOT}/scripts/install_dev.sh"
+if [[ -f "${INSTALL_SCRIPT}" ]]; then
+  log "running install_dev.sh (packages first, then services)"
+  PATH="${VENV_DIR}/bin:${PATH}" bash "${INSTALL_SCRIPT}"
 elif [[ -f "${PROJECT_ROOT}/requirements.txt" ]]; then
   log "installing from requirements.txt"
   "${VENV_PY}" -m pip install --quiet -r "${PROJECT_ROOT}/requirements.txt"
 else
-  log "no pyproject.toml / requirements.txt — created a bare venv"
+  log "WARNING: scripts/install_dev.sh missing — created a bare venv"
 fi
 
 # Mark the build complete (records what was provisioned, for debugging).

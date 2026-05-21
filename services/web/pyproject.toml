@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quant-web"
+version = "0.2.0"
+description = "Web monitoring & management platform for ZJ Quant."
+requires-python = ">=3.11"
+dependencies = [
+    "quant-data>=0.2.0",            # core data layer — installed editable from packages/ in dev
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "sqlalchemy>=2.0",
+    "pydantic>=2.6",
+    "pydantic-settings>=2.0",
+    "python-jose>=3.3",
+    "python-multipart>=0.0.9",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0", "httpx>=0.27"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["quant_web*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = [
+    "integration: web integration tests (TestClient + seeded world)",
+]
