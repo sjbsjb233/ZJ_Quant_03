@@ -5,23 +5,22 @@
 # --- stage 1: frontend build -----------------------------------------------
 FROM node:20-alpine AS frontend
 WORKDIR /fe
-COPY services/web/frontend/package.json services/web/frontend/package-lock.json* ./
+COPY apps/web/frontend/package.json apps/web/frontend/package-lock.json* ./
 RUN npm ci
-COPY services/web/frontend/ ./
+COPY apps/web/frontend/ ./
 RUN npm run build
 
 # --- stage 2: backend + bundled SPA ----------------------------------------
 FROM python:3.13-slim AS app
 WORKDIR /app
 
-# Install the core data layer first (quant-web depends on it by name).
+# Install the core data layer first (the backend depends on it by name).
 COPY packages/quant_data ./packages/quant_data
 RUN pip install --no-cache-dir ./packages/quant_data
 
-# Then the web service.
-COPY services/web/pyproject.toml ./services/web/
-COPY services/web/src ./services/web/src
-RUN pip install --no-cache-dir ./services/web
+# Then the web app's backend (the Python distribution lives in apps/web/backend).
+COPY apps/web/backend ./apps/web/backend
+RUN pip install --no-cache-dir ./apps/web/backend
 
 # Bundled SPA.
 COPY --from=frontend /fe/dist ./frontend/dist

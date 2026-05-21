@@ -34,7 +34,7 @@ jobs:
         run: pytest        # perf deselected by this package's pyproject addopts
 
       - name: quant_web API tests
-        working-directory: services/web
+        working-directory: apps/web/backend
         run: pytest
 
   frontend:
@@ -47,14 +47,14 @@ jobs:
         with:
           node-version: "20"
           cache: npm
-          cache-dependency-path: services/web/frontend/package-lock.json
+          cache-dependency-path: apps/web/frontend/package-lock.json
 
       - name: Install deps (clean, from lockfile)
-        working-directory: services/web/frontend
+        working-directory: apps/web/frontend
         run: npm ci
 
       # Building is also our guard against "fresh clone can't build" bugs
       # (e.g. a source dir accidentally caught by .gitignore).
       - name: Build SPA
-        working-directory: services/web/frontend
+        working-directory: apps/web/frontend
         run: npm run build
