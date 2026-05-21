@@ -1,0 +1,60 @@
+name: CI
+
+# Run on every PR targeting the long-lived branches, and on direct pushes to them.
+on:
+  pull_request:
+    branches: [develop, main]
+  push:
+    branches: [develop, main]
+
+# A newer push to the same ref cancels older in-flight runs.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: backend (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install all packages + services (editable, dependency order)
+        run: |
+          python -m pip install --upgrade pip
+          bash scripts/install_dev.sh
+
+      - name: quant_data tests
+        working-directory: packages/quant_data
+        run: pytest        # perf deselected by this package's pyproject addopts
+
+      - name: quant_web API tests
+        working-directory: services/web
+        run: pytest
+
+  frontend:
+    name: frontend (build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: services/web/frontend/package-lock.json
+
+      - name: Install deps (clean, from lockfile)
+        working-directory: services/web/frontend
+        run: npm ci
+
+      # Building is also our guard against "fresh clone can't build" bugs
+      # (e.g. a source dir accidentally caught by .gitignore).
+      - name: Build SPA
+        working-directory: services/web/frontend
+        run: npm run build

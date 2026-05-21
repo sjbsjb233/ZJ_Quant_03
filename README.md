@@ -1,59 +1,59 @@
 # ZJ Quant · 多因子量化交易系统
 
-A monorepo for a multi-factor quantitative trading system. It is organised as **one shared core
-data layer** plus **per-feature apps** — matching the four-module split in the design doc (§1.3:
-数据管理 / 因子追踪 / 策略&回测 / 监控告警). This period delivers the data-management app (P0).
+ZJ Quant 是一个 monorepo，采用 **packages（库）+ services（服务）** 的双层结构：
+
+- **packages/** — 业务能力库，各自是独立的 Python distribution（有自己的 `pyproject.toml`、可单独发版/打 wheel），可被任何调用方（web、CLI、Notebook）直接 `import`。
+- **services/** — 调度 / 服务层，组合 packages 对外提供 UI 或接口，本身不拥有业务逻辑。依赖关系单向：services → packages。
+
+```
+services/                 把库的能力包成可运行的服务
+  web/        ──┐         FastAPI + React（quant-web）
+                │ pip install quant-data / from quant_data import ...
+packages/     ←─┘         业务能力库，也能被 Notebook / CLI 直接 import
+  quant_data/             数据层（P0，已交付）
+  quant_factor/           因子库（P1，预留）
+  quant_strategy/         策略 & 回测库（P2，预留）
+```
 
 ## 仓库布局
 
-```
-ZJ_Quant_03/
-├── packages/
-│   └── quant_data/          # 核心数据层(append-only + current-view, PIT, 复权, 字段注册表…),被所有 app 共享
-├── apps/
-│   ├── web/                 # ✅ Web 监控管理平台(本期交付,P0)
-│   │   ├── backend/quant_web/   # FastAPI
-│   │   ├── frontend/            # Vite + React SPA (V3 Terminal)
-│   │   ├── Dockerfile · docker-compose.yml · .env.example · README.md
-│   ├── factor/              # 🚧 因子追踪(P1,预留)
-│   ├── strategy/            # 🚧 策略 & 回测(P2,预留)
-│   └── monitor/             # 🚧 监控告警(P3,预留)
-├── tests/                   # pytest(数据层 + web API)
-├── scripts/setup_env.sh     # per-worktree venv 引导
-└── pyproject.toml           # 单一根级工程定义(packages.find 指向 packages/ 与 apps/web/backend)
-```
+| 路径 | 包名 | 状态 | 说明 |
+|---|---|---|---|
+| `packages/quant_data/` | `quant-data` | ✅ P0，已交付 | 数据层：raw/reference/metadata 治理，append-only + current-view，PIT，字段可扩展 |
+| `packages/quant_factor/` | `quant-factor` | 🚧 P1，预留 | 因子库 |
+| `packages/quant_strategy/` | `quant-strategy` | 🚧 P2，预留 | 策略 & 回测库 |
+| `services/web/` | `quant-web` | ✅ P0，已交付 | Web 监控管理平台（FastAPI + React，含监控告警视图） |
 
-Python package names (`quant_data`, `quant_web`) are **unchanged**, so `pip install -e .` and all
-`import quant_data` / `from quant_web... import …` keep working regardless of on-disk location.
+每个 package 用 `src/<pkg>/` layout：开发时必须先 `pip install -e .`，杜绝"漏装却误用工作树"的问题。未来还可加入 `services/scheduler/`、`services/cli/` 等。
 
-## 各模块入口
-
-| 模块 | 文档 | 状态 |
-|---|---|---|
-| Web 平台 | [apps/web/README.md](apps/web/README.md) | ✅ 已交付 |
-| 因子追踪 | [apps/factor/README.md](apps/factor/README.md) | 🚧 预留 (P1) |
-| 策略 & 回测 | [apps/strategy/README.md](apps/strategy/README.md) | 🚧 预留 (P2) |
-| 监控告警 | [apps/monitor/README.md](apps/monitor/README.md) | 🚧 预留 (P3) |
-
-## 开发环境
+## 快速上手
 
 ```bash
-# per-worktree 隔离 venv(Python 3.13);scripts/setup_env.sh 在 worktree 创建时自动运行
-pip install -e ".[web,test]"     # 从仓库根安装核心层 + web 后端 + 测试依赖
+git clone <repo>
+cd ZJ_Quant_03
+bash scripts/setup_env.sh        # 建 .venv（Python 3.13）并按依赖顺序装齐所有包
+source .venv/bin/activate
 ```
 
-## 运行 Web 平台
+`setup_env.sh` 会调用 `scripts/install_dev.sh`，**先装 `packages/*` 再装 `services/*`**（editable），
+这样 `quant-web` 声明的 `quant-data>=0.2.0` 依赖会从本地工作树解析，而不是去 PyPI 找。
 
-见 [apps/web/README.md](apps/web/README.md)。最快路径:
+各模块详细启动指南：
+
+- Web 平台：[services/web/README.md](services/web/README.md)
+- 数据层：[packages/quant_data/README.md](packages/quant_data/README.md)
+
+## 跑测试
+
+每个包/服务自带测试目录，可单独跑：
 
 ```bash
-cd apps/web
-docker compose run --rm web python -m quant_web.seed_demo
-docker compose up        # http://localhost:8000 · admin / admin123
+cd packages/quant_data && pytest          # 数据层测试（169 个，不含 perf）
+cd services/web        && pytest          # web API 测试（17 个）
 ```
 
-## 测试
+或一次跑全部：
 
 ```bash
-pytest                   # 186 通过(quant_data 169 + quant_web API 17),从仓库根运行
+pytest packages services
 ```
