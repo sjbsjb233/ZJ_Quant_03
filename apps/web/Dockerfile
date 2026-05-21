@@ -1,18 +1,20 @@
 # Multi-stage: build the SPA, then serve it from the FastAPI backend (single container).
+# NOTE: build context is the repo ROOT (see docker-compose.yml: context=../../),
+# because stage 2 must COPY the shared core lib under packages/.
 # --- stage 1: frontend build ---
 FROM node:20-alpine AS frontend
 WORKDIR /fe
-COPY frontend/package.json frontend/package-lock.json* ./
-RUN npm install
-COPY frontend/ ./
+COPY apps/web/frontend/package.json apps/web/frontend/package-lock.json* ./
+RUN npm ci
+COPY apps/web/frontend/ ./
 RUN npm run build
 
 # --- stage 2: backend + bundled SPA ---
 FROM python:3.13-slim AS app
 WORKDIR /app
 COPY pyproject.toml ./
-COPY quant_data ./quant_data
-COPY quant_web ./quant_web
+COPY packages/quant_data ./packages/quant_data
+COPY apps/web/backend/quant_web ./apps/web/backend/quant_web
 RUN pip install --no-cache-dir ".[web]"
 COPY --from=frontend /fe/dist ./frontend/dist
 
