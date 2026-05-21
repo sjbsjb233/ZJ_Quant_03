@@ -10,6 +10,7 @@ Public surface:
 from __future__ import annotations
 
 from . import (
+    charts,
     compaction,
     config,
     corporate,
@@ -19,9 +20,11 @@ from . import (
     metadata,
     migration,
     quality,
+    quality_log,
     schemas,
     storage,
     symbology,
+    table_stats,
 )
 from .bootstrap import bootstrap
 from .reader import DataReader
@@ -35,6 +38,9 @@ __all__ = [
     "governance",
     "corporate",
     "quality",
+    "quality_log",
+    "table_stats",
+    "charts",
     "invariants",
     "symbology",
     "compaction",

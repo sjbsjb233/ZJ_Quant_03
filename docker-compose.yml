@@ -1,0 +1,24 @@
+# Single-container deployment: FastAPI serves the API + the built SPA.
+# Jobs run in-process (no Redis required). Data + audit DB persist in a volume.
+services:
+  web:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      QUANT_DATA_ROOT: /data
+      AUDIT_DB_URL: sqlite:////data/quant_web_audit.db
+      FRONTEND_DIST: /app/frontend/dist
+      ALLOWED_ORIGINS: http://localhost:8000
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-prod}
+      SEED_DEFAULT_USERS: "true"
+    volumes:
+      - quant_data:/data
+
+volumes:
+  quant_data:
+# First run, seed a demo world:
+#   docker compose run --rm web python -m quant_web.seed_demo
+# Then:
+#   docker compose up
+# Open http://localhost:8000  (admin / admin123)

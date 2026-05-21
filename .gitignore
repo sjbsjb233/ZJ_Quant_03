@@ -216,3 +216,26 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ZJ Quant web platform — local runtime artifacts
+.env
+/data/
+.devdata/
+*.db
+quant_web_audit.db
+frontend/node_modules/
+frontend/dist/
+
+# OS / editor / local tooling
+.DS_Store
+.claude/
+
+# === Playwright 端到端测试(v1.1 一次性验收测试,不入 git)===
+playwright-tests/
+# 双保险:即使有人把目录拆到其他位置,这些常见命名也忽略
+node_modules/
+test-results/
+playwright-report/
+.playwright/
+*.png.actual.png
+*-snapshots/

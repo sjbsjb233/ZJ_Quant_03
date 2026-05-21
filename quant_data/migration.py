@@ -17,8 +17,66 @@ from .metadata import batches, field_registry
 from .schemas import ARROW_TYPE_BY_NAME, get_spec
 
 
-def promote_field_to_core(table: str, field: str, dtype: str | None = None, root=None) -> dict:
-    """Materialise ``_extras[field]`` into a typed core column across all files."""
+def dry_run_promote(table: str, field: str, dtype: str | None = None,
+                    sample: int = 10, root=None) -> dict:
+    """Scan (never write) and report the impact of promoting a field (doc §7.7).
+
+    Feeds the Web "pre-scan" confirmation modal: file/row counts, an IO/duration
+    estimate, a sample of values that would not cast cleanly, and the before /
+    after Parquet schemas.
+    """
+    spec = get_spec(table)
+    if not spec.has_extras():
+        raise ValueError(f"{table} has no _extras column to promote from")
+    reg = field_registry.get_field(table, field, root=root)
+    dtype = (dtype or (reg["data_type"] if reg else "DOUBLE")).upper()
+    if dtype not in ARROW_TYPE_BY_NAME:
+        raise ValueError(f"unsupported dtype {dtype!r}")
+
+    files = storage.list_data_files(spec, root=root)
+    f_lit = lambda s: "'" + str(s).replace("'", "''") + "'"  # noqa: E731
+    con = duckdb.connect()
+    total_rows, total_bytes, cast_failures = 0, 0, []
+    for f in files:
+        total_bytes += os.path.getsize(f)
+        total_rows += con.execute(
+            f"SELECT count(*) FROM read_parquet({f_lit(f)}, hive_partitioning=false)"
+        ).fetchone()[0]
+        if len(cast_failures) < sample:
+            bad = con.execute(
+                f"SELECT DISTINCT _batch_id, _extras[{f_lit(field)}] AS raw "
+                f"FROM read_parquet({f_lit(f)}, hive_partitioning=false) "
+                f"WHERE _extras[{f_lit(field)}] IS NOT NULL "
+                f"AND TRY_CAST(_extras[{f_lit(field)}] AS {dtype}) IS NULL "
+                f"LIMIT {int(sample)}"
+            ).fetchall()
+            for batch_id, raw in bad:
+                cast_failures.append({"batch_id": batch_id, "value": raw, "would_be": None})
+    con.close()
+
+    current_names = list(pq.read_schema(files[0]).names) if files else spec.all_names()
+    after_names = current_names if field in current_names else [*current_names, field]
+    return {
+        "affected_files": len(files),
+        "total_rows": total_rows,
+        "estimated_duration_sec": max(1, round(total_rows / 30000) + len(files)),
+        "estimated_disk_io_mb": round(total_bytes * 2 / (1024 * 1024), 1),
+        "cast_failure_sample": cast_failures[:sample],
+        "current_schema": current_names,
+        "after_schema": after_names,
+        "field": field,
+        "dtype": dtype,
+    }
+
+
+def promote_field_to_core(table: str, field: str, dtype: str | None = None,
+                          dry_run: bool = False, progress_cb=None, root=None) -> dict:
+    """Materialise ``_extras[field]`` into a typed core column across all files.
+
+    With ``dry_run=True`` this only previews the impact (doc §7.7) and writes
+    nothing. ``progress_cb(done, total)`` (if given) is called after each file so
+    the async job (doc §7.3) can report file-by-file progress.
+    """
     spec = get_spec(table)
     if not spec.has_extras():
         raise ValueError(f"{table} has no _extras column to promote from")
@@ -27,6 +85,9 @@ def promote_field_to_core(table: str, field: str, dtype: str | None = None, root
     dtype = (dtype or (reg["data_type"] if reg else "DOUBLE")).upper()
     if dtype not in ARROW_TYPE_BY_NAME:
         raise ValueError(f"unsupported dtype {dtype!r}")
+
+    if dry_run:
+        return dry_run_promote(table, field, dtype=dtype, root=root)
 
     files = storage.list_data_files(spec, root=root)
     params = {"operation": "promote_to_core", "field": field, "dtype": dtype}
@@ -38,7 +99,7 @@ def promote_field_to_core(table: str, field: str, dtype: str | None = None, root
         f_lit = lambda s: "'" + str(s).replace("'", "''") + "'"  # noqa: E731
         ident = lambda s: '"' + str(s).replace('"', '""') + '"'  # noqa: E731
         cast = f"TRY_CAST(_extras[{f_lit(field)}] AS {dtype})"
-        for f in files:
+        for i, f in enumerate(files):
             tmp = f + ".tmp"
             # Idempotent: if the file already has a `field` column (re-run, or a
             # same-named core column), exclude it from * and preserve its value,
@@ -64,6 +125,8 @@ def promote_field_to_core(table: str, field: str, dtype: str | None = None, root
             )
             total += con.execute(f"SELECT count(*) FROM read_parquet({f_lit(tmp)})").fetchone()[0]
             os.replace(tmp, f)
+            if progress_cb is not None:
+                progress_cb(i + 1, len(files))
         con.close()
 
         if reg is None:

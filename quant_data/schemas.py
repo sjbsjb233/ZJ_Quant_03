@@ -401,13 +401,60 @@ FIELD_REGISTRY = TableSpec(
     mutable=True,
 )
 
+# --- web-platform support ledgers (doc §7.1 / §7.4) -------------------------
+# Both are additive: they let the Web platform query historical quality issues
+# and serve the dashboard without scanning every parquet file on each request.
+
+QUALITY_ISSUES = TableSpec(
+    name="metadata.quality_issues",
+    rel_path="metadata/quality_issues",
+    kind="metadata",
+    primary_key=("id",),
+    business_columns=(
+        ("id", BIGINT, False),  # monotonically assigned (max+1) by quality_log
+        ("batch_id", STR, False),
+        ("target_table", STR, False),
+        ("check_name", STR, False),
+        ("level", STR, False),  # warn|error
+        ("count", BIGINT, False),
+        ("message", STR, True),
+        ("sample", STR, True),  # JSON-encoded sample rows
+        ("detected_at", TS, False),
+        ("acknowledged", BOOL, False),
+        ("ack_by", STR, True),
+        ("ack_reason", STR, True),
+        ("ack_expires_at", TS, True),
+    ),
+    mutable=True,
+)
+
+TABLE_STATS = TableSpec(
+    name="metadata.table_stats",
+    rel_path="metadata/table_stats",
+    kind="metadata",
+    primary_key=("table_name",),
+    business_columns=(
+        ("table_name", STR, False),
+        ("row_count", BIGINT, True),
+        ("disk_bytes", BIGINT, True),
+        ("file_count", INT, True),
+        ("latest_batch_id", STR, True),
+        ("latest_batch_at", TS, True),
+        ("freshness_status", STR, True),  # ok|warn|critical|info
+        ("computed_at", TS, True),
+    ),
+    mutable=True,
+)
+
 # --- registries -------------------------------------------------------------
 RAW_TABLES = {
     t.name: t
     for t in (BARS_DAILY, BARS_MINUTE, FUNDAMENTALS, UNIVERSE, CALENDAR, CORPORATE_ACTIONS)
 }
 REFERENCE_TABLES = {t.name: t for t in (SYMBOLS, SECTORS)}
-METADATA_TABLES = {t.name: t for t in (BATCHES, SOURCES, FIELD_REGISTRY)}
+METADATA_TABLES = {
+    t.name: t for t in (BATCHES, SOURCES, FIELD_REGISTRY, QUALITY_ISSUES, TABLE_STATS)
+}
 
 ALL_TABLES: dict[str, TableSpec] = {**RAW_TABLES, **REFERENCE_TABLES, **METADATA_TABLES}
 

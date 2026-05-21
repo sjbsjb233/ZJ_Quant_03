@@ -1,0 +1,190 @@
+/* ZJ Quant — design tokens (V3 Terminal). Ported verbatim from the design handoff. */
+:root {
+  /* Surfaces — warm-neutral light */
+  --bg: #fafaf8;
+  --surface: #ffffff;
+  --surface-2: #f5f4f1;
+  --surface-3: #efeeea;
+  --hover: rgba(20, 18, 14, 0.04);
+  --active: rgba(20, 18, 14, 0.08);
+
+  /* Borders */
+  --border: rgba(20, 18, 14, 0.08);
+  --border-strong: rgba(20, 18, 14, 0.14);
+  --border-faint: rgba(20, 18, 14, 0.05);
+
+  /* Text */
+  --fg: #14110c;
+  --fg-2: #4a463e;
+  --fg-3: #7a7468;
+  --fg-4: #a8a293;
+  --fg-mute: #c4bfb1;
+
+  /* Status — desaturated semantic */
+  --ok: oklch(0.62 0.13 152);
+  --ok-bg: oklch(0.96 0.025 152);
+  --warn: oklch(0.72 0.14 80);
+  --warn-bg: oklch(0.96 0.04 85);
+  --err: oklch(0.58 0.18 27);
+  --err-bg: oklch(0.96 0.03 27);
+  --info: oklch(0.58 0.12 248);
+  --info-bg: oklch(0.96 0.025 248);
+  --neutral: oklch(0.55 0 0);
+  --neutral-bg: oklch(0.95 0 0);
+
+  /* Accent (used sparingly) */
+  --accent: oklch(0.45 0.05 60);
+
+  /* Type */
+  --font-sans: "Geist", "Inter", -apple-system, BlinkMacSystemFont, system-ui, "PingFang SC", "Source Han Sans CN", sans-serif;
+  --font-serif: "Instrument Serif", "Source Han Serif CN", Georgia, serif;
+  --font-mono: "JetBrains Mono", "SF Mono", ui-monospace, Menlo, monospace;
+
+  /* Density */
+  --row-h: 28px;
+  --row-h-sm: 24px;
+  --pad-x: 12px;
+  --radius: 6px;
+  --radius-sm: 4px;
+}
+
+[data-theme="dark"] {
+  --bg: #0e0d0a;
+  --surface: #16140f;
+  --surface-2: #1c1a14;
+  --surface-3: #221f18;
+  --hover: rgba(255, 250, 240, 0.04);
+  --active: rgba(255, 250, 240, 0.08);
+  --border: rgba(255, 250, 240, 0.08);
+  --border-strong: rgba(255, 250, 240, 0.16);
+  --border-faint: rgba(255, 250, 240, 0.05);
+  --fg: #f5f2ec;
+  --fg-2: #c8c2b3;
+  --fg-3: #8e8878;
+  --fg-4: #65604f;
+  --fg-mute: #4a4639;
+  --ok-bg: oklch(0.28 0.03 152);
+  --warn-bg: oklch(0.28 0.04 85);
+  --err-bg: oklch(0.28 0.04 27);
+  --info-bg: oklch(0.28 0.03 248);
+  --neutral-bg: oklch(0.25 0 0);
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root { height: 100%; margin: 0; }
+#root { overflow: hidden; }
+
+html, body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-feature-settings: "ss01", "cv11";
+  font-size: 13px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+.mono { font-family: var(--font-mono); font-feature-settings: "tnum", "zero"; }
+.tnum { font-variant-numeric: tabular-nums; }
+.serif { font-family: var(--font-serif); font-weight: 400; }
+
+button { font: inherit; color: inherit; }
+a { color: inherit; text-decoration: none; }
+input, select, textarea { font: inherit; color: inherit; }
+
+/* Reusable atoms */
+.hairline { border: 1px solid var(--border); }
+.hairline-b { border-bottom: 1px solid var(--border); }
+.hairline-t { border-top: 1px solid var(--border); }
+.hairline-r { border-right: 1px solid var(--border); }
+
+.dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  vertical-align: 1px;
+  margin-right: 6px;
+}
+.dot.ok { background: var(--ok); }
+.dot.warn { background: var(--warn); }
+.dot.err { background: var(--err); }
+.dot.info { background: var(--info); }
+.dot.neutral { background: var(--neutral); }
+.dot.running { background: var(--info); animation: pulse 1.6s ease-in-out infinite; }
+@keyframes pulse {
+  0%, 100% { box-shadow: 0 0 0 0 var(--info); opacity: 1; }
+  50% { box-shadow: 0 0 0 3px transparent; opacity: 0.55; }
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  font-weight: 500;
+  line-height: 16px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.chip.ok { color: var(--ok); background: var(--ok-bg); }
+.chip.warn { color: var(--warn); background: var(--warn-bg); }
+.chip.err { color: var(--err); background: var(--err-bg); }
+.chip.info { color: var(--info); background: var(--info-bg); }
+.chip.neutral { color: var(--fg-2); background: var(--neutral-bg); }
+.chip.outline { background: transparent; border-color: var(--border-strong); color: var(--fg-2); }
+
+.btn {
+  height: 26px;
+  padding: 0 10px;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  color: var(--fg);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  transition: background 0.12s, border-color 0.12s;
+}
+.btn:hover { background: var(--surface-2); }
+.btn.primary { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+.btn.primary:hover { background: #2a261d; }
+.btn.danger { color: var(--err); border-color: var(--err); }
+.btn.ghost { background: transparent; border-color: transparent; }
+.btn.ghost:hover { background: var(--hover); }
+.btn.sm { height: 22px; padding: 0 7px; font-size: 11px; }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.kbd {
+  display: inline-block;
+  padding: 0 5px;
+  height: 17px;
+  line-height: 17px;
+  border-radius: 3px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--fg-3);
+}
+
+.scroll { overflow: auto; }
+.scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+.scroll::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 4px; }
+.scroll::-webkit-scrollbar-track { background: transparent; }
+
+.spark { display: block; overflow: visible; }
+.spark path { fill: none; stroke: currentColor; stroke-width: 1; }
+
+input[readonly] { cursor: default; }
+input:focus, select:focus, textarea:focus { outline: 1px solid var(--info); outline-offset: -1px; }
+
+@keyframes slideIn { from { transform: translateX(20px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }

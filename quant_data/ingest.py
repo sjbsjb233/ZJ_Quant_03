@@ -143,6 +143,13 @@ def ingest(
         partitions = storage.write_append(spec, tbl, bid, root=root)
         discover_new_extras(processed, target_table, bid, root=root)
 
+        if issues:  # persist findings so the Web platform can query them (doc §7.1)
+            try:
+                from . import quality_log
+                quality_log.record_issues(bid, target_table, issues, root=root)
+            except Exception:  # noqa: BLE001 - logging issues must never fail an ingest
+                pass
+
         note = notes
         if issues:
             note = (note + " | " if note else "") + f"quality_issues={len(issues)}"
