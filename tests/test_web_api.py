@@ -95,7 +95,8 @@ def test_tables_rows_and_lineage(client, admin):
     assert len(client.get("/api/v1/data/tables", headers=admin).json()["items"]) == 8
     rows = client.get("/api/v1/data/tables/raw.bars_daily/rows", headers=admin,
                       params={"symbols": "600519.SH", "limit": 5}).json()
-    assert rows["items"] and "close" in rows["columns"][0] or rows["columns"]
+    assert rows["items"], "expected at least one row for 600519.SH"
+    assert any(c["name"] == "close" for c in rows["columns"]), "close column missing"
     last_date = rows["items"][-1]["date"]
     lin = client.get("/api/v1/data/tables/raw.bars_daily/rows/lineage", headers=admin,
                      params={"symbol": "600519.SH", "date": last_date}).json()

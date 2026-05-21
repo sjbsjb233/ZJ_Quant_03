@@ -4,11 +4,14 @@ All API errors serialise as ``{"error": {code, message, details, trace_id}}``.
 """
 from __future__ import annotations
 
+import logging
 import uuid
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+
+_log = logging.getLogger("quant_web.errors")
 
 # code -> default HTTP status (appendix B)
 ERROR_STATUS = {
@@ -73,9 +76,13 @@ def install_error_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(Exception)
     async def _unhandled(_: Request, exc: Exception):
+        # Log the real exception server-side keyed by trace_id; never leak
+        # internals (paths/SQL/stack) to the client.
+        trace_id = uuid.uuid4().hex
+        _log.exception("unhandled error trace_id=%s", trace_id)
         return JSONResponse(
             status_code=500,
-            content=_body("INTERNAL_ERROR", str(exc) or "服务器内部错误", {}, uuid.uuid4().hex),
+            content=_body("INTERNAL_ERROR", "服务器内部错误,请用 trace_id 联系运维", {}, trace_id),
         )
 
 

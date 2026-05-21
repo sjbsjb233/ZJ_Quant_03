@@ -23,7 +23,7 @@ from ..deps import (
 )
 from ..errors import ApiError
 from ..jobs.actors import field_migration as field_migration_actor
-from .schemas import FieldUpdate, MigrateRequest, PromoteRequest
+from .schemas import AddConsumerRequest, FieldUpdate, MigrateRequest, PromoteRequest
 
 router = APIRouter(prefix="/fields", tags=["fields"])
 
@@ -245,13 +245,13 @@ def migrate(
 
 @router.post("/{table}/{field}/consumers")
 def add_consumer(
-    table: str, field: str, body: dict,
+    table: str, field: str, body: AddConsumerRequest,
     root: str = Depends(get_root),
     user=Depends(require_editor),
     auditor: Auditor = Depends(get_auditor),
 ):
     _require_field(table, field, root)
-    consumer = (body or {}).get("consumer")
+    consumer = (body.consumer or "").strip()
     if not consumer:
         raise ApiError("INVALID_PARAMETER", "consumer 必填")
     row = field_registry.add_consumer(table, field, consumer, root=root)

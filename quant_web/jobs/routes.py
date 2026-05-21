@@ -52,20 +52,28 @@ def list_jobs(
     return {"items": [job_to_dict(j) for j in q.all()]}
 
 
-@router.get("/{job_id}")
-def get_job(job_id: str, db: Session = Depends(get_db),
-            user: User = Depends(get_current_user)):
+def _require_owned_job(job_id: str, db: Session, user: User) -> Job:
+    """Fetch a job, enforcing that only its initiator (or an admin) can see/act on it.
+
+    Avoids leaking another user's job logs/results (which may contain file paths).
+    """
     job = db.get(Job, job_id)
     if job is None:
         raise ApiError("JOB_NOT_FOUND", f"job {job_id} 不存在")
-    return job_to_dict(job)
+    if job.initiated_by != user.username and user.role != "admin":
+        raise ApiError("PERMISSION_DENIED", "无权访问他人发起的任务")
+    return job
+
+
+@router.get("/{job_id}")
+def get_job(job_id: str, db: Session = Depends(get_db),
+            user: User = Depends(get_current_user)):
+    return job_to_dict(_require_owned_job(job_id, db, user))
 
 
 @router.post("/{job_id}/cancel")
 def cancel_job(job_id: str, request: Request, db: Session = Depends(get_db),
                user: User = Depends(get_current_user)):
-    job = db.get(Job, job_id)
-    if job is None:
-        raise ApiError("JOB_NOT_FOUND", f"job {job_id} 不存在")
+    _require_owned_job(job_id, db, user)
     ok = request.app.state.job_runner.cancel(job_id)
     return {"job_id": job_id, "cancel_requested": ok}

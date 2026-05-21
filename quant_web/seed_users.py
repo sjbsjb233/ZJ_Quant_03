@@ -26,4 +26,7 @@ def ensure_seed_users(session_factory: sessionmaker) -> None:
             db.add(User(username=username, password_hash=hash_password(password),
                         role=role, nickname=nickname, email=email, is_active=True))
         db.commit()
-        log.warning("seeded demo users: admin/admin123 · editor/editor123 · viewer/viewer123")
+        # never log plaintext passwords; just record which usernames/roles were created
+        log.warning("seeded %d demo users: %s",
+                    len(DEFAULT_USERS),
+                    ", ".join(f"{u}({r})" for u, _pw, r, _n, _e in DEFAULT_USERS))

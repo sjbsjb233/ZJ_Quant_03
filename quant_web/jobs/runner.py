@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import threading
 import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -33,7 +34,7 @@ class JobContext:
         self.runner._append_log(self.job_id, f"[{ts}] {message}")
 
     def check_cancel(self) -> None:
-        if self.job_id in self.runner._cancel:
+        if self.runner._is_cancelled(self.job_id):
             raise JobCancelled(f"job {self.job_id} cancelled")
 
 
@@ -42,7 +43,22 @@ class JobRunner:
         self._sf = session_factory
         self._root = root
         self._pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="job")
+        # shared between request threads (cancel) and worker threads (check/_run);
+        # guard every access with this lock to avoid races.
         self._cancel: set[str] = set()
+        self._cancel_lock = threading.Lock()
+
+    def _is_cancelled(self, job_id: str) -> bool:
+        with self._cancel_lock:
+            return job_id in self._cancel
+
+    def _mark_cancel(self, job_id: str) -> None:
+        with self._cancel_lock:
+            self._cancel.add(job_id)
+
+    def _clear_cancel(self, job_id: str) -> None:
+        with self._cancel_lock:
+            self._cancel.discard(job_id)
 
     # -- public API ----------------------------------------------------------
     def submit(self, job_type: str, fn: Callable, initiated_by: str,
@@ -61,7 +77,7 @@ class JobRunner:
             job = db.get(Job, job_id)
             if job is None or job.status not in ("pending", "running"):
                 return False
-        self._cancel.add(job_id)
+        self._mark_cancel(job_id)
         return True
 
     # -- internals -----------------------------------------------------------
@@ -70,7 +86,7 @@ class JobRunner:
         ctx = JobContext(self, job_id, self._root)
         try:
             result = fn(ctx, **params)
-            if job_id in self._cancel:
+            if self._is_cancelled(job_id):
                 raise JobCancelled(job_id)
             self._update(job_id, status="success", result=result or {},
                          finished_at=dt.datetime.utcnow())
@@ -80,7 +96,7 @@ class JobRunner:
             self._update(job_id, status="failed", error=str(exc),
                          finished_at=dt.datetime.utcnow())
         finally:
-            self._cancel.discard(job_id)
+            self._clear_cancel(job_id)
 
     def _update(self, job_id: str, **fields) -> None:
         with self._sf() as db:

@@ -4,6 +4,7 @@ from __future__ import annotations
 import datetime as dt
 import io
 import os
+import re
 import shutil
 import zipfile
 from pathlib import Path
@@ -134,12 +135,26 @@ def list_snapshots(root: str = Depends(get_root), user=Depends(get_current_user)
     return {"items": out, "total": len(out)}
 
 
+# snapshot ids are timestamp dir names (e.g. 20260521T093218); reject anything else
+_SNAPSHOT_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _resolve_snapshot(root: str, snapshot_id: str) -> Path:
+    """Resolve a snapshot dir, refusing path traversal / absolute / separator tricks."""
+    base = _snap_dir(root).resolve()
+    if not _SNAPSHOT_ID_RE.match(snapshot_id):
+        raise ApiError("SNAPSHOT_NOT_FOUND", f"快照 {snapshot_id} 不存在")
+    target = (base / snapshot_id).resolve()
+    # must stay strictly under the snapshots base dir and actually exist
+    if base != target.parent or not target.is_dir():
+        raise ApiError("SNAPSHOT_NOT_FOUND", f"快照 {snapshot_id} 不存在")
+    return target
+
+
 @router.delete("/snapshots/{snapshot_id}")
 def delete_snapshot(snapshot_id: str, root: str = Depends(get_root),
                     user=Depends(require_admin), auditor: Auditor = Depends(get_auditor)):
-    target = _snap_dir(root) / snapshot_id
-    if ".." in snapshot_id or not target.exists():
-        raise ApiError("SNAPSHOT_NOT_FOUND", f"快照 {snapshot_id} 不存在")
+    target = _resolve_snapshot(root, snapshot_id)
     shutil.rmtree(target)
     auditor.record("maintenance.snapshot_delete", "snapshot", snapshot_id)
     return {"snapshot_id": snapshot_id, "deleted": True}
@@ -148,9 +163,7 @@ def delete_snapshot(snapshot_id: str, root: str = Depends(get_root),
 @router.get("/snapshots/{snapshot_id}/download")
 def download_snapshot(snapshot_id: str, root: str = Depends(get_root),
                       user=Depends(get_current_user)):
-    target = _snap_dir(root) / snapshot_id
-    if ".." in snapshot_id or not target.exists():
-        raise ApiError("SNAPSHOT_NOT_FOUND", f"快照 {snapshot_id} 不存在")
+    target = _resolve_snapshot(root, snapshot_id)
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         for f in target.glob("*"):

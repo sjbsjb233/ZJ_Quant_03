@@ -147,8 +147,10 @@ def ingest(
             try:
                 from . import quality_log
                 quality_log.record_issues(bid, target_table, issues, root=root)
-            except Exception:  # noqa: BLE001 - logging issues must never fail an ingest
-                pass
+            except Exception as exc:  # noqa: BLE001 - non-fatal, but never silent
+                warnings.warn(
+                    f"failed to persist quality issues for batch {bid}: {exc}", stacklevel=2
+                )
 
         note = notes
         if issues:

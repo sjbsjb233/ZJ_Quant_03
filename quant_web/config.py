@@ -31,8 +31,10 @@ class Settings(BaseSettings):
     # serving the built SPA (set to the frontend dist dir to serve it)
     frontend_dist: str = ""
 
-    # bootstrap a demo admin on first launch when the user table is empty
-    seed_default_users: bool = True
+    # bootstrap demo users on first launch when the user table is empty.
+    # Off by default so a production deploy never silently creates predictable
+    # accounts; enable explicitly for local/demo (see .env.example / docker-compose).
+    seed_default_users: bool = False
 
     @property
     def origins(self) -> list[str]:
