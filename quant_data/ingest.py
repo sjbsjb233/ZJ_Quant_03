@@ -143,6 +143,15 @@ def ingest(
         partitions = storage.write_append(spec, tbl, bid, root=root)
         discover_new_extras(processed, target_table, bid, root=root)
 
+        if issues:  # persist findings so the Web platform can query them (doc §7.1)
+            try:
+                from . import quality_log
+                quality_log.record_issues(bid, target_table, issues, root=root)
+            except Exception as exc:  # noqa: BLE001 - non-fatal, but never silent
+                warnings.warn(
+                    f"failed to persist quality issues for batch {bid}: {exc}", stacklevel=2
+                )
+
         note = notes
         if issues:
             note = (note + " | " if note else "") + f"quality_issues={len(issues)}"
