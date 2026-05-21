@@ -14,8 +14,9 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+# anchored to repo root: the unanchored `lib/` recursively ignored frontend/src/lib (a bug)
+/lib/
+/lib64/
 parts/
 sdist/
 var/
@@ -229,6 +230,9 @@ frontend/dist/
 # OS / editor / local tooling
 .DS_Store
 .claude/
+
+# PR 截图(本地未追踪,手动附到 PR,不入 git)
+pr-screenshots/
 
 # === Playwright 端到端测试(v1.1 一次性验收测试,不入 git)===
 playwright-tests/

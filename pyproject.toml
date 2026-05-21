@@ -26,7 +26,10 @@ web = [
     "httpx>=0.27",
 ]
 
+# monorepo layout: core lib under packages/, web backend under apps/web/backend/.
+# package names (quant_data / quant_web) are unchanged, so all imports stay the same.
 [tool.setuptools.packages.find]
+where = ["packages", "apps/web/backend"]
 include = ["quant_data*", "quant_web*"]
 
 [tool.pytest.ini_options]

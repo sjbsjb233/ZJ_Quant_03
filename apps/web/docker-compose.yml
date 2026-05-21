@@ -2,7 +2,9 @@
 # Jobs run in-process (no Redis required). Data + audit DB persist in a volume.
 services:
   web:
-    build: .
+    build:
+      context: ../../              # repo root — Dockerfile COPYs packages/ + apps/web/backend/
+      dockerfile: apps/web/Dockerfile
     ports:
       - "8000:8000"
     environment:
@@ -17,8 +19,8 @@ services:
 
 volumes:
   quant_data:
-# First run, seed a demo world:
-#   docker compose run --rm web python -m quant_web.seed_demo
+# Run from apps/web/. First seed a demo world:
+#   cd apps/web && docker compose run --rm web python -m quant_web.seed_demo
 # Then:
-#   docker compose up
+#   cd apps/web && docker compose up
 # Open http://localhost:8000  (admin / admin123)
