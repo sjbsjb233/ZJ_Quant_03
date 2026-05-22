@@ -7,15 +7,34 @@ import { FInput, FSelect, Stat } from '../components/shell';
 import { Loading, ErrorState } from '../components/ui';
 import { endpoints } from '../lib/api';
 import { fmtCompact, fmtBytes, relTime, freshnessMeta, toneColor } from '../lib/format';
+import { downloadBlob } from '../lib/download';
 
 export default function Tables() {
   const nav = useNavigate();
   const [search, setSearch] = useState('');
   const [kindFilter, setKindFilter] = useState('all');
   const [freshnessFilter, setFreshnessFilter] = useState('any');
+  const [exporting, setExporting] = useState(false);
 
   const tablesQ = useQuery({ queryKey: ['tables'], queryFn: endpoints.tables });
   const tables = tablesQ.data?.items || [];
+
+  const focusSearch = () => document.querySelector('[data-testid="tables-search"]')?.focus();
+
+  async function exportSchemas() {
+    if (exporting || !tables.length) return;
+    setExporting(true);
+    try {
+      const schemas = await Promise.all(tables.map(async (t) => {
+        try { return [t.name, await endpoints.tableSchema(t.name)]; }
+        catch { return [t.name, { error: 'failed' }]; }
+      }));
+      const payload = { exported_at: new Date().toISOString(), tables: Object.fromEntries(schemas) };
+      downloadBlob(new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }), 'table_schemas.json');
+    } finally {
+      setExporting(false);
+    }
+  }
 
   // Group raw before reference
   const filtered = [...tables]
@@ -31,9 +50,8 @@ export default function Tables() {
     });
 
   const fkeys = [
-    { k: 'F1', l: '搜表' },
-    { k: 'F2', l: '收藏' },
-    { k: 'F3', l: '导出 schema' },
+    { k: 'F1', l: '搜表', onClick: focusSearch },
+    { k: 'F3', l: exporting ? '导出中…' : '导出 schema', onClick: exportSchemas },
   ];
 
   return (
@@ -56,7 +74,7 @@ export default function Tables() {
         }}>
           <span style={{ fontSize: 9.5, color: 'var(--fg-3)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>filters</span>
           <span style={{ color: 'var(--fg-mute)' }}>│</span>
-          <FInput label="search" placeholder="table name" value={search} onChange={setSearch} width={180} />
+          <FInput label="search" placeholder="table name" value={search} onChange={setSearch} width={180} testId="tables-search" />
           <FSelect
             label="schema"
             value={kindFilter}

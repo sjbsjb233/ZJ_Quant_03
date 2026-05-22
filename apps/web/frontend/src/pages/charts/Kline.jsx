@@ -1,11 +1,18 @@
-// K-line workstation: centerpiece with quote header, control bar, chart, bottom info panel
-import React, { useCallback, useEffect, useState } from 'react';
+// K-line workstation: centerpiece with quote header, control bar, chart, bottom info panel.
+// Drives the KLineChart instance through a ref to expose its built-in indicators,
+// drawing overlays, navigation and export (整改方案 v1.0 §3).
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { TerminalShell, FSelect } from '../../components/shell';
 import { Kline, SymbolSearch, Loading, Empty, ErrorState } from '../../components/ui';
+import { COMPARE_INDICATOR } from '../../components/ui/charts';
+import {
+  KlineIndicatorPanel, KlineDrawPanel, KlineExportPanel, Popover,
+} from '../../components/ui/KlineToolPanels';
 import { endpoints } from '../../lib/api';
 import { fmtCompact, absTime } from '../../lib/format';
+import { downloadCSV, stitchCanvasesToPng } from '../../lib/download';
 
 const RECENT_KEY = 'zjq_recent_charts';
 
@@ -40,6 +47,11 @@ const SOURCE_OPTIONS = [
   { value: 'tushare_pro',  label: 'tushare_pro' },
 ];
 
+const DIFF_SOURCE_OPTIONS = [
+  { value: 'akshare',     label: 'akshare' },
+  { value: 'tushare_pro', label: 'tushare_pro' },
+];
+
 const RANGE_OPTIONS = [
   { display: '1M',  months: 1 },
   { display: '3M',  months: 3 },
@@ -66,16 +78,49 @@ function fmtTs(ms) {
   return absTime(new Date(ms)).slice(0, 10);
 }
 
+// align symbol-B closes onto symbol-A's timestamps
+function alignClose(baseCandles, otherCandles) {
+  const m = new Map((otherCandles || []).map((c) => [c.timestamp, c.close]));
+  return (baseCandles || []).map((c) => (m.has(c.timestamp) ? m.get(c.timestamp) : null));
+}
+
 export default function KlinePage() {
   const nav = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
 
-  const [symbol, setSymbol] = useState(searchParams.get('symbol') || '600519.SH');
+  const [symbols, setSymbols] = useState([searchParams.get('symbol') || '600519.SH']);
+  const [compareMode, setCompareMode] = useState('grid'); // 'grid' | 'overlay'
+  const [showCompare, setShowCompare] = useState(false);
   const [freq, setFreq] = useState('1d');
   const [adjust, setAdjust] = useState('pre');
   const [source, setSource] = useState('current_view');
+  const [viewMode, setViewMode] = useState('current'); // 'current' | 'all'
   const [rangeIdx, setRangeIdx] = useState(3); // default 1Y
   const [hover, setHover] = useState(null);
+
+  // source-diff
+  const [diffMode, setDiffMode] = useState(false);
+  const [sourceA, setSourceA] = useState('akshare');
+  const [sourceB, setSourceB] = useState('tushare_pro');
+
+  // indicators (controlled so toggles + remounts stay in sync)
+  const [mainIndicators, setMainIndicators] = useState(['MA']);
+  const [subIndicators, setSubIndicators] = useState(['VOL', 'MACD']);
+
+  // marks (governance transparency — default ON, doc §11.13)
+  const [marksEnabled, setMarksEnabled] = useState(true);
+
+  // tool-rail popovers
+  const [panel, setPanel] = useState(null); // 'main' | 'sub' | 'draw' | 'export' | 'settings' | null
+
+  const klineRef = useRef(null);
+  const bodyRef = useRef(null);
+
+  const symbol = symbols[0];
+  const isMulti = symbols.length > 1;
+  const isGrid = isMulti && compareMode === 'grid';
+  const isOverlay = isMulti && compareMode === 'overlay';
+  const diffActive = diffMode && !isMulti;
 
   useEffect(() => {
     setSearchParams({ symbol }, { replace: true });
@@ -85,14 +130,35 @@ export default function KlinePage() {
   const rangeOpt = RANGE_OPTIONS[rangeIdx];
   const start = computeStart(rangeOpt.months);
 
+  // single-symbol candles
   const klineQ = useQuery({
-    queryKey: ['kline', symbol, freq, adjust, source, rangeIdx],
+    queryKey: ['kline', symbol, freq, adjust, source, rangeIdx, viewMode],
     queryFn: () => endpoints.kline({
       symbol, frequency: freq, adjust, source,
       ...(start ? { start } : {}),
-      count: 250,
+      count: 250, view: viewMode,
     }),
-    enabled: !!symbol,
+    enabled: !!symbol && !isMulti && !diffActive,
+  });
+
+  // multi-symbol compare (always grid payload; overlay derived client-side)
+  const multiQ = useQuery({
+    queryKey: ['klineMulti', symbols, freq, adjust, rangeIdx],
+    queryFn: () => endpoints.klineMulti({
+      symbols, frequency: freq, adjust, mode: 'grid',
+      ...(start ? { start } : {}),
+    }),
+    enabled: isMulti,
+  });
+
+  // multi-source diff
+  const diffQ = useQuery({
+    queryKey: ['klineDiff', symbol, freq, sourceA, sourceB, rangeIdx],
+    queryFn: () => endpoints.klineDiffSources({
+      symbol, frequency: freq, source_a: sourceA, source_b: sourceB,
+      ...(start ? { start } : {}),
+    }),
+    enabled: diffActive,
   });
 
   const marksQ = useQuery({
@@ -101,11 +167,20 @@ export default function KlinePage() {
     enabled: !!symbol,
   });
 
-  const candles = klineQ.data?.candles || [];
+  // active query for status/error/loading on the single-instance views
+  const activeQ = diffActive ? diffQ : isMulti ? multiQ : klineQ;
+
+  // candles for the main instance
+  const mainCandles = useMemo(() => {
+    if (diffActive) return diffQ.data?.candles_a || [];
+    if (isMulti) return multiQ.data?.series?.[symbol] || [];
+    return klineQ.data?.candles || [];
+  }, [diffActive, isMulti, symbol, diffQ.data, multiQ.data, klineQ.data]);
+
   const batchRevisions = marksQ.data?.batch_revisions || [];
 
-  const lastCandle = candles.length ? candles[candles.length - 1] : null;
-  const prevClose = candles.length > 1 ? candles[candles.length - 2].close : lastCandle?.open;
+  const lastCandle = mainCandles.length ? mainCandles[mainCandles.length - 1] : null;
+  const prevClose = mainCandles.length > 1 ? mainCandles[mainCandles.length - 2].close : lastCandle?.open;
   const change = lastCandle && prevClose != null ? lastCandle.close - prevClose : null;
   const changePct = change !== null && prevClose ? change / prevClose : null;
   const isUp = change !== null ? change >= 0 : null;
@@ -113,7 +188,118 @@ export default function KlinePage() {
 
   const infoCandle = hover || lastCandle;
 
-  const handleSymbolChange = useCallback((sym) => setSymbol(sym), []);
+  const handleSymbolChange = useCallback((sym) => setSymbols([sym]), []);
+
+  const addCompareSymbol = useCallback((s) => {
+    setSymbols((prev) => (s && !prev.includes(s) && prev.length < 5 ? [...prev, s] : prev));
+  }, []);
+  const removeCompareSymbol = useCallback((s) => {
+    setSymbols((prev) => (prev.length > 1 ? prev.filter((x) => x !== s) : prev));
+  }, []);
+
+  // loadMore (single normal view only) — KLineChart fires when scrolled to left edge
+  const loadMore = useCallback(({ earliestTs, callback }) => {
+    if (isMulti || diffActive || !earliestTs) { callback?.([], false); return; }
+    const before = new Date(earliestTs).toISOString().slice(0, 10);
+    endpoints.kline({
+      symbol, frequency: freq, adjust, source, before, count: 200, view: viewMode,
+    })
+      .then((r) => callback?.(r.candles || [], !!r.has_more_before))
+      .catch(() => callback?.([], false));
+  }, [isMulti, diffActive, symbol, freq, adjust, source, viewMode]);
+
+  // overlay-compare lines (own sub-pane, rebased to 100)
+  useEffect(() => {
+    const k = klineRef.current;
+    if (!isOverlay || !k) return;
+    const series = multiQ.data?.series || {};
+    const base = series[symbol] || [];
+    const ext = symbols.map((sym) => {
+      const m = new Map((series[sym] || []).map((c) => [c.timestamp, c.close]));
+      let b0 = null;
+      return base.map((c) => {
+        const v = m.get(c.timestamp);
+        if (v == null) return null;
+        if (b0 == null) b0 = v;
+        return b0 ? (v / b0) * 100 : null;
+      });
+    });
+    try {
+      k.removeIndicator('compare_pane', COMPARE_INDICATOR);
+      k.createIndicator({ name: COMPARE_INDICATOR, extendData: ext }, false, { id: 'compare_pane' });
+    } catch (e) {}
+    return () => { try { klineRef.current?.removeIndicator('compare_pane', COMPARE_INDICATOR); } catch (e) {} };
+  }, [isOverlay, multiQ.data, symbols, symbol]);
+
+  // source-diff: overlay source-B close on the candle pane + highlight large gaps
+  useEffect(() => {
+    const k = klineRef.current;
+    if (!diffActive || !diffQ.data || !k) return;
+    const candlesA = diffQ.data.candles_a || [];
+    const candlesB = diffQ.data.candles_b || [];
+    const bAligned = alignClose(candlesA, candlesB);
+    const mb = new Map(candlesB.map((c) => [c.timestamp, c.close]));
+    try {
+      k.removeIndicator('candle_pane', COMPARE_INDICATOR);
+      k.createIndicator({ name: COMPARE_INDICATOR, extendData: [bAligned] }, true, { id: 'candle_pane' });
+      k.removeOverlay({ groupId: 'diff_alert' });
+      candlesA.forEach((a, i) => {
+        const b = mb.get(a.timestamp);
+        if (b != null && a.close && Math.abs((a.close - b) / a.close) > 0.005) {
+          k.createOverlay({
+            name: 'simpleTag',
+            groupId: 'diff_alert',
+            id: `diff_${i}`,
+            points: [{ timestamp: a.timestamp, value: a.close }],
+            extendData: { text: `Δ ${(((a.close - b) / a.close) * 100).toFixed(2)}%` },
+            styles: { text: { color: '#fff', backgroundColor: 'rgba(204,67,52,0.85)', size: 9 } },
+          });
+        }
+      });
+    } catch (e) {}
+    return () => {
+      const k2 = klineRef.current;
+      try { k2?.removeIndicator('candle_pane', COMPARE_INDICATOR); k2?.removeOverlay({ groupId: 'diff_alert' }); } catch (e) {}
+    };
+  }, [diffActive, diffQ.data]);
+
+  // ── exports ────────────────────────────────────────────────────────────────
+  const exportPng = useCallback(() => {
+    const root = klineRef.current?.getRoot();
+    stitchCanvasesToPng(root, `${symbol}_${freq}_${new Date().toISOString().slice(0, 10)}.png`);
+  }, [symbol, freq]);
+
+  const exportCsv = useCallback(() => {
+    const data = klineRef.current?.getDataList() || mainCandles;
+    const rows = [['timestamp', 'open', 'high', 'low', 'close', 'volume']];
+    data.forEach((d) => rows.push([
+      new Date(d.timestamp).toISOString(), d.open, d.high, d.low, d.close, d.volume,
+    ]));
+    downloadCSV(rows, `${symbol}_${freq}.csv`);
+  }, [symbol, freq, mainCandles]);
+
+  // ── fullscreen ───────────────────────────────────────────────────────────────
+  const toggleFullscreen = useCallback(() => {
+    const el = bodyRef.current;
+    if (!document.fullscreenElement) el?.requestFullscreen?.();
+    else document.exitFullscreen?.();
+  }, []);
+
+  const togglePanel = (id) => setPanel((p) => (p === id ? null : id));
+
+  const railButtons = [
+    { id: 'main',     i: '∿', l: '主图指标', onClick: () => togglePanel('main') },
+    { id: 'sub',      i: '⊟', l: '副图指标', onClick: () => togglePanel('sub') },
+    { id: 'draw',     i: '✎', l: '绘图工具', onClick: () => togglePanel('draw') },
+    { id: 'marks',    i: '⚑', l: '标记控制', onClick: () => setMarksEnabled((v) => !v), active: marksEnabled },
+    { id: 'settings', i: '☰', l: '设置',     onClick: () => togglePanel('settings') },
+    null,
+    { id: 'fs',       i: '⇲', l: '全屏',     onClick: toggleFullscreen },
+    { id: 'export',   i: '↗', l: '导出',     onClick: () => togglePanel('export') },
+  ];
+
+  // tool rail / popovers only make sense on the single-instance views
+  const toolsEnabled = !isGrid;
 
   return (
     <TerminalShell
@@ -121,26 +307,26 @@ export default function KlinePage() {
       current="kline"
       path={['viz/', 'kline/', symbol]}
       fkeys={[
-        { k: 'F1', l: '指标' },
-        { k: 'F2', l: '标注' },
-        { k: 'F3', l: '对比' },
-        { k: 'F4', l: '导出' },
-        { k: 'F5', l: '刷新', onClick: () => klineQ.refetch() },
+        { k: 'F1', l: '指标', onClick: () => togglePanel('main'), active: panel === 'main' },
+        { k: 'F2', l: '标注', onClick: () => togglePanel('draw'), active: panel === 'draw' },
+        { k: 'F3', l: '对比', onClick: () => setShowCompare((v) => !v), active: showCompare },
+        { k: 'F4', l: '导出', onClick: () => togglePanel('export'), active: panel === 'export' },
+        { k: 'F5', l: '刷新', onClick: () => activeQ.refetch() },
       ]}
       titleBar={false}
     >
-      {/* Custom top control bar */}
+      {/* Top control bar */}
       <div style={{
-        padding: '0 14px', height: 40,
+        padding: '0 14px', minHeight: 40,
         background: 'var(--surface)', borderBottom: '1px solid var(--border)',
-        display: 'flex', alignItems: 'center', gap: 0,
+        display: 'flex', alignItems: 'center', gap: 0, flexWrap: 'wrap', rowGap: 6,
         flexShrink: 0, fontFamily: 'var(--font-mono)', fontSize: 11,
       }}>
         <SymbolSearch value={symbol} onChange={handleSymbolChange} width={240} />
 
         <span style={{ color: 'var(--fg-mute)', margin: '0 10px' }}>│</span>
 
-        {/* Period buttons */}
+        {/* Period */}
         <div style={{ display: 'inline-flex', border: '1px solid var(--border-strong)', borderRadius: 3, overflow: 'hidden' }}>
           {FREQ_OPTIONS.map((f, i) => (
             <button
@@ -161,7 +347,7 @@ export default function KlinePage() {
 
         <span style={{ color: 'var(--fg-mute)', margin: '0 10px' }}>│</span>
 
-        {/* Adjust buttons */}
+        {/* Adjust */}
         <div style={{ display: 'inline-flex', border: '1px solid var(--border-strong)', borderRadius: 3, overflow: 'hidden' }}>
           {ADJUST_OPTIONS.map((a, i) => (
             <button
@@ -181,17 +367,35 @@ export default function KlinePage() {
         </div>
 
         <span style={{ marginRight: 8 }} />
-        <FSelect
-          label="src"
-          value={source}
-          options={SOURCE_OPTIONS}
-          onChange={setSource}
-          width={130}
-        />
+        {!diffActive && (
+          <FSelect label="src" value={source} options={SOURCE_OPTIONS} onChange={setSource} width={130} />
+        )}
+
+        <span style={{ color: 'var(--fg-mute)', margin: '0 10px' }}>│</span>
+
+        {/* View: current / all */}
+        <div style={{ display: 'inline-flex', border: '1px solid var(--border-strong)', borderRadius: 3, overflow: 'hidden' }}>
+          {[{ value: 'current', label: '当前' }, { value: 'all', label: '含作废' }].map((v, i) => (
+            <button
+              key={v.value}
+              data-testid={`kline-view-${v.value}`}
+              onClick={() => setViewMode(v.value)}
+              style={{
+                height: 26, padding: '0 9px',
+                background: viewMode === v.value ? 'var(--fg)' : 'transparent',
+                color: viewMode === v.value ? 'var(--bg)' : 'var(--fg-2)',
+                border: 'none',
+                borderRight: i === 0 ? '1px solid var(--border-strong)' : 'none',
+                fontFamily: 'var(--font-mono)', fontSize: 10.5, cursor: 'pointer',
+                fontWeight: viewMode === v.value ? 600 : 400,
+              }}
+            >{v.label}</button>
+          ))}
+        </div>
 
         <div style={{ flex: 1 }} />
 
-        {/* Range buttons */}
+        {/* Range */}
         <div style={{ display: 'inline-flex', border: '1px solid var(--border-strong)', borderRadius: 3, overflow: 'hidden' }}>
           {RANGE_OPTIONS.map((r, i) => (
             <button
@@ -210,6 +414,69 @@ export default function KlinePage() {
           ))}
         </div>
       </div>
+
+      {/* Compare control row (toggled by F3 / 对比) */}
+      {showCompare && (
+        <div data-testid="kline-compare-bar" style={{
+          padding: '6px 14px', minHeight: 34,
+          background: 'var(--surface-2)', borderBottom: '1px solid var(--border)',
+          display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', rowGap: 6,
+          fontFamily: 'var(--font-mono)', fontSize: 11, flexShrink: 0,
+        }}>
+          <span style={{ color: 'var(--fg-3)', fontSize: 10 }}>对比 symbol:</span>
+          <span style={{ color: 'var(--fg)' }}>{symbol}</span>
+          {symbols.slice(1).map((s) => (
+            <span key={s} style={{
+              padding: '1px 7px', background: 'var(--surface)', border: '1px solid var(--border)',
+              borderRadius: 3, display: 'inline-flex', alignItems: 'center', gap: 6,
+            }}>
+              {s}<span style={{ cursor: 'pointer', color: 'var(--fg-3)' }} onClick={() => removeCompareSymbol(s)}>✕</span>
+            </span>
+          ))}
+          {symbols.length < 5 && !diffMode && (
+            <SymbolSearch value="" onChange={addCompareSymbol} width={180} />
+          )}
+
+          {isMulti && (
+            <>
+              <span style={{ color: 'var(--fg-mute)' }}>│</span>
+              <div style={{ display: 'inline-flex', border: '1px solid var(--border-strong)', borderRadius: 3, overflow: 'hidden' }}>
+                {[{ value: 'grid', label: '网格' }, { value: 'overlay', label: '叠加' }].map((m, i) => (
+                  <button
+                    key={m.value}
+                    data-testid={`kline-compare-mode-${m.value}`}
+                    onClick={() => setCompareMode(m.value)}
+                    style={{
+                      height: 22, padding: '0 8px',
+                      background: compareMode === m.value ? 'var(--fg)' : 'transparent',
+                      color: compareMode === m.value ? 'var(--bg)' : 'var(--fg-2)',
+                      border: 'none', borderRight: i === 0 ? '1px solid var(--border-strong)' : 'none',
+                      fontFamily: 'var(--font-mono)', fontSize: 10, cursor: 'pointer',
+                    }}
+                  >{m.label}</button>
+                ))}
+              </div>
+            </>
+          )}
+
+          {!isMulti && (
+            <>
+              <span style={{ color: 'var(--fg-mute)' }}>│</span>
+              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, cursor: 'pointer', color: 'var(--fg-2)' }}>
+                <input type="checkbox" data-testid="kline-diff-toggle" checked={diffMode} onChange={(e) => setDiffMode(e.target.checked)} />
+                源对比 (A vs B)
+              </label>
+              {diffMode && (
+                <>
+                  <FSelect label="A" value={sourceA} options={DIFF_SOURCE_OPTIONS} onChange={setSourceA} width={110} />
+                  <span style={{ color: 'var(--fg-3)' }}>vs</span>
+                  <FSelect label="B" value={sourceB} options={DIFF_SOURCE_OPTIONS} onChange={setSourceB} width={110} />
+                </>
+              )}
+            </>
+          )}
+        </div>
+      )}
 
       {/* Quote header */}
       <div style={{
@@ -251,67 +518,126 @@ export default function KlinePage() {
           </div>
         ))}
         <div style={{ flex: 1 }} />
-        {batchRevisions.length > 0 && (
+        {diffActive && (
+          <span style={{ fontSize: 10, color: 'var(--info)' }}>
+            源对比 · {sourceA} ▬ vs {sourceB} ▬ · Δ&gt;0.5% 高亮
+          </span>
+        )}
+        {marksEnabled && batchRevisions.length > 0 && (
           <span style={{ fontSize: 10, color: 'var(--warn)' }}>
             ⚠ {batchRevisions[0].start?.slice(0, 10)} → {batchRevisions[0].end?.slice(0, 10)} 区间被批次修订
           </span>
         )}
-        {klineQ.isFetching && (
+        {activeQ.isFetching && (
           <span style={{ fontSize: 10, color: 'var(--fg-3)', marginLeft: 8 }}>⟳</span>
         )}
       </div>
 
       {/* Body: left toolbar + chart area */}
-      <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
+      <div ref={bodyRef} style={{ flex: 1, display: 'flex', minHeight: 0, background: 'var(--bg)' }}>
         {/* Left tool rail */}
         <div style={{
           width: 40, background: 'var(--surface-2)', borderRight: '1px solid var(--border)',
           display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '8px 0', gap: 4,
-          flexShrink: 0,
+          flexShrink: 0, position: 'relative',
         }}>
-          {[
-            { i: '∿', l: '主图指标', active: true },
-            { i: '⊟', l: '副图指标' },
-            { i: '✎', l: '绘图工具' },
-            { i: '⚑', l: '标记控制' },
-            { i: '☰', l: '设置' },
-            null,
-            { i: '⇲', l: '全屏' },
-            { i: '↗', l: '导出' },
-          ].map((b, i) => b ? (
+          {railButtons.map((b, i) => b ? (
             <button
-              key={i}
+              key={b.id}
               title={b.l}
+              data-testid={`kline-tool-${b.id}`}
               className="btn ghost"
+              disabled={!toolsEnabled && b.id !== 'fs'}
+              onClick={b.onClick}
               style={{
                 width: 28, height: 28, padding: 0,
-                background: b.active ? 'var(--surface)' : 'transparent',
-                border: b.active ? '1px solid var(--border)' : 'none',
+                background: (b.active || panel === b.id) ? 'var(--surface)' : 'transparent',
+                border: (b.active || panel === b.id) ? '1px solid var(--border)' : 'none',
                 fontFamily: 'var(--font-mono)', fontSize: 14,
-                color: b.active ? 'var(--fg)' : 'var(--fg-2)',
+                color: (b.active || panel === b.id) ? 'var(--fg)' : 'var(--fg-2)',
+                opacity: (!toolsEnabled && b.id !== 'fs') ? 0.4 : 1,
+                cursor: (!toolsEnabled && b.id !== 'fs') ? 'not-allowed' : 'pointer',
               }}
             >{b.i}</button>
           ) : (
-            <div key={i} style={{ width: 24, height: 1, background: 'var(--border)', margin: '4px 0' }} />
+            <div key={`sep-${i}`} style={{ width: 24, height: 1, background: 'var(--border)', margin: '4px 0' }} />
           ))}
+
+          {/* Popovers anchored to the rail */}
+          {toolsEnabled && panel === 'main' && (
+            <KlineIndicatorPanel pane="main" klineRef={klineRef} active={mainIndicators}
+              onChange={setMainIndicators} onClose={() => setPanel(null)} top={8} />
+          )}
+          {toolsEnabled && panel === 'sub' && (
+            <KlineIndicatorPanel pane="sub" klineRef={klineRef} active={subIndicators}
+              onChange={setSubIndicators} onClose={() => setPanel(null)} top={36} />
+          )}
+          {toolsEnabled && panel === 'draw' && (
+            <KlineDrawPanel klineRef={klineRef} onClose={() => setPanel(null)} top={64} />
+          )}
+          {toolsEnabled && panel === 'export' && (
+            <KlineExportPanel onPng={exportPng} onCsv={exportCsv} onClose={() => setPanel(null)} top={220} />
+          )}
+          {toolsEnabled && panel === 'settings' && (
+            <Popover onClose={() => setPanel(null)} top={120} width={180} title="设置" testId="kline-settings-panel">
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <button className="btn ghost sm" style={{ fontSize: 10.5, justifyContent: 'flex-start' }}
+                  onClick={() => { klineRef.current?.scrollToRealTime(200); setPanel(null); }}>⇥ 回到最新</button>
+                <button className="btn ghost sm" style={{ fontSize: 10.5, justifyContent: 'flex-start' }}
+                  onClick={() => { klineRef.current?.removeOverlay({}); setPanel(null); }}>✕ 清空所有画线</button>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4, color: 'var(--fg-2)' }}>
+                  <input type="checkbox" checked={marksEnabled} onChange={(e) => setMarksEnabled(e.target.checked)} />
+                  显示治理标记
+                </label>
+              </div>
+            </Popover>
+          )}
         </div>
 
         {/* Chart + bottom info */}
         <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-          {/* Kline chart */}
+          {/* Chart */}
           <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
-            {klineQ.isLoading ? (
+            {activeQ.isLoading ? (
               <Loading />
-            ) : klineQ.error ? (
-              <ErrorState error={klineQ.error} onRetry={klineQ.refetch} />
-            ) : candles.length === 0 ? (
+            ) : activeQ.error ? (
+              <ErrorState error={activeQ.error} onRetry={activeQ.refetch} />
+            ) : isGrid ? (
+              <div style={{
+                position: 'absolute', inset: 0, display: 'grid', gap: 1,
+                gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))',
+                background: 'var(--border)', overflow: 'auto',
+              }}>
+                {symbols.map((s) => {
+                  const cs = multiQ.data?.series?.[s] || [];
+                  return (
+                    <div key={s} style={{ background: 'var(--bg)', display: 'flex', flexDirection: 'column', minHeight: 280 }}>
+                      <div style={{ padding: '4px 10px', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg)', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                        {s}
+                        <span style={{ color: 'var(--fg-3)', fontSize: 10 }}>{cs.length} bars</span>
+                        <span style={{ marginLeft: 'auto', cursor: 'pointer', color: 'var(--fg-3)' }} onClick={() => removeCompareSymbol(s)}>✕</span>
+                      </div>
+                      <div style={{ flex: 1, minHeight: 0 }}>
+                        {cs.length ? (
+                          <Kline candles={cs} mainIndicators={mainIndicators} subIndicators={['VOL']} />
+                        ) : <Empty label={`${s} 暂无数据`} />}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : mainCandles.length === 0 ? (
               <Empty label={`${symbol} 暂无数据`} />
             ) : (
               <Kline
-                candles={candles}
-                mainIndicators={['MA']}
-                subIndicators={['VOL', 'MACD']}
+                ref={klineRef}
+                candles={mainCandles}
+                marks={marksEnabled && !isMulti && !diffActive ? marksQ.data : null}
+                mainIndicators={mainIndicators}
+                subIndicators={subIndicators}
                 onCrosshair={setHover}
+                onLoadMore={loadMore}
+                onMarkClick={(r) => r?.batch_id && nav(`/data/batches/${r.batch_id}`)}
               />
             )}
           </div>
@@ -350,16 +676,6 @@ export default function KlinePage() {
               ) : (
                 <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg-3)' }}>—</div>
               )}
-              {infoCandle?._extras && Object.keys(infoCandle._extras).length > 0 && (
-                <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
-                  {Object.entries(infoCandle._extras).map(([k, v]) => (
-                    <span key={k} style={{
-                      fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--warn)',
-                      background: 'var(--warn-bg)', padding: '1px 6px', borderRadius: 2,
-                    }}>{`{${k}: ${v}}`}</span>
-                  ))}
-                </div>
-              )}
             </div>
 
             {/* Metadata */}
@@ -385,7 +701,7 @@ export default function KlinePage() {
                     : <span style={{ color: 'var(--fg-4)' }}>—</span>}
                 </div>
                 <div style={{ color: 'var(--fg-3)', fontSize: 10 }}>
-                  {candles.length} candles · {freq} · {adjust}
+                  {mainCandles.length} candles · {freq} · {adjust} · {viewMode}
                 </div>
               </div>
             </div>

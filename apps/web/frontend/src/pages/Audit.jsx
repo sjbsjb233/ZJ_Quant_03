@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { TerminalShell, TPanel, FilterBar, FInput, FSelect } from '../components/shell';
 import { Loading, ErrorState, Empty } from '../components/ui';
 import { endpoints } from '../lib/api';
+import { downloadCSV } from '../lib/download';
 import { absTime } from '../lib/format';
 
 const ACTOR_OPTIONS = [
@@ -73,6 +74,16 @@ export default function Audit() {
     setSearch(''); setActor(''); setAction(''); setStatusFilter(''); setPage(1);
   }
 
+  function exportCsv() {
+    const list = auditQ.data?.items || [];
+    const rows = [['ts', 'actor', 'action', 'target', 'status', 'trace_id']];
+    list.forEach((e) => rows.push([
+      e.ts || e.timestamp || '', e.actor, e.action, e.target ?? e.target_id ?? '',
+      e.status, e.trace_id ?? '',
+    ]));
+    downloadCSV(rows, `audit_${new Date().toISOString().slice(0, 10)}.csv`);
+  }
+
   const applied = [search, actor, action, statusFilter].filter(Boolean).map((k) => ({ k }));
   const items = auditQ.data?.items || [];
   const total = auditQ.data?.total || 0;
@@ -86,17 +97,13 @@ export default function Audit() {
       current="audit"
       path={['data_mgmt/', 'audit']}
       fkeys={[
-        { k: 'F1', l: '导出 CSV' },
-        { k: 'F2', l: '高级筛选' },
+        { k: 'F1', l: '导出 CSV', onClick: exportCsv },
         { k: 'F5', l: '刷新', onClick: () => auditQ.refetch() },
       ]}
       title="审计日志"
       subtitle={`audit · ${total.toLocaleString()} events · last 30 days`}
       actions={
-        <>
-          <button className="btn ghost sm">导出 CSV</button>
-          <button className="btn ghost sm">导出 JSONL</button>
-        </>
+        <button className="btn ghost sm" onClick={exportCsv}>导出 CSV</button>
       }
       filterBar={
         <FilterBar applied={applied} onClear={clearFilters}>

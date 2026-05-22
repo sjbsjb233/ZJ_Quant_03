@@ -58,6 +58,7 @@ def kline(
     symbol: str, reader=Depends(get_reader), user=Depends(get_current_user),
     frequency: str = "1d", adjust: str = "pre", source: str = "current_view",
     start: str | None = None, end: str | None = None, count: int | None = None,
+    before: str | None = None,
     view: str = "current", include_extras: bool = False,
 ):
     if frequency in ("1m", "5m", "15m", "30m", "1h") and start and end:
@@ -70,6 +71,16 @@ def kline(
 
     rows.sort(key=lambda r: r.get("date") or r.get("datetime") or dt.datetime.min)
     has_more_before = False
+    # loadMore cursor: keep only rows strictly earlier than `before`, then the
+    # `count` window below yields the N most-recent of those (doc v1.0 §3.8/B.1).
+    if before:
+        col = "date" if table_for_frequency(frequency) == "raw.bars_daily" else "datetime"
+        b = dt.date.fromisoformat(before[:10])
+
+        def _d(v):
+            return v.date() if isinstance(v, dt.datetime) else v
+
+        rows = [r for r in rows if r.get(col) is not None and _d(r[col]) < b]
     if count and len(rows) > count:
         rows = rows[-count:]
         has_more_before = True
