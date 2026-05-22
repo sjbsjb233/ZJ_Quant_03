@@ -1,0 +1,76 @@
+name: Build & Publish Docker Image
+
+# 触发条件：
+#   - push 到 develop 分支    → 打 :latest + :develop + :<sha>
+#   - push 形如 v1.2.3 的 tag → 打 :1.2.3 + :1.2 + :<sha>
+#   - Actions 页面手动触发
+# 注意：main 分支不构建镜像（按团队约定，镜像从 develop 出）。
+on:
+  push:
+    branches: [develop]
+    tags: ['v*']
+  workflow_dispatch:
+
+# 同一 ref 的并发构建只保留最新一次，避免连续 push 时排队浪费。
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  # ${{ github.repository }} = OWNER/REPO；metadata-action 会自动转小写
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    # workflow_dispatch 可从任意分支手动触发（UI 默认选默认分支 main）。
+    # 这里兜底限制：只有 develop 或 v* tag 才真正构建，确保 main 永不产出镜像。
+    if: github.ref == 'refs/heads/develop' || startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: read
+      packages: write   # 必须，向 GHCR 推送镜像需要这个权限
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags & labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=short,prefix=
+            # main 不构建，所以 :latest 跟随 develop（团队约定的发布分支）
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/develop' }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          # 构建上下文 = 仓库根，因为 Dockerfile 需要 COPY apps/ 和 packages/
+          context: .
+          file: apps/web/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # 利用 GitHub Actions 缓存层，第二次构建会快很多
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # 仅构建 linux/amd64。如需 linux/arm64（Ampere / 树莓派 / Apple Silicon 服务器），
+          # 在 ubuntu-latest（amd64）上还需先加 docker/setup-qemu-action 步骤启用 QEMU，
+          # 否则跨架构构建会失败或只产出 amd64。
+          platforms: linux/amd64
