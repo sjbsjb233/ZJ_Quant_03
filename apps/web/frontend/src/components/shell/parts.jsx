@@ -3,6 +3,7 @@ import React from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../lib/auth';
 import { useTheme } from '../../lib/theme';
+import { getLastTraceId } from '../../lib/logger';
 import { DATA_NAV, MODULES, NavGlyph, VIZ_NAV } from './nav';
 
 export function ModuleStrip({ current, env = 'PROD' }) {
@@ -162,6 +163,37 @@ export function PageTitleBar({ title, subtitle, actions, badge }) {
   );
 }
 
+// Footer trace indicator (doc §8.8.2): shows the most recent API trace_id,
+// admin-only; click to copy + jump to the trace detail in the log centre.
+function TraceChip() {
+  const { user } = useAuth();
+  const nav = useNavigate();
+  const [traceId, setTraceId] = React.useState(getLastTraceId());
+  const [copied, setCopied] = React.useState(false);
+  React.useEffect(() => {
+    const on = (e) => setTraceId(e.detail);
+    window.addEventListener('zjq:trace', on);
+    return () => window.removeEventListener('zjq:trace', on);
+  }, []);
+  if (!user || user.role !== 'admin' || !traceId) return null;
+  const short = traceId.replace(/^t_/, '').slice(-8);
+  return (
+    <span
+      data-testid="statusbar-trace"
+      title={`${traceId} · 点击进入日志中心`}
+      onClick={() => {
+        navigator.clipboard?.writeText(traceId);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 800);
+        nav(`/data/logs/trace/${traceId}`);
+      }}
+      style={{ cursor: 'pointer', color: 'var(--info)' }}
+    >
+      trace: <span style={{ color: 'var(--fg-2)' }}>t_{short}</span>{copied ? ' ✓' : ' ⎘'}
+    </span>
+  );
+}
+
 export function StatusBar({ middle, right }) {
   return (
     <footer style={{
@@ -175,6 +207,7 @@ export function StatusBar({ middle, right }) {
       <span>cluster: prod-east-1</span>
       {middle && (<><span style={{ color: 'var(--fg-mute)' }}>│</span>{middle}</>)}
       <div style={{ flex: 1 }} />
+      <TraceChip />
       {right || (
         <>
           <span className="kbd">?</span>

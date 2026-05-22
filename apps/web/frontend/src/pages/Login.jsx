@@ -2,6 +2,7 @@
 import React, { useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/auth';
+import { logger } from '../lib/logger';
 
 export default function Login() {
   const { login, user } = useAuth();
@@ -17,6 +18,7 @@ export default function Login() {
   const submit = async (e) => {
     e.preventDefault();
     setBusy(true); setErr(null);
+    logger.userAction('ui.login.submit', { username });   // never log the password
     try {
       await login(username, password);
       nav(loc.state?.from || '/data/dashboard', { replace: true });

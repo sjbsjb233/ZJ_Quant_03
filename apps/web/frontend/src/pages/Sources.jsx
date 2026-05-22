@@ -6,6 +6,7 @@ import { TerminalShell, FilterBar, FInput, FSelect, Stat } from '../components/s
 import { Modal, Loading, ErrorState, Empty, StatusChip } from '../components/ui';
 import { Sparkline } from '../components/ui';
 import { endpoints } from '../lib/api';
+import { logger } from '../lib/logger';
 import { relTime, absTime } from '../lib/format';
 import { useAuth } from '../lib/auth';
 
@@ -152,6 +153,7 @@ function SourceModal({ source, onClose }) {
   });
   const updateMut = useMutation({
     mutationFn: (body) => endpoints.updateSource(source.source_id, body),
+    onMutate: () => logger.userAction('ui.source.update.submit', { source_id: source.source_id }),
     onSuccess: () => { qc.invalidateQueries(['sources']); onClose(); },
     onError: (e) => setErr(e.apiError?.message || '更新失败'),
   });

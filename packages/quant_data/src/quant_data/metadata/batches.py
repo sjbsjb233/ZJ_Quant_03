@@ -9,10 +9,12 @@ from __future__ import annotations
 import json
 
 from .. import ids
+from ..logging import get_logger
 from ..schemas import BATCHES
 from . import _common as c
 
 _VALID_STATUS = {"running", "success", "failed", "invalidated"}
+_log = get_logger("quant_data.governance")
 
 
 @c.locked
@@ -96,6 +98,7 @@ def invalidate_batch(batch_id: str, reason: str, root=None) -> dict:
     row = c.require(BATCHES, rows, (batch_id,))
     row.update(status="invalidated", invalidated_at=ids.utc_now(), invalidated_reason=reason)
     c.save(BATCHES, rows, root)
+    _log.info("governance.batch.invalidate", batch_id=batch_id, reason=reason)
     return row
 
 
@@ -126,6 +129,8 @@ def supersede_batch(old_batch_id: str, new_batch_id: str, root=None) -> None:
     old["superseded_by"] = new_batch_id
     new["supersedes"] = old_batch_id
     c.save(BATCHES, rows, root)
+    _log.info("governance.batch.supersede", old_batch_id=old_batch_id,
+              new_batch_id=new_batch_id)
 
 
 def get_batch(batch_id: str, root=None) -> dict | None:

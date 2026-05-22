@@ -12,16 +12,19 @@ that:
 from __future__ import annotations
 
 import datetime as dt
+import time
 
 import duckdb
 import pyarrow as pa
 import pyarrow.parquet as pq
 
 from . import config, storage
+from .logging import get_logger, get_slow_query_ms
 from .metadata import batches, sources
 from .schemas import ARROW_TYPE_BY_NAME, DATE, TS, TableSpec, get_spec
 
 _PRICE_COLS = ("open", "high", "low", "close", "pre_close", "vwap")
+_log = get_logger("quant_data.reader")
 
 
 def _hashable(v):
@@ -157,7 +160,26 @@ class DataReader:
         SELECT *{except_sql}{extra_select}
         FROM ranked WHERE rn = 1{order_sql}
         """
-        return con.execute(sql, [files]).to_arrow_table()
+        _log.debug("reader.query.built", table=spec.name,
+                   predicates=len(filters or []), columns=len(present))
+        start = time.perf_counter()
+        try:
+            result = con.execute(sql, [files]).to_arrow_table()
+        except Exception:  # noqa: BLE001 - log then re-raise so callers still see it
+            _log.exception("reader.query.failed", table=spec.name,
+                           sql_first_200ch=" ".join(sql.split())[:200])
+            raise
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        if extras_as_columns:
+            _log.debug("reader.extras_promote.applied", table=spec.name,
+                       promoted_fields=list(extras_as_columns))
+        if duration_ms > get_slow_query_ms():
+            _log.warn("reader.query.slow", table=spec.name,
+                      rows_returned=result.num_rows, duration_ms=duration_ms)
+        else:
+            _log.info("reader.query.executed", table=spec.name,
+                      rows_returned=result.num_rows, duration_ms=duration_ms)
+        return result
 
     @staticmethod
     def _validate_extras_types(extras_as_columns: dict[str, str] | None) -> None:
@@ -308,6 +330,8 @@ class DataReader:
                 f"OVER (PARTITION BY symbol ORDER BY {time_col}), 0)"
             )
         self._con.register("_adj", cv)
+        _log.debug("reader.adjust.applied", mode=adjust, time_col=time_col,
+                   rows=cv.num_rows)
         adjusted = ", ".join(f"{c} * _fct AS {c}" for c in price_cols)
         sql = f"""
         SELECT * EXCLUDE ({', '.join(price_cols)}, _fct), {adjusted}
@@ -323,6 +347,7 @@ class DataReader:
         filters = [f"t.publish_date <= {_date_lit(as_of_date)}"]
         if (c := _in_clause("t.symbol", symbols)):
             filters.append(c)
+        _log.debug("reader.pit.applied", table="raw.fundamentals", as_of=str(as_of_date))
         # Strict PIT: among the report versions visible as of the date (publish_date
         # <= as_of), keep the most-recently-DISCLOSED one. Ordering dedup by
         # publish_date DESC (not just _ingested_at) means a later backfill of an

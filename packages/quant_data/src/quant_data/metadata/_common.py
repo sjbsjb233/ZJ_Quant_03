@@ -11,8 +11,10 @@ from __future__ import annotations
 import contextlib
 import functools
 import threading
+import time
 
 from .. import config, storage
+from ..logging import get_logger
 from ..schemas import TableSpec
 
 try:
@@ -22,6 +24,7 @@ except ImportError:  # pragma: no cover - non-POSIX
 
 _RLOCK = threading.RLock()
 _local = threading.local()
+_log = get_logger("quant_data.metadata")
 
 
 @contextlib.contextmanager
@@ -45,12 +48,22 @@ def metadata_lock(root=None):
 
 
 def locked(fn):
-    """Decorator: run a mutating metadata op under metadata_lock(root)."""
+    """Decorator: run a mutating metadata op under metadata_lock(root).
+
+    Also emits a ``metadata.<ledger>.write`` DEBUG log (doc §4.2.4) carrying the
+    function name and the wall time spent holding the lock, so every mutation of
+    a ledger is observable without hand-writing a log call in each function.
+    """
+    ledger = fn.__module__.rsplit(".", 1)[-1]
 
     @functools.wraps(fn)
     def wrap(*args, **kwargs):
+        start = time.perf_counter()
         with metadata_lock(kwargs.get("root")):
-            return fn(*args, **kwargs)
+            result = fn(*args, **kwargs)
+        _log.debug(f"metadata.{ledger}.write", op=fn.__name__,
+                   lock_held_ms=int((time.perf_counter() - start) * 1000))
+        return result
 
     return wrap
 

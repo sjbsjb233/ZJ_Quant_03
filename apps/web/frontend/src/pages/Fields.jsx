@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { TerminalShell, FilterBar, FSelect, FInput, KpiStrip } from '../components/shell';
 import { DataTable, StatusChip, StatusGlyph, Drawer, Modal, Loading, ErrorState, Empty } from '../components/ui';
 import { endpoints } from '../lib/api';
+import { logger } from '../lib/logger';
 import { relTime, absTime, statusMeta, toneColor } from '../lib/format';
 import { useAuth } from '../lib/auth';
 
@@ -49,6 +50,8 @@ function MigrateModal({ field, onClose, onDone }) {
 
   const migrateMut = useMutation({
     mutationFn: () => endpoints.migrateField(field.table_name, field.field_name, { dry_run: false }),
+    onMutate: () => logger.userAction('ui.field.migrate.submit',
+      { table: field.table_name, field: field.field_name }),
     onSuccess: (data) => { setJobId(data.job_id); setStep(2); },
     onError: (e) => setErr(e.apiError?.message || '迁移启动失败'),
   });
@@ -256,6 +259,8 @@ function FieldDrawer({ field, onClose, onRefresh }) {
 
   const promoteMut = useMutation({
     mutationFn: (body) => endpoints.promoteField(field.table_name, field.field_name, body),
+    onMutate: () => logger.userAction('ui.field.promote.submit',
+      { table: field.table_name, field: field.field_name }),
     onSuccess: () => { qc.invalidateQueries(['fields']); onRefresh?.(); },
   });
 

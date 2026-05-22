@@ -166,3 +166,125 @@ def test_stub_501(client, admin):
     for path in ("/api/v1/factors", "/api/v1/strategies/backtests", "/api/v1/monitor/alerts"):
         r = client.get(path, headers=admin)
         assert r.status_code == 501 and r.json()["error"]["code"] == "NOT_IMPLEMENTED"
+
+
+# ===========================================================================
+# Logging platform (全链路日志方案 v2.0). Shares the module-scoped client/db so
+# we never re-bind the import-time engine.
+# ===========================================================================
+def _flush_logs(client):
+    client.app.state.app_log_store.flush()
+
+
+def test_trace_id_echoed_when_supplied(client, admin):
+    tid = "t_provided00000001"
+    r = client.get("/api/v1/data/tables", headers={**admin, "X-Trace-Id": tid})
+    assert r.headers.get("x-trace-id") == tid
+
+
+def test_trace_id_generated_when_absent(client, admin):
+    r = client.get("/api/v1/data/tables", headers=admin)
+    gen = r.headers.get("x-trace-id")
+    assert gen and gen.startswith("t_") and len(gen) == 18
+
+
+def test_trace_spans_backend_and_data_layer(client, admin):
+    """One trace_id stitches the http request log to the quant_data reader log
+    (proves the contextvar reaches the threadpool + data layer; doc §G1)."""
+    tid = "t_chain0000000001"
+    client.get("/api/v1/data/tables/raw.bars_daily/rows", headers={**admin, "X-Trace-Id": tid},
+               params={"symbols": "600519.SH", "limit": 3})
+    _flush_logs(client)
+    rows = client.get("/api/v1/logs", headers=admin,
+                      params={"trace_id": tid, "page_size": 100}).json()["items"]
+    sources = {r["source"] for r in rows}
+    assert "backend" in sources, rows
+    assert "quant_data" in sources, "data-layer log did not inherit the request trace_id"
+    assert any(r["event"] == "reader.query.executed" for r in rows)
+    assert any(r["event"] == "http.request.completed" for r in rows)
+
+
+def test_login_success_and_failure_logged(client):
+    client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin123"})
+    client.post("/api/v1/auth/login", json={"username": "admin", "password": "wrong"})
+    _flush_logs(client)
+    admin_hdr = {"Authorization": f"Bearer {_token(client, 'admin', 'admin123')}"}
+    ok = client.get("/api/v1/logs", headers=admin_hdr,
+                    params={"event": "auth.login.success", "page_size": 5}).json()
+    bad = client.get("/api/v1/logs", headers=admin_hdr,
+                     params={"event": "auth.login.failed", "page_size": 5}).json()
+    assert ok["total"] >= 1
+    assert bad["total"] >= 1 and bad["items"][0]["level"] == "WARN"
+
+
+def test_client_log_ingest_redacts_and_overrides_actor(client, viewer, admin):
+    body = {"records": [{
+        "level": "ERROR", "event": "react.boundary", "logger": "fe.boundary",
+        "session_id": "s_unit01", "route": "/data/viz/kline", "message": "boom",
+        "actor": "i-am-lying", "source": "backend",     # both must be ignored
+        "extra": {"password": "hunter2", "note": "ok"}, "stack": "at x",
+    }]}
+    res = client.post("/api/v1/logs/client", headers=viewer, json=body).json()
+    assert res["accepted"] == 1
+    _flush_logs(client)
+    rows = client.get("/api/v1/logs", headers=admin,
+                      params={"session_id": "s_unit01"}).json()["items"]
+    assert rows, "frontend log not stored"
+    row = rows[0]
+    assert row["source"] == "frontend"          # server-forced, not "backend"
+    assert row["actor"] == "viewer"             # server-forced, not "i-am-lying"
+    assert row["extra"]["password"] == "***"    # redacted (doc §7.6)
+    assert row["extra"]["note"] == "ok"
+
+
+def test_logs_query_is_admin_only(client, viewer):
+    assert client.get("/api/v1/logs", headers=viewer).status_code == 403
+    assert client.get("/api/v1/logs/summary", headers=viewer).status_code == 403
+
+
+def test_logs_summary_shape(client, admin):
+    _flush_logs(client)
+    s = client.get("/api/v1/logs/summary", headers=admin).json()
+    assert set(s["kpis"]) == {"today_total", "error", "warn", "slow", "5xx", "frontend_crash"}
+    assert s["health"]["db_sink"] == "ok"
+    assert isinstance(s["timeline_24h"], list)
+
+
+def test_trace_detail_joins_audit_and_logs(client, admin):
+    """An invalidate writes both an audit_log row and app_log lines under one
+    trace_id; the trace endpoint returns them together (doc §8.7)."""
+    bid = client.get("/api/v1/data/batches", headers=admin,
+                     params={"status": "success", "page_size": 1}).json()["items"][0]["batch_id"]
+    tid = "t_traceaudit00001"
+    client.post(f"/api/v1/data/batches/{bid}/invalidate",
+                headers={**admin, "X-Trace-Id": tid}, json={"reason": "logging-test-reason"})
+    _flush_logs(client)
+    detail = client.get(f"/api/v1/logs/trace/{tid}", headers=admin).json()
+    assert detail["summary"]["total"] >= 1
+    assert any(a["action"] == "batch.invalidate" for a in detail["audit"])
+    assert any(log["event"] == "audit.batch.invalidate" for log in detail["logs"])
+
+
+def test_export_jsonl(client, admin):
+    _flush_logs(client)
+    r = client.get("/api/v1/logs/export", headers=admin, params={"format": "jsonl", "limit": 10})
+    assert r.status_code == 200
+    assert "application/x-ndjson" in r.headers["content-type"]
+
+
+def test_app_log_store_overflow_keeps_warn_and_self_reports(tmp_path):
+    """Saturating the queue drops DEBUG/INFO but keeps WARN+ to file and emits a
+    single CRITICAL log.queue.dropped (doc §7.2 back-pressure)."""
+    from quant_web.config import Settings
+    from quant_web.logging.store import AppLogStore
+
+    settings = Settings(log_to_db=False, log_to_file=True, log_file_dir=str(tmp_path))
+    store = AppLogStore(None, settings, queue_max=1)  # no .start() -> queue fills
+    store.enqueue({"level": "INFO", "event": "a", "logger": "t", "source": "backend"})
+    store.enqueue({"level": "INFO", "event": "b", "logger": "t", "source": "backend"})  # dropped
+    store.enqueue({"level": "ERROR", "event": "kept.err", "logger": "t", "source": "backend"})
+    assert store._dropped >= 2
+    today = __import__("datetime").date.today().isoformat()
+    content = (tmp_path / f"quant_web-{today}.log").read_text()
+    assert "log.queue.dropped" in content       # self-report written to file
+    assert "kept.err" in content                # WARN+ bypassed the full queue

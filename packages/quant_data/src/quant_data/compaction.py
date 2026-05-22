@@ -18,8 +18,21 @@ import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
 from . import config, ids, storage
+from .logging import get_logger
 from .metadata import batches
 from .schemas import METADATA_TABLES, get_spec
+
+_log = get_logger("quant_data.compaction")
+
+
+def _sum_bytes(files) -> int:
+    total = 0
+    for f in files:
+        try:
+            total += os.path.getsize(f)
+        except OSError:
+            pass
+    return total
 
 
 def _batch_ids_in(file: str) -> set[str]:
@@ -61,12 +74,17 @@ def vacuum(table: str, older_than_days: int = config.AUDIT_RETENTION_DAYS, confi
     """
     plan = dead_files(table, older_than_days=older_than_days, root=root)
     files = sorted({p["file"] for p in plan})
+    total_bytes = _sum_bytes(files)
     if not confirm:
+        _log.info("compaction.vacuum.preview", table=table, candidate_files=len(files),
+                  total_bytes=total_bytes)
         return {"would_delete": files, "count": len(files),
                 "note": "dry run -- pass confirm=True to delete (doc §9.4: manual only)"}
     for f in files:
         if os.path.exists(f):
             os.remove(f)
+    _log.info("compaction.vacuum.executed", table=table, deleted_count=len(files),
+              bytes_freed=total_bytes)
     return {"deleted": files, "count": len(files)}
 
 
@@ -84,6 +102,8 @@ def compact(table: str, confirm: bool = False, root=None) -> dict:
     targets = {d: fs for d, fs in by_dir.items() if len(fs) > 1}
 
     if not confirm:
+        _log.info("compaction.compact.preview", table=table, partitions=len(targets),
+                  candidate_files=sum(len(fs) for fs in targets.values()))
         return {
             "would_compact": {d: len(fs) for d, fs in targets.items()},
             "partitions": len(targets),
@@ -107,6 +127,7 @@ def compact(table: str, confirm: bool = False, root=None) -> dict:
             os.remove(f)
         merged += 1
     con.close()
+    _log.info("compaction.compact.executed", table=table, compacted_partitions=merged)
     return {"compacted_partitions": merged}
 
 
@@ -120,8 +141,12 @@ def snapshot_metadata(root=None) -> str:
     stamp = ids.utc_now().strftime("%Y%m%dT%H%M%S")
     dest = base / "metadata" / "_snapshots" / stamp
     dest.mkdir(parents=True, exist_ok=True)
+    copied = []
     for spec in METADATA_TABLES.values():
         src = storage.single_file_path(spec, root)
         if src.exists():
             shutil.copy2(src, dest / src.name)
+            copied.append(dest / src.name)
+    _log.info("compaction.snapshot.created", path=str(dest),
+              size_bytes=_sum_bytes(copied), files=len(copied))
     return str(dest)

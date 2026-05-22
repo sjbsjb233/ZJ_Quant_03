@@ -4,14 +4,16 @@ All API errors serialise as ``{"error": {code, message, details, trace_id}}``.
 """
 from __future__ import annotations
 
-import logging
 import uuid
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-_log = logging.getLogger("quant_web.errors")
+from .logging import app_logger
+from .logging.context import trace_id_var
+
+_log = app_logger
 
 # code -> default HTTP status (appendix B)
 ERROR_STATUS = {
@@ -58,28 +60,56 @@ def _body(code: str, message: str, details: dict, trace_id: str) -> dict:
     return {"error": {"code": code, "message": message, "details": details, "trace_id": trace_id}}
 
 
+def _trace_id(request: Request | None = None) -> str:
+    """The active request's trace_id (set by TraceIdMiddleware), else a fresh one.
+
+    Prefers ``request.state.trace_id`` (set on the scope, survives even when the
+    context vars have been reset because the unhandled-exception handler runs in
+    Starlette's ServerErrorMiddleware, outside our middleware), then the context
+    var, then a fresh id. Reusing the request's id means the error body's trace_id
+    is the same one the frontend sent -- so the user can paste it into the log
+    centre and find the whole chain (doc §5.3 / §8.8.1).
+    """
+    if request is not None:
+        sid = getattr(request.state, "trace_id", None)
+        if sid:
+            return sid
+    return trace_id_var.get() or ("t_" + uuid.uuid4().hex[:16])
+
+
 def install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(ApiError)
-    async def _api(_: Request, exc: ApiError):
+    async def _api(request: Request, exc: ApiError):
+        trace_id = _trace_id(request)
+        _log.warn(f"api.error.{exc.code}", trace_id=trace_id, route=request.url.path,
+                  method=request.method, status_code=exc.status_code, message=exc.message,
+                  code=exc.code, details=exc.details)
         return JSONResponse(
             status_code=exc.status_code,
-            content=_body(exc.code, exc.message, exc.details, uuid.uuid4().hex),
+            content=_body(exc.code, exc.message, exc.details, trace_id),
         )
 
     @app.exception_handler(RequestValidationError)
-    async def _validation(_: Request, exc: RequestValidationError):
+    async def _validation(request: Request, exc: RequestValidationError):
+        trace_id = _trace_id(request)
+        _log.warn("api.error.validation", trace_id=trace_id, route=request.url.path,
+                  method=request.method, status_code=400, message="请求参数校验失败",
+                  errors=exc.errors())
         return JSONResponse(
             status_code=400,
             content=_body("INVALID_PARAMETER", "请求参数校验失败",
-                          {"errors": exc.errors()}, uuid.uuid4().hex),
+                          {"errors": exc.errors()}, trace_id),
         )
 
     @app.exception_handler(Exception)
-    async def _unhandled(_: Request, exc: Exception):
+    async def _unhandled(request: Request, exc: Exception):
         # Log the real exception server-side keyed by trace_id; never leak
-        # internals (paths/SQL/stack) to the client.
-        trace_id = uuid.uuid4().hex
-        _log.exception("unhandled error trace_id=%s", trace_id)
+        # internals (paths/SQL/stack) to the client. The handler runs in
+        # ServerErrorMiddleware (outside our middleware), so pass trace_id
+        # explicitly from request.state rather than the (already-reset) context var.
+        trace_id = _trace_id(request)
+        _log.error("unhandled.exception", exc=exc, trace_id=trace_id,
+                   route=request.url.path, method=request.method, status_code=500)
         return JSONResponse(
             status_code=500,
             content=_body("INTERNAL_ERROR", "服务器内部错误,请用 trace_id 联系运维", {}, trace_id),

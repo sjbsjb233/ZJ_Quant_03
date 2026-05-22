@@ -7,11 +7,12 @@ forward-compatibility.
 """
 from __future__ import annotations
 
-import logging
 from collections import defaultdict
 from collections.abc import Callable
 
-log = logging.getLogger("quant_web.events")
+from ..logging import app_logger
+
+log = app_logger
 
 # the full event vocabulary (doc §8.4); only data.* fire this period
 EVENT_TYPES = {
@@ -33,8 +34,10 @@ def subscribe(event: str, fn: Callable) -> None:
 
 
 def publish(event: str, payload: dict | None = None) -> None:
-    for fn in _subscribers.get(event, []):
+    subscribers = _subscribers.get(event, [])
+    log.debug("event.published", topic=event, subscribers=len(subscribers))
+    for fn in subscribers:
         try:
             fn(payload or {})
         except Exception:  # noqa: BLE001 - a bad subscriber must not break the publisher
-            log.exception("event subscriber for %s failed", event)
+            log.exception("event.subscriber.failed", topic=event)

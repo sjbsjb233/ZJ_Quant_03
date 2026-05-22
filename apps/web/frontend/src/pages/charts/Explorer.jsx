@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { TerminalShell, TPanel, FSelect } from '../../components/shell';
 import { EChart, Loading, Empty, ErrorState, Modal } from '../../components/ui';
 import { endpoints } from '../../lib/api';
+import { logger } from '../../lib/logger';
 
 const AGG_OPTIONS = [
   { value: 'none',        label: '无聚合 (none)' },
@@ -165,6 +166,7 @@ export default function ExplorerPage() {
 
   const saveTemplateMut = useMutation({
     mutationFn: (body) => endpoints.saveTemplate(body),
+    onMutate: (body) => logger.userAction('ui.template.save', { name: body?.name }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['explorerTemplates'] }); setSaveModalOpen(false); },
   });
 
