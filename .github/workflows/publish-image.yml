@@ -24,6 +24,9 @@ env:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+    # workflow_dispatch 可从任意分支手动触发（UI 默认选默认分支 main）。
+    # 这里兜底限制：只有 develop 或 v* tag 才真正构建，确保 main 永不产出镜像。
+    if: github.ref == 'refs/heads/develop' || startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: read
       packages: write   # 必须，向 GHCR 推送镜像需要这个权限
@@ -67,5 +70,7 @@ jobs:
           # 利用 GitHub Actions 缓存层，第二次构建会快很多
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          # 服务器是 ARM（如 Ampere、树莓派、Apple Silicon）就加上 linux/arm64
+          # 仅构建 linux/amd64。如需 linux/arm64（Ampere / 树莓派 / Apple Silicon 服务器），
+          # 在 ubuntu-latest（amd64）上还需先加 docker/setup-qemu-action 步骤启用 QEMU，
+          # 否则跨架构构建会失败或只产出 amd64。
           platforms: linux/amd64
