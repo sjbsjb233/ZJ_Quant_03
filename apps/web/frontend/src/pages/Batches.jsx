@@ -101,11 +101,20 @@ export default function Batches() {
     mutationFn: async (reason) => {
       const ids = [...selected];
       const results = await Promise.allSettled(ids.map((id) => endpoints.invalidateBatch(id, reason)));
-      return results;
+      return { ids, results };
     },
-    onSuccess: () => {
-      setBulkOpen(false); setBulkReason(''); setSelected(new Set());
+    onSuccess: ({ ids, results }) => {
       batchesQ.refetch();
+      const failedAny = results.some((r) => r.status === 'rejected');
+      // drop the successfully-invalidated ids from the selection
+      setSelected((prev) => {
+        const next = new Set(prev);
+        results.forEach((r, i) => { if (r.status === 'fulfilled') next.delete(ids[i]); });
+        return next;
+      });
+      // only auto-close when every selected batch was invalidated; otherwise keep
+      // the modal open so the partial-failure summary stays visible
+      if (!failedAny) { setBulkOpen(false); setBulkReason(''); }
     },
   });
 
@@ -368,11 +377,17 @@ export default function Batches() {
               placeholder="例如:上游源数据修订,重新回填后此批次失效"
               style={{ width: '100%', boxSizing: 'border-box', background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 3, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg)', padding: 8, resize: 'vertical' }}
             />
-            {bulkInvalidate.data && (
-              <div style={{ marginTop: 8, color: 'var(--ok)' }}>
-                完成 · 成功 {bulkInvalidate.data.filter((r) => r.status === 'fulfilled').length} · 失败 {bulkInvalidate.data.filter((r) => r.status === 'rejected').length}
-              </div>
-            )}
+            {bulkInvalidate.data && (() => {
+              const res = bulkInvalidate.data.results;
+              const ok = res.filter((r) => r.status === 'fulfilled').length;
+              const failed = res.filter((r) => r.status === 'rejected').length;
+              return (
+                <div style={{ marginTop: 8, color: failed ? 'var(--err)' : 'var(--ok)' }}>
+                  完成 · 成功 {ok} · 失败 {failed}
+                  {failed > 0 && <span style={{ color: 'var(--fg-3)' }}> · 失败项仍保留勾选,可修改原因后重试</span>}
+                </div>
+              );
+            })()}
           </div>
         </Modal>
       )}

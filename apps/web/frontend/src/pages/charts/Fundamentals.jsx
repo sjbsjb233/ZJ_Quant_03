@@ -79,8 +79,15 @@ export default function FundamentalsPage() {
 
   const echartRef = useRef(null);
   const asOfRef = useRef(null);
+  const toastTimer = useRef(null);
 
-  const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(null), 2800); };
+  const showToast = (msg) => {
+    setToast(msg);
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => { setToast(null); toastTimer.current = null; }, 2800);
+  };
+  // clear any pending toast timer on unmount to avoid setState-after-unmount
+  React.useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current); }, []);
 
   const start = RANGE_OPTIONS[rangeIdx].start();
 

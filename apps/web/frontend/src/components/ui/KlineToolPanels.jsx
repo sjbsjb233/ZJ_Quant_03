@@ -11,7 +11,9 @@ export const SUB_PANE_INDICATORS = [
   'VR', 'MTM', 'EMV', 'AO', 'ROC', 'PVT',
 ];
 
-// 14 built-in drawing overlays (整改方案 v1.0 §1.1.2 / §3.4).
+// Built-in drawing overlays exposed in the palette (整改方案 v1.0 §1.1.2 / §3.4).
+// A curated subset of KLineChart's overlay catalogue — the 12 most useful for
+// price analysis (lines, channels, fibonacci, annotations/tags).
 const DRAW_TOOLS = [
   { name: 'segment',                label: '线段',     icon: '╱' },
   { name: 'straightLine',           label: '直线',     icon: '─' },

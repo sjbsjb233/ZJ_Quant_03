@@ -200,7 +200,12 @@ export default function KlinePage() {
   // loadMore (single normal view only) — KLineChart fires when scrolled to left edge
   const loadMore = useCallback(({ earliestTs, callback }) => {
     if (isMulti || diffActive || !earliestTs) { callback?.([], false); return; }
-    const before = new Date(earliestTs).toISOString().slice(0, 10);
+    // intraday frequencies need a precise timestamp cursor so we don't skip
+    // bars within the cutoff day; daily uses a date cursor.
+    const intraday = ['1m', '5m', '15m', '30m', '1h'].includes(freq);
+    const before = intraday
+      ? new Date(earliestTs).toISOString()
+      : new Date(earliestTs).toISOString().slice(0, 10);
     endpoints.kline({
       symbol, frequency: freq, adjust, source, before, count: 200, view: viewMode,
     })

@@ -30,8 +30,8 @@ export function downloadCSV(rows, filename) {
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   const csv = rows.map((r) => r.map(esc).join(',')).join('\n');
-  // BOM so Excel reads UTF-8 correctly
-  downloadBlob(new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' }), filename);
+  // explicit UTF-8 BOM so Excel reads the encoding correctly
+  downloadBlob(new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' }), filename);
 }
 
 // Stitch the per-pane <canvas> elements KLineChart renders into one tall PNG.
