@@ -38,16 +38,16 @@ function RowLineageDrawer({ tableName, pk, onClose, nav }) {
   return (
     <Drawer width={540} onClose={onClose}>
       {/* Drawer header */}
-      <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+      <div data-testid="lineage-drawer" style={{ padding: '10px 14px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span style={{
             fontFamily: 'var(--font-mono)', fontSize: 10,
             color: 'var(--fg-3)', textTransform: 'uppercase', letterSpacing: '0.08em',
           }}>ROW LINEAGE</span>
           <div style={{ flex: 1 }} />
-          <button className="btn ghost sm" style={{ height: 20 }} onClick={onClose}>✕</button>
+          <button data-testid="lineage-close" className="btn ghost sm" style={{ height: 20 }} onClick={onClose}>✕</button>
         </div>
-        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--fg)', marginTop: 4 }}>
+        <div data-testid="lineage-pk" style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--fg)', marginTop: 4 }}>
           {pkDisplay}
         </div>
         {lineageQ.data && (
@@ -66,7 +66,7 @@ function RowLineageDrawer({ tableName, pk, onClose, nav }) {
             <>
               {/* Current effective */}
               {current && (
-                <div style={{
+                <div data-testid="lineage-current" style={{
                   margin: 12, padding: 12,
                   border: '1px solid var(--fg)', borderRadius: 4,
                   background: 'var(--ok-bg)',
@@ -131,7 +131,7 @@ function RowLineageDrawer({ tableName, pk, onClose, nav }) {
                 const tc = toneColor(m.tone);
                 const isCurrent = h.is_current;
                 return (
-                  <div key={h.batch_id + i} style={{
+                  <div key={h.batch_id + i} data-testid="lineage-history-item" style={{
                     margin: '0 12px 8px', padding: 10,
                     border: '1px solid var(--border)', borderRadius: 4,
                     background: 'var(--surface)',
@@ -185,7 +185,7 @@ function RowLineageDrawer({ tableName, pk, onClose, nav }) {
 
               {/* Divergent columns */}
               {diff_columns.length > 0 && (
-                <div style={{ padding: '4px 12px 14px' }}>
+                <div data-testid="lineage-diff" style={{ padding: '4px 12px 14px' }}>
                   <div style={{
                     fontFamily: 'var(--font-mono)', fontSize: 9.5,
                     color: 'var(--fg-3)', textTransform: 'uppercase', letterSpacing: '0.08em',
@@ -812,10 +812,12 @@ export default function TableBrowser() {
                 {rows.map((row, ri) => {
                   const extra = rowStyle(row, ri);
                   const isInvalidated = viewMode === 'all' && row._status === 'invalidated';
+                  const rowPk = buildPk(row);
                   return (
                     <tr
                       key={ri}
-                      onClick={() => setLineageRow({ pk: buildPk(row) })}
+                      data-testid={`table-row-${Object.values(rowPk).join('-')}`}
+                      onClick={() => setLineageRow({ pk: rowPk })}
                       style={{
                         borderBottom: '1px solid var(--border-faint)',
                         height: 26,

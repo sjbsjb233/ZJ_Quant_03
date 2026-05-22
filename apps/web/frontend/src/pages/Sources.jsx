@@ -179,7 +179,7 @@ function SourceModal({ source, onClose }) {
       {/* Tab bar */}
       <div style={{ display: 'flex', gap: 0, marginBottom: 16, borderBottom: '1px solid var(--border)' }}>
         {[['basic', '基本信息'], ['mapping', 'Field Mapping']].map(([k, l]) => (
-          <button key={k} onClick={() => setTab(k)} style={{
+          <button key={k} data-testid={`source-modal-tab-${k}`} onClick={() => setTab(k)} style={{
             padding: '6px 16px', background: tab === k ? 'var(--surface-2)' : 'transparent',
             border: 'none', borderBottom: tab === k ? '2px solid var(--fg)' : '2px solid transparent',
             fontFamily: 'var(--font-mono)', fontSize: 11, color: tab === k ? 'var(--fg)' : 'var(--fg-3)',
@@ -290,7 +290,7 @@ function SourceCard({ s, onDetail, onEdit }) {
   const dimmed = !isActive;
 
   return (
-    <div style={{
+    <div data-testid={`source-card-${s.source_id}`} style={{
       padding: 16, background: 'var(--surface)',
       borderBottom: '1px solid var(--border)',
       opacity: dimmed ? 0.65 : 1,
@@ -319,13 +319,14 @@ function SourceCard({ s, onDetail, onEdit }) {
         <div style={{ textAlign: 'right', flexShrink: 0 }}>
           <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--fg-3)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>PRIORITY</div>
           {editingPriority && hasRole('editor') ? (
-            <input autoFocus value={priorityVal}
+            <input autoFocus data-testid={`source-priority-input-${s.source_id}`} value={priorityVal}
               onChange={e => setPriorityVal(e.target.value)}
               onBlur={handlePriorityEnter}
               onKeyDown={e => { if (e.key === 'Enter') handlePriorityEnter(); if (e.key === 'Escape') setEditingPriority(false); }}
               style={{ width: 44, fontFamily: 'var(--font-mono)', fontSize: 18, fontWeight: 600, textAlign: 'right', background: 'var(--surface-2)', border: '1px solid var(--fg)', borderRadius: 2, color: 'var(--fg)', padding: '1px 4px' }} />
           ) : (
             <div
+              data-testid={`source-priority-${s.source_id}`}
               onClick={() => hasRole('editor') && setEditingPriority(true)}
               style={{ fontFamily: 'var(--font-mono)', fontSize: 19, fontWeight: 600, color: 'var(--fg)', lineHeight: 1, cursor: hasRole('editor') ? 'pointer' : 'default' }}
               title={hasRole('editor') ? '点击编辑优先级' : ''}
@@ -417,7 +418,7 @@ export default function Sources() {
         <>
           <button className="btn ghost sm" onClick={() => nav('/data/sources/diff')}>跨源对比</button>
           {hasRole('editor') && (
-            <button className="btn sm" onClick={openCreate}
+            <button className="btn sm" data-testid="source-create-btn" onClick={openCreate}
               style={{ background: 'var(--fg)', color: 'var(--bg)', borderColor: 'var(--fg)' }}>
               + 新建数据源
             </button>

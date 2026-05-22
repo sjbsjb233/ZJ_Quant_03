@@ -45,9 +45,9 @@ export function ModuleStrip({ current, env = 'PROD' }) {
       <span style={{ color: 'var(--fg-mute)', margin: '0 12px' }}>│</span>
       <span style={{ color: 'var(--fg-3)' }}>{user?.username}@{user?.nickname || 'data'} · {user?.role}</span>
       <span style={{ color: 'var(--fg-mute)', margin: '0 12px' }}>│</span>
-      <button className="btn ghost" onClick={toggle} title="切换主题"
+      <button className="btn ghost" onClick={toggle} title="切换主题" data-testid="topbar-theme-toggle"
         style={{ height: 18, padding: '0 6px', fontSize: 11 }}>{theme === 'dark' ? '☀' : '☾'}</button>
-      <button className="btn ghost" onClick={logout} title="登出"
+      <button className="btn ghost" onClick={logout} title="登出" data-testid="topbar-logout"
         style={{ height: 18, padding: '0 6px', fontSize: 10, color: 'var(--fg-3)' }}>登出</button>
       <span style={{ color: 'var(--fg-mute)', margin: '0 6px 0 6px' }}>│</span>
       <span className="kbd" style={{ fontSize: 9, height: 14, lineHeight: '14px' }}>⌘K</span>
@@ -71,7 +71,7 @@ export function TerminalSidebar({ module = 'data', current }) {
         {nav.map((it) => {
           const isCur = it.id === current;
           return (
-            <Link key={it.id} to={it.to} style={{
+            <Link key={it.id} to={it.to} data-testid={`sidebar-item-${it.id}`} style={{
               display: 'flex', alignItems: 'center', gap: 8, padding: '5px 8px', margin: '1px 0',
               borderRadius: 4, background: isCur ? 'var(--surface)' : 'transparent',
               color: isCur ? 'var(--fg)' : 'var(--fg-2)', fontSize: 12,

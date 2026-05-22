@@ -82,8 +82,8 @@ function MigrateModal({ field, onClose, onDone }) {
       footer={
         step === 1 ? (
           <>
-            <button className="btn sm" onClick={onClose}>取消</button>
-            <button className="btn sm danger" disabled={!canConfirm} onClick={() => migrateMut.mutate()}>
+            <button className="btn sm" data-testid="migrate-cancel-btn" onClick={onClose}>取消</button>
+            <button className="btn sm danger" data-testid="migrate-confirm-btn" disabled={!canConfirm} onClick={() => migrateMut.mutate()}>
               {migrateMut.isPending ? '启动中…' : '确认执行迁移'}
             </button>
           </>
@@ -163,11 +163,11 @@ function MigrateModal({ field, onClose, onDone }) {
               {/* Checkboxes */}
               <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
                 <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11.5, cursor: 'pointer', fontFamily: 'var(--font-mono)' }}>
-                  <input type="checkbox" checked={checked1} onChange={e => setChecked1(e.target.checked)} style={{ accentColor: 'var(--fg)', width: 14, height: 14 }} />
+                  <input type="checkbox" data-testid="migrate-ack-1" checked={checked1} onChange={e => setChecked1(e.target.checked)} style={{ accentColor: 'var(--fg)', width: 14, height: 14 }} />
                   已审阅类型转换样本，确认无阻断性错误
                 </label>
                 <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11.5, cursor: 'pointer', fontFamily: 'var(--font-mono)' }}>
-                  <input type="checkbox" checked={checked2} onChange={e => setChecked2(e.target.checked)} style={{ accentColor: 'var(--fg)', width: 14, height: 14 }} />
+                  <input type="checkbox" data-testid="migrate-ack-2" checked={checked2} onChange={e => setChecked2(e.target.checked)} style={{ accentColor: 'var(--fg)', width: 14, height: 14 }} />
                   已知晓此操作不可回滚
                 </label>
               </div>
@@ -420,7 +420,7 @@ function FieldDrawer({ field, onClose, onRefresh }) {
                 </button>
               )}
               {canMigrate && (
-                <button className="btn sm" onClick={() => setShowMigrate(true)}
+                <button className="btn sm" data-testid="field-migrate-btn" onClick={() => setShowMigrate(true)}
                   style={{ background: 'var(--info)', color: 'var(--bg)', borderColor: 'var(--info)' }}>
                   ↑↑ 升级到 core (迁移)
                 </button>

@@ -1,7 +1,7 @@
 // A dense terminal-style table. columns: [{key,label,align,width,render,mono,headColor}].
 import React from 'react';
 
-export function DataTable({ columns, rows, rowKey, onRowClick, rowStyle, height = 28, emptyLabel = '未找到数据' }) {
+export function DataTable({ columns, rows, rowKey, rowTestId, onRowClick, rowStyle, height = 28, emptyLabel = '未找到数据' }) {
   return (
     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
       <thead style={{ position: 'sticky', top: 0, background: 'var(--surface)', zIndex: 1 }}>
@@ -26,6 +26,7 @@ export function DataTable({ columns, rows, rowKey, onRowClick, rowStyle, height 
           const extra = rowStyle ? rowStyle(row, ri) : {};
           return (
             <tr key={rowKey ? rowKey(row, ri) : ri}
+              data-testid={rowTestId ? rowTestId(row, ri) : undefined}
               onClick={onRowClick ? () => onRowClick(row) : undefined}
               style={{
                 borderBottom: '1px solid var(--border-faint)', height,

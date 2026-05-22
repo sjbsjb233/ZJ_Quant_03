@@ -103,6 +103,7 @@ export default function Tables() {
             return (
               <div
                 key={t.name}
+                data-testid={`table-card-${t.name}`}
                 style={{
                   padding: 14,
                   borderRight: (i + 1) % 4 === 0 ? 'none' : '1px solid var(--border)',
