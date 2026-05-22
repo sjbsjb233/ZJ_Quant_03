@@ -21,6 +21,7 @@ apps/web/frontend/dist/
 .env
 *.db
 /data/
+apps/web/data/        # compose bind mount (./data) — quant_data + audit DB + logs
 .devdata/
 
 # --- OS / local tooling ---

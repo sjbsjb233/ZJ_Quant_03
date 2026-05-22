@@ -1,17 +1,32 @@
-# Single-container deployment: FastAPI serves the API + the built SPA.
-# Jobs run in-process (no Redis required). Data + audit DB persist in a volume.
+# Dual-purpose compose for the ZJ Quant web service.
+#
+# Dev (build from source, single container):
+#   cd apps/web && docker compose up --build
+#
+# Prod (pull GHCR image + Watchtower auto-update):
+#   cd apps/web && docker compose --profile production up -d
+#
+# Persistence: ./data on the host is bind-mounted to /data in the container.
+# That single mount carries everything stateful: quant_data files, the audit SQLite DB,
+# the app_log table file, and /data/logs (rotating log files). Container rebuilds and
+# image upgrades never touch it.
 services:
   web:
+    # When WEB_IMAGE is set (production .env), compose uses the remote image and SKIPS building.
+    # When unset (dev default), compose builds from the Dockerfile and tags it :local.
+    image: ${WEB_IMAGE:-zj-quant-web:local}
     build:
       context: ../../              # repo root — Dockerfile COPYs packages/ + apps/web/backend/
       dockerfile: apps/web/Dockerfile
+    container_name: zj-quant-web
+    restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "${WEB_PORT:-8000}:8000"
     environment:
       QUANT_DATA_ROOT: /data
       AUDIT_DB_URL: sqlite:////data/quant_web_audit.db
       FRONTEND_DIST: /app/frontend/dist
-      ALLOWED_ORIGINS: http://localhost:8000
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:8000}
       JWT_SECRET: ${JWT_SECRET:-change-me-in-prod}
       SEED_DEFAULT_USERS: "true"
       # === logging platform (全链路日志方案 v2.0 §15.2) — reuses the /data volume ===
@@ -23,11 +38,37 @@ services:
       LOG_FILE_BACKUP_COUNT: "10"
       LOG_DB_RETENTION_DAYS: "30"
     volumes:
-      - quant_data:/data         # single volume carries data + audit DB + app_log + /data/logs
-
-volumes:
-  quant_data:
-# Run from apps/web/. First seed a demo world:
+      # Bind mount instead of named volume → rebuild/upgrade is decoupled from data.
+      # `./data` is relative to this compose file, i.e. apps/web/data on the host.
+      - ./data:/data
+    labels:
+      # Watchtower whitelist: only this container is auto-updated.
+      - "com.centurylinklabs.watchtower.enable=true"
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health').read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+  # Production-only. Activated by `--profile production`; ignored in plain dev `docker compose up`.
+  watchtower:
+    image: containrrr/watchtower:latest
+    container_name: zj-quant-watchtower
+    profiles: ["production"]
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # GHCR auth for private packages. After `docker login ghcr.io` on the host,
+      # creds live in ~/.docker/config.json. Drop this line if your GHCR package is public.
+      - ${HOME}/.docker/config.json:/config.json:ro
+    environment:
+      TZ: "Asia/Shanghai"
+      WATCHTOWER_LABEL_ENABLE: "true"     # only update labelled containers
+      WATCHTOWER_CLEANUP: "true"          # GC old images
+      WATCHTOWER_POLL_INTERVAL: "300"     # poll every 5 min
+      WATCHTOWER_ROLLING_RESTART: "true"
+# First seed a demo world (dev, unchanged):
 #   cd apps/web && docker compose run --rm web python -m quant_web.seed_demo
 # Then:
 #   cd apps/web && docker compose up
