@@ -1,0 +1,20 @@
+name: Restrict main merge source
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  check-source-branch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify PR source is develop
+        run: |
+          SRC="${{ github.event.pull_request.head.ref }}"
+          echo "PR source branch: $SRC"
+          if [ "$SRC" != "develop" ]; then
+            echo "❌ 只允许从 develop 合并到 main，当前来源：$SRC"
+            exit 1
+          fi
+          echo "✅ Source branch OK"
