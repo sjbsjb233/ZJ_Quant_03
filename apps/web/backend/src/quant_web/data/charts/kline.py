@@ -58,6 +58,7 @@ def kline(
     symbol: str, reader=Depends(get_reader), user=Depends(get_current_user),
     frequency: str = "1d", adjust: str = "pre", source: str = "current_view",
     start: str | None = None, end: str | None = None, count: int | None = None,
+    before: str | None = None,
     view: str = "current", include_extras: bool = False,
 ):
     if frequency in ("1m", "5m", "15m", "30m", "1h") and start and end:
@@ -70,6 +71,28 @@ def kline(
 
     rows.sort(key=lambda r: r.get("date") or r.get("datetime") or dt.datetime.min)
     has_more_before = False
+    # loadMore cursor: keep only rows strictly earlier than `before`, then the
+    # `count` window below yields the N most-recent of those (doc v1.0 §3.8/B.1).
+    # For daily candles (or a date-only cursor) we page at day granularity; for
+    # intraday candles a full ISO datetime cursor pages at timestamp granularity
+    # so we don't drop the partial cutoff day.
+    if before:
+        is_daily = table_for_frequency(frequency) == "raw.bars_daily"
+        col = "date" if is_daily else "datetime"
+        if is_daily or len(before) <= 10:
+            b = dt.date.fromisoformat(before[:10])
+
+            def _key(v):
+                return v.date() if isinstance(v, dt.datetime) else v
+        else:
+            # stored datetimes are naive (treated as UTC); drop any tz suffix
+            s = before.replace("Z", "").replace("+00:00", "")
+            b = dt.datetime.fromisoformat(s[:26])
+
+            def _key(v):
+                return v if isinstance(v, dt.datetime) else dt.datetime(v.year, v.month, v.day)
+
+        rows = [r for r in rows if r.get(col) is not None and _key(r[col]) < b]
     if count and len(rows) > count:
         rows = rows[-count:]
         has_more_before = True

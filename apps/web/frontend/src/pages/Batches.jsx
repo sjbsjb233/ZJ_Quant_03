@@ -1,10 +1,12 @@
 // 批次台账 – list of all data ingestion batches
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import { TerminalShell, KpiStrip, FilterBar, FInput, FSelect } from '../components/shell';
-import { CopyableId, StatusGlyph, Loading, ErrorState } from '../components/ui';
+import { CopyableId, StatusGlyph, Loading, ErrorState, Modal } from '../components/ui';
+import { useAuth } from '../lib/auth';
 import { endpoints } from '../lib/api';
+import { downloadCSV } from '../lib/download';
 import { fmtCompact, fmtDuration, relTime, absTime } from '../lib/format';
 
 const TARGET_TABLES = [
@@ -45,12 +47,23 @@ const PAGE_SIZE = 50;
 
 export default function Batches() {
   const nav = useNavigate();
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'admin';
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState('');
   const [source, setSource] = useState('');
   const [table, setTable] = useState('');
   const [range, setRange] = useState('7d');
   const [page, setPage] = useState(1);
+  const [selected, setSelected] = useState(() => new Set());
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkReason, setBulkReason] = useState('');
+
+  const toggleSelect = (id) => setSelected((prev) => {
+    const next = new Set(prev);
+    next.has(id) ? next.delete(id) : next.add(id);
+    return next;
+  });
 
   const appliedCount = [search, status, source, table].filter(Boolean).length;
 
@@ -84,6 +97,38 @@ export default function Batches() {
     queryFn: () => endpoints.batchStats('7d'),
   });
 
+  const bulkInvalidate = useMutation({
+    mutationFn: async (reason) => {
+      const ids = [...selected];
+      const results = await Promise.allSettled(ids.map((id) => endpoints.invalidateBatch(id, reason)));
+      return { ids, results };
+    },
+    onSuccess: ({ ids, results }) => {
+      batchesQ.refetch();
+      const failedAny = results.some((r) => r.status === 'rejected');
+      // drop the successfully-invalidated ids from the selection
+      setSelected((prev) => {
+        const next = new Set(prev);
+        results.forEach((r, i) => { if (r.status === 'fulfilled') next.delete(ids[i]); });
+        return next;
+      });
+      // only auto-close when every selected batch was invalidated; otherwise keep
+      // the modal open so the partial-failure summary stays visible
+      if (!failedAny) { setBulkOpen(false); setBulkReason(''); }
+    },
+  });
+
+  function exportCsv() {
+    const rows = [['batch_id', 'status', 'target_table', 'source', 'row_count', 'partition_count', 'started_at', 'duration_sec']];
+    (batchesQ.data?.items || []).forEach((b) => rows.push([
+      b.batch_id, b.status, b.target_table, b.source,
+      b.row_count ?? '', b.partition_count ?? '', b.started_at, b.duration_sec ?? '',
+    ]));
+    downloadCSV(rows, `batches_${new Date().toISOString().slice(0, 10)}.csv`);
+  }
+
+  const selCount = selected.size;
+
   const stats = statsQ.data;
   const kpiCells = [
     { label: 'MATCHED', value: batchesQ.data ? String(batchesQ.data.total) : '—', sub: 'total' },
@@ -112,18 +157,21 @@ export default function Batches() {
       current="batches"
       path={['data_mgmt/', 'batches']}
       fkeys={[
-        { k: 'F1', l: '新建' },
-        { k: 'F2', l: '批量作废' },
-        { k: 'F3', l: '导出' },
+        { k: 'F2', l: selCount ? `批量作废 (${selCount})` : '批量作废', onClick: () => selCount && isAdmin && setBulkOpen(true), active: selCount > 0 },
+        { k: 'F3', l: '导出', onClick: exportCsv },
         { k: 'F5', l: '刷新', onClick: () => batchesQ.refetch() },
       ]}
       title="批次台账"
       subtitle={`batches · ${total.toLocaleString()} total · sorted by started_at desc`}
       actions={
         <>
-          <button className="btn ghost sm">导出 CSV</button>
-          <button className="btn ghost sm">批量作废</button>
-          <button className="btn sm" style={{ background: 'var(--fg)', color: 'var(--bg)', borderColor: 'var(--fg)' }}>+ 新建批次</button>
+          <button className="btn ghost sm" onClick={exportCsv}>导出 CSV</button>
+          <button
+            className="btn ghost sm"
+            disabled={!selCount || !isAdmin}
+            title={!isAdmin ? '需要 admin 权限' : selCount ? '' : '请先勾选批次'}
+            onClick={() => setBulkOpen(true)}
+          >批量作废{selCount ? ` (${selCount})` : ''}</button>
         </>
       }
       filterBar={
@@ -221,7 +269,14 @@ export default function Batches() {
                     onMouseLeave={(e) => { e.currentTarget.style.background = errBg; }}
                   >
                     <td style={{ padding: '0 6px', textAlign: 'center' }} onClick={(e) => e.stopPropagation()}>
-                      <input type="checkbox" style={{ accentColor: 'var(--fg)' }} />
+                      <input
+                        type="checkbox"
+                        data-testid={`batch-select-${b.batch_id}`}
+                        style={{ accentColor: 'var(--fg)' }}
+                        checked={selected.has(b.batch_id)}
+                        disabled={b.status === 'invalidated'}
+                        onChange={() => toggleSelect(b.batch_id)}
+                      />
                     </td>
                     <td style={{ padding: '0 10px', fontFamily: 'var(--font-mono)', color: 'var(--fg)' }}>
                       <CopyableId value={b.batch_id} length={24} />
@@ -293,6 +348,49 @@ export default function Batches() {
           onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
         >next →</button>
       </div>
+
+      {bulkOpen && (
+        <Modal
+          width={480}
+          title={`批量作废 · ${selCount} 个批次`}
+          onClose={() => !bulkInvalidate.isPending && setBulkOpen(false)}
+          footer={<>
+            <button className="btn sm" onClick={() => setBulkOpen(false)} disabled={bulkInvalidate.isPending}>取消</button>
+            <button
+              className="btn sm danger"
+              disabled={bulkReason.trim().length < 10 || bulkInvalidate.isPending}
+              onClick={() => bulkInvalidate.mutate(bulkReason.trim())}
+            >{bulkInvalidate.isPending ? '执行中…' : '确认作废'}</button>
+          </>}
+        >
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5, color: 'var(--fg-2)', lineHeight: 1.7 }}>
+            <p style={{ marginTop: 0 }}>即将作废以下 <b style={{ color: 'var(--err)' }}>{selCount}</b> 个批次。作废后这些批次写入的行将从当前生效视图移除(可在「含作废」视图查看)。</p>
+            <div style={{ maxHeight: 120, overflow: 'auto', background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 3, padding: 8, marginBottom: 10 }}>
+              {[...selected].map((id) => <div key={id} style={{ color: 'var(--fg-3)' }}>{id}</div>)}
+            </div>
+            <div style={{ fontSize: 10.5, color: 'var(--fg-3)', marginBottom: 4 }}>作废原因(至少 10 个字符):</div>
+            <textarea
+              data-testid="bulk-invalidate-reason"
+              value={bulkReason}
+              onChange={(e) => setBulkReason(e.target.value)}
+              rows={3}
+              placeholder="例如:上游源数据修订,重新回填后此批次失效"
+              style={{ width: '100%', boxSizing: 'border-box', background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 3, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg)', padding: 8, resize: 'vertical' }}
+            />
+            {bulkInvalidate.data && (() => {
+              const res = bulkInvalidate.data.results;
+              const ok = res.filter((r) => r.status === 'fulfilled').length;
+              const failed = res.filter((r) => r.status === 'rejected').length;
+              return (
+                <div style={{ marginTop: 8, color: failed ? 'var(--err)' : 'var(--ok)' }}>
+                  完成 · 成功 {ok} · 失败 {failed}
+                  {failed > 0 && <span style={{ color: 'var(--fg-3)' }}> · 失败项仍保留勾选,可修改原因后重试</span>}
+                </div>
+              );
+            })()}
+          </div>
+        </Modal>
+      )}
     </TerminalShell>
   );
 }

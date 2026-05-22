@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { TerminalShell, TPanel, FilterBar, FSelect, KpiStrip } from '../components/shell';
 import { DataTable, EChart, StatusChip, CopyableId, RelTime, Loading, Empty, ErrorState, Modal } from '../components/ui';
 import { endpoints } from '../lib/api';
+import { downloadCSV } from '../lib/download';
 import { fmtN, fmtCompact, absTime, relTime } from '../lib/format';
 import { useAuth } from '../lib/auth';
 
@@ -101,15 +102,24 @@ export default function Quality() {
     { id: 'by-check', l: '按检查聚合' },
   ];
 
+  function exportCsv() {
+    const rows = [['id', 'level', 'target_table', 'check_name', 'message', 'batch_id', 'detected_at', 'acknowledged']];
+    items.forEach((it) => rows.push([
+      it.id, it.level, it.target_table, it.check_name, it.message,
+      it.batch_id ?? '', it.detected_at ?? '', it.acknowledged,
+    ]));
+    downloadCSV(rows, `quality_issues_${new Date().toISOString().slice(0, 10)}.csv`);
+  }
+
   return (
     <TerminalShell
       module="data"
       current="quality"
       path={['data_mgmt/', 'quality']}
       fkeys={[
-        { k: 'F2', l: '按表' },
-        { k: 'F3', l: '按检查' },
-        { k: 'F4', l: '导出' },
+        { k: 'F2', l: '按表', onClick: () => setTab('by-table'), active: tab === 'by-table' },
+        { k: 'F3', l: '按检查', onClick: () => setTab('by-check'), active: tab === 'by-check' },
+        { k: 'F4', l: '导出', onClick: exportCsv },
       ]}
       title="数据质量"
       subtitle={`quality · ${totalIssues} 问题 · ${tablesAffected} 表受影响`}

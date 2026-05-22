@@ -1,10 +1,11 @@
 // Generic chart explorer: 8-step config panel + ECharts preview + template management
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { TerminalShell, TPanel, FSelect } from '../../components/shell';
 import { EChart, Loading, Empty, ErrorState, Modal } from '../../components/ui';
 import { endpoints } from '../../lib/api';
 import { logger } from '../../lib/logger';
+import { downloadCSV, downloadDataURL } from '../../lib/download';
 
 const AGG_OPTIONS = [
   { value: 'none',        label: '无聚合 (none)' },
@@ -140,6 +141,9 @@ export default function ExplorerPage() {
   const [showTemplates, setShowTemplates] = useState(false);
   const [previewData, setPreviewData] = useState(null);
 
+  const echartRef = useRef(null);
+  const chartPaneRef = useRef(null);
+
   // Available tables
   const tablesQ = useQuery({ queryKey: ['tables'], queryFn: endpoints.tables });
   const tableNames = (tablesQ.data?.items || []).map((t) => t.name);
@@ -208,6 +212,30 @@ export default function ExplorerPage() {
 
   function toggleY(col) {
     setYAxes((prev) => prev.includes(col) ? prev.filter((c) => c !== col) : [...prev, col]);
+  }
+
+  function exportPng() {
+    const inst = echartRef.current?.getEchartsInstance();
+    if (!inst) return;
+    const url = inst.getDataURL({ pixelRatio: 2, backgroundColor: '#ffffff' });
+    downloadDataURL(url, `${(titleText || 'chart').trim() || 'chart'}.png`);
+  }
+
+  function exportCsv() {
+    if (!previewData) return;
+    const { x, series } = previewData;
+    const header = [xAxis || 'x', ...(series || []).map((s) => s.name)];
+    const rows = [header];
+    (x || []).forEach((xv, i) => {
+      rows.push([xv, ...(series || []).map((s) => (s.data[i] ?? ''))]);
+    });
+    downloadCSV(rows, `${(titleText || 'chart').trim() || 'chart'}.csv`);
+  }
+
+  function toggleFullscreen() {
+    const el = chartPaneRef.current;
+    if (!document.fullscreenElement) el?.requestFullscreen?.();
+    else document.exitFullscreen?.();
   }
 
   const chartOption = useMemo(() => buildOption(previewData), [previewData]);
@@ -423,13 +451,13 @@ export default function ExplorerPage() {
                 fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--fg)',
               }}
             />
-            <button className="btn ghost sm">PNG</button>
-            <button className="btn ghost sm">CSV</button>
-            <button className="btn ghost sm">⇲</button>
+            <button className="btn ghost sm" disabled={!previewData} onClick={exportPng}>PNG</button>
+            <button className="btn ghost sm" disabled={!previewData} onClick={exportCsv}>CSV</button>
+            <button className="btn ghost sm" title="全屏" onClick={toggleFullscreen}>⇲</button>
           </div>
 
           {/* Chart */}
-          <div style={{ flex: 1.4, minHeight: 0, padding: 14, background: 'var(--surface)', position: 'relative' }}>
+          <div ref={chartPaneRef} style={{ flex: 1.4, minHeight: 0, padding: 14, background: 'var(--surface)', position: 'relative' }}>
             {previewMut.isPending ? (
               <Loading />
             ) : previewMut.error ? (
@@ -437,7 +465,7 @@ export default function ExplorerPage() {
             ) : !chartOption ? (
               <Empty label="配置左侧参数后点击运行" />
             ) : (
-              <EChart option={chartOption} height="100%" />
+              <EChart ref={echartRef} option={chartOption} height="100%" />
             )}
           </div>
 

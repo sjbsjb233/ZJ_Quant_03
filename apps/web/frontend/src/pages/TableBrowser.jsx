@@ -10,6 +10,7 @@ import {
   Drawer, Modal, TableNameCode,
 } from '../components/ui';
 import { endpoints } from '../lib/api';
+import TableQuickChart from '../components/TableQuickChart';
 import {
   fmtCompact, fmtBytes, relTime, absTime, freshnessMeta, statusMeta, toneColor,
 } from '../lib/format';
@@ -370,6 +371,7 @@ export default function TableBrowser() {
 
   // View state
   const [viewMode, setViewMode] = useState('current'); // 'current' | 'all' | 'batch'
+  const [viewTab, setViewTab] = useState('table');      // 'table' | 'chart'
   const [showInternal, setShowInternal] = useState(true);
 
   // Filters
@@ -583,6 +585,23 @@ export default function TableBrowser() {
       badge={schemaQ.isLoading ? null : <span className="chip ok" style={{ fontSize: 10 }}>FRESH</span>}
       actions={
         <>
+          {/* 表格 / 图表 dual tab (doc §4.5.1 / §6.1) */}
+          <div style={{ display: 'inline-flex', border: '1px solid var(--border-strong)', borderRadius: 3, overflow: 'hidden', marginRight: 8 }}>
+            {[{ id: 'table', l: '表格视图' }, { id: 'chart', l: '图表视图 ↗' }].map((t, i) => (
+              <button
+                key={t.id}
+                data-testid={`tablebrowser-tab-${t.id}`}
+                onClick={() => setViewTab(t.id)}
+                style={{
+                  height: 24, padding: '0 10px',
+                  background: viewTab === t.id ? 'var(--fg)' : 'transparent',
+                  color: viewTab === t.id ? 'var(--bg)' : 'var(--fg-2)',
+                  border: 'none', borderRight: i === 0 ? '1px solid var(--border-strong)' : 'none',
+                  fontFamily: 'var(--font-mono)', fontSize: 10.5, cursor: 'pointer',
+                }}
+              >{t.l}</button>
+            ))}
+          </div>
           <button className="btn ghost sm" onClick={() => nav(`/data/tables`)}>← 返回</button>
           {isBarsTable && firstSymbol && (
             <button
@@ -775,7 +794,13 @@ export default function TableBrowser() {
 
       {/* Main content + potential drawer */}
       <div style={{ flex: 1, display: 'flex', minHeight: 0, position: 'relative', overflow: 'hidden' }}>
-        {/* Table area */}
+        {/* Chart view */}
+        {viewTab === 'chart' ? (
+          <div style={{ flex: 1, minWidth: 0, minHeight: 0, position: 'relative', background: 'var(--surface)' }}>
+            <TableQuickChart table={tableName} rows={rows} filters={queryParams} nav={nav} />
+          </div>
+        ) : (
+        /* Table area */
         <div className="scroll" style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
           {schemaQ.isLoading ? (
             <Loading />
@@ -858,6 +883,7 @@ export default function TableBrowser() {
             </table>
           )}
         </div>
+        )}
 
         {/* Row lineage drawer */}
         {lineageRow && (

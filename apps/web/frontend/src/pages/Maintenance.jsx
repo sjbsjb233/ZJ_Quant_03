@@ -188,9 +188,9 @@ export default function Maintenance() {
       current="maintenance"
       path={['data_mgmt/', 'maintenance']}
       fkeys={[
-        { k: 'F1', l: 'Vacuum' },
-        { k: 'F2', l: 'Compact' },
-        { k: 'F3', l: '快照' },
+        { k: 'F1', l: 'Vacuum', onClick: () => document.querySelector('[data-testid="maint-vacuum"]')?.scrollIntoView({ behavior: 'smooth', block: 'start' }) },
+        { k: 'F2', l: 'Compact', onClick: () => document.querySelector('[data-testid="maint-compact"]')?.scrollIntoView({ behavior: 'smooth', block: 'start' }) },
+        { k: 'F3', l: '快照', onClick: () => document.querySelector('[data-testid="maint-snapshots"]')?.scrollIntoView({ behavior: 'smooth', block: 'start' }) },
       ]}
       title="维护操作"
       subtitle={`maintenance · admin only · ${fmtBytes(reclaimable)} reclaimable`}
@@ -207,7 +207,7 @@ export default function Maintenance() {
         {/* Left: operation cards */}
         <div style={{ display: 'flex', flexDirection: 'column', minHeight: 0, borderRight: '1px solid var(--border)' }}>
           {/* Vacuum card */}
-          <TPanel title="VACUUM 旧版本" meta="删除超保留期文件" noBorderRight noBorderBottom={false}
+          <TPanel testId="maint-vacuum" title="VACUUM 旧版本" meta="删除超保留期文件" noBorderRight noBorderBottom={false}
             action={
               <button className="btn ghost sm" style={{ height: 20, fontSize: 10, color: 'var(--err)' }}
                 data-testid="vacuum-execute-btn"
@@ -264,7 +264,7 @@ export default function Maintenance() {
           </TPanel>
 
           {/* Compact card */}
-          <TPanel title="COMPACT 文件" meta="合并小文件" noBorderRight last
+          <TPanel testId="maint-compact" title="COMPACT 文件" meta="合并小文件" noBorderRight last
             action={
               <button className="btn ghost sm" style={{ height: 20, fontSize: 10 }}
                 data-testid="compact-execute-btn"
@@ -313,7 +313,7 @@ export default function Maintenance() {
 
         {/* Right: Snapshots */}
         <div style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-          <TPanel title="SNAPSHOTS" meta={`${fmtN(snapshots.data?.total ?? 0)} total`} last
+          <TPanel testId="maint-snapshots" title="SNAPSHOTS" meta={`${fmtN(snapshots.data?.total ?? 0)} total`} last
             action={
               <button className="btn sm" style={{ height: 20, fontSize: 10, background: 'var(--fg)', color: 'var(--bg)', borderColor: 'var(--fg)' }}
                 data-testid="snapshot-create-btn"

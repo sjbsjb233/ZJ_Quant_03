@@ -1,9 +1,10 @@
 // Financial time series workstation: PIT-constrained multi-symbol/metric ECharts
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { TerminalShell, TPanel, FSelect } from '../../components/shell';
 import { EChart, SymbolSearch, Loading, Empty, ErrorState } from '../../components/ui';
 import { endpoints } from '../../lib/api';
+import { downloadCSV, downloadDataURL } from '../../lib/download';
 
 const RECENT_KEY = 'zjq_recent_charts';
 
@@ -73,6 +74,20 @@ export default function FundamentalsPage() {
   const [derivYoY, setDerivYoY] = useState(false);
   const [derivQoQ, setDerivQoQ] = useState(false);
   const [addMetric, setAddMetric] = useState('');
+  const [normalize, setNormalize] = useState('absolute'); // 'absolute' | 'rebased'
+  const [toast, setToast] = useState(null);
+
+  const echartRef = useRef(null);
+  const asOfRef = useRef(null);
+  const toastTimer = useRef(null);
+
+  const showToast = (msg) => {
+    setToast(msg);
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => { setToast(null); toastTimer.current = null; }, 2800);
+  };
+  // clear any pending toast timer on unmount to avoid setState-after-unmount
+  React.useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current); }, []);
 
   const start = RANGE_OPTIONS[rangeIdx].start();
 
@@ -117,10 +132,15 @@ export default function FundamentalsPage() {
       const color = SYMBOL_COLORS[symbolIdx[s.symbol] % SYMBOL_COLORS.length];
       const dashIdx = metricIdx[s.metric] % METRIC_DASH.length;
 
-      const data = allPeriods.map((p) => {
+      let data = allPeriods.map((p) => {
         const pt = s.points.find((x) => x.period === p);
         return pt ? pt.value : null;
       });
+      // rebase to 100 at the first non-null point (doc §4.6.3)
+      if (normalize === 'rebased') {
+        const base = data.find((v) => v != null);
+        if (base) data = data.map((v) => (v != null ? (v / base) * 100 : null));
+      }
 
       return {
         name: `${s.symbol} · ${s.metric}`,
@@ -148,7 +168,7 @@ export default function FundamentalsPage() {
       tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
       grid: { left: 52, right: 20, top: 24, bottom: 60 },
     };
-  }, [fundamentalsQ.data]);
+  }, [fundamentalsQ.data, normalize]);
 
   // Build data matrix from series
   const matrix = useMemo(() => {
@@ -188,18 +208,43 @@ export default function FundamentalsPage() {
     }
   }
 
+  function exportPng() {
+    const inst = echartRef.current?.getEchartsInstance();
+    if (!inst) { showToast('暂无图表可导出'); return; }
+    const url = inst.getDataURL({ pixelRatio: 2, backgroundColor: '#ffffff' });
+    downloadDataURL(url, `fundamentals_${asOf}.png`);
+  }
+
+  function exportCsv() {
+    if (!matrix.rows.length) { showToast('暂无数据可导出'); return; }
+    const header = ['symbol · metric', ...matrix.periods];
+    const rows = [header, ...matrix.rows.map((r) => [r.key, ...r.values.map((v) => (v != null ? v : ''))])];
+    downloadCSV(rows, `fundamentals_${asOf}.csv`);
+  }
+
+  function focusAsOf() {
+    asOfRef.current?.focus();
+    asOfRef.current?.showPicker?.();
+  }
+
   return (
     <TerminalShell
       module="viz"
       current="fundamentals"
       path={['viz/', 'fundamentals']}
       fkeys={[
-        { k: 'F1', l: 'PIT 日期' },
-        { k: 'F2', l: '行业均值' },
-        { k: 'F3', l: '导出' },
+        { k: 'F1', l: 'PIT 日期', onClick: focusAsOf },
+        { k: 'F2', l: '行业均值', onClick: () => showToast('行业均值对比为 P1 计划功能,即将上线') },
+        { k: 'F3', l: '导出', onClick: exportPng },
       ]}
       title="财务时间序列工作台"
       subtitle="fundamentals · multi-symbol time series · as_of_date enforced"
+      actions={
+        <>
+          <button className="btn ghost sm" onClick={exportPng}>PNG</button>
+          <button className="btn ghost sm" onClick={exportCsv}>CSV</button>
+        </>
+      }
     >
       {/* Control bar */}
       <div style={{
@@ -313,6 +358,24 @@ export default function FundamentalsPage() {
           </label>
         </span>
 
+        {/* Normalization (doc §4.6.3) */}
+        <div style={{ display: 'inline-flex', border: '1px solid var(--border-strong)', borderRadius: 3, overflow: 'hidden', marginRight: 8 }}>
+          {[{ value: 'absolute', label: '绝对值' }, { value: 'rebased', label: '起点=100' }].map((n, i) => (
+            <button
+              key={n.value}
+              data-testid={`fund-normalize-${n.value}`}
+              onClick={() => setNormalize(n.value)}
+              style={{
+                height: 22, padding: '0 8px',
+                background: normalize === n.value ? 'var(--fg)' : 'transparent',
+                color: normalize === n.value ? 'var(--bg)' : 'var(--fg-2)',
+                border: 'none', borderRight: i === 0 ? '1px solid var(--border-strong)' : 'none',
+                fontFamily: 'var(--font-mono)', fontSize: 10, cursor: 'pointer',
+              }}
+            >{n.label}</button>
+          ))}
+        </div>
+
         <div style={{ flex: 1 }} />
 
         {/* AS_OF control - prominent */}
@@ -324,6 +387,7 @@ export default function FundamentalsPage() {
         }}>
           <span style={{ fontSize: 10 }}>⏱ AS_OF</span>
           <input
+            ref={asOfRef}
             type="date"
             value={asOf}
             onChange={(e) => setAsOf(e.target.value)}
@@ -354,7 +418,15 @@ export default function FundamentalsPage() {
           ) : !chartOption ? (
             <Empty label="请选择 symbol 和指标，设置 AS_OF 日期后查询" />
           ) : (
-            <EChart option={chartOption} height="100%" />
+            <EChart ref={echartRef} option={chartOption} height="100%" />
+          )}
+          {toast && (
+            <div data-testid="fund-toast" style={{
+              position: 'absolute', top: 16, left: '50%', transform: 'translateX(-50%)',
+              background: 'var(--surface)', border: '1px solid var(--border-strong)', borderRadius: 4,
+              padding: '7px 14px', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg)',
+              boxShadow: '0 6px 24px rgba(20,18,14,0.2)', zIndex: 30,
+            }}>{toast}</div>
           )}
         </div>
 

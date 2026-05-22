@@ -7,6 +7,7 @@ exercises auth, RBAC, the data routes, charts, the migration dry-run, and the
 """
 from __future__ import annotations
 
+import datetime as dt
 import os
 import tempfile
 
@@ -136,6 +137,31 @@ def test_kline_and_marks(client, admin):
     marks = client.get("/api/v1/data/charts/kline/marks", headers=admin,
                        params={"symbol": "600519.SH"}).json()
     assert "corporate_actions" in marks and "batch_revisions" in marks
+
+
+def test_kline_with_before_cursor(client, admin):
+    # full window first, then a `before` cursor must only return earlier candles
+    full = client.get("/api/v1/data/charts/kline", headers=admin,
+                      params={"symbol": "600519.SH", "frequency": "1d"}).json()
+    assert full["candles"]
+    mid = full["candles"][len(full["candles"]) // 2]["timestamp"]
+    cutoff = dt.datetime.utcfromtimestamp(mid / 1000).date()
+    r = client.get("/api/v1/data/charts/kline", headers=admin, params={
+        "symbol": "600519.SH", "frequency": "1d",
+        "before": cutoff.isoformat(), "count": 20,
+    }).json()
+    cutoff_ms = int((dt.datetime(cutoff.year, cutoff.month, cutoff.day)
+                     - dt.datetime(1970, 1, 1)).total_seconds() * 1000)
+    assert r["candles"]
+    assert all(c["timestamp"] < cutoff_ms for c in r["candles"])
+    assert len(r["candles"]) <= 20
+
+
+def test_kline_view_all(client, admin):
+    r = client.get("/api/v1/data/charts/kline", headers=admin, params={
+        "symbol": "600519.SH", "frequency": "1d", "view": "all",
+    }).json()
+    assert r["candles"]  # includes rows from non-current batches
 
 
 def test_fundamentals_chart(client, admin):
