@@ -1,10 +1,12 @@
 // Axios client + typed endpoint helpers. The whole app talks to the backend
 // through `endpoints`; that keeps URLs/params in one place.
 import axios from 'axios';
+import { logger, newTraceId, noteTrace } from './logger';
 
 const TOKEN_KEY = 'zjq_token';
 const REFRESH_KEY = 'zjq_refresh';
 const USER_KEY = 'zjq_user';
+const SLOW_MS = 2000;
 
 export const tokenStore = {
   get: () => localStorage.getItem(TOKEN_KEY),
@@ -22,23 +24,48 @@ export const api = axios.create({ baseURL: '/api/v1' });
 
 api.interceptors.request.use((cfg) => {
   const t = tokenStore.get();
-  if (t) {
-    cfg.headers = cfg.headers || {};
-    cfg.headers.Authorization = `Bearer ${t}`;
-  }
+  cfg.headers = cfg.headers || {};
+  if (t) cfg.headers.Authorization = `Bearer ${t}`;
+  // Generate a trace_id per request and propagate it via X-Trace-Id so the
+  // backend + data layer stamp the same id (doc §3.2 / §6.2).
+  const traceId = newTraceId();
+  cfg.headers['X-Trace-Id'] = traceId;
+  cfg.metadata = { traceId, startedAt: performance.now() };
+  noteTrace(traceId);
   return cfg;
 });
 
 api.interceptors.response.use(
-  (r) => r,
+  (r) => {
+    const ms = performance.now() - (r.config.metadata?.startedAt || 0);
+    const traceId = r.headers?.['x-trace-id'] || r.config.metadata?.traceId;
+    noteTrace(traceId);
+    if (ms > SLOW_MS) {
+      logger.apiSlow({ method: r.config.method, url: r.config.url, ms: Math.round(ms) }, traceId);
+    }
+    return r;
+  },
   (err) => {
+    const traceId = err.response?.headers?.['x-trace-id'] || err.config?.metadata?.traceId;
+    noteTrace(traceId);
     const code = err?.response?.data?.error?.code;
     if (err?.response?.status === 401 && code === 'UNAUTHENTICATED') {
       tokenStore.clear();
       if (!location.pathname.startsWith('/login')) location.assign('/login');
     }
-    // normalise error so callers can read err.apiError
+    // normalise error so callers can read err.apiError / err.traceId
     err.apiError = err?.response?.data?.error || { code: 'NETWORK', message: err.message };
+    err.traceId = traceId;
+    // report to the log centre — but not the failures of the log endpoint itself
+    if (!String(err.config?.url || '').startsWith('/logs')) {
+      logger.apiFailure({
+        method: err.config?.method,
+        url: err.config?.url,
+        status: err.response?.status,
+        error_code: err.apiError.code,
+        message: err.apiError.message,
+      }, err instanceof Error ? err : undefined, traceId);
+    }
     return Promise.reject(err);
   },
 );
@@ -129,4 +156,22 @@ export const endpoints = {
 
   // audit
   audit: (params) => get('/data/audit', params),
+
+  // logs (admin) — 全链路日志方案 v2.0 §6.5
+  logs: (params) => get('/logs', params),
+  logsSummary: () => get('/logs/summary'),
+  logsTrace: (traceId) => get(`/logs/trace/${encodeURIComponent(traceId)}`),
+  logsExport: (params) => api.get('/logs/export', { params, responseType: 'blob' }).then((r) => r.data),
+  archiveLogs: (retention_days) => api.post('/logs/archive', null, { params: { retention_days } }).then((r) => r.data),
 };
+
+// SSE stream URL — EventSource can't set headers, so the token rides as a query
+// param (the backend validates it as admin). doc §7.4.
+export function logsStreamUrl({ level, source } = {}) {
+  const qs = new URLSearchParams();
+  const t = tokenStore.get();
+  if (t) qs.set('token', t);
+  if (level) qs.set('level', level);
+  if (source) qs.set('source', source);
+  return `/api/v1/logs/stream?${qs.toString()}`;
+}

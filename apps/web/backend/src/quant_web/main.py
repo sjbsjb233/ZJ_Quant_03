@@ -15,6 +15,9 @@ from .data import router as data_router
 from .db.base import SessionLocal, init_db
 from .errors import install_error_handlers
 from .jobs.runner import JobRunner
+from .logging import app_logger, configure as configure_logging, init_store, install_sinks
+from .logging.routes import router as logs_router
+from .middleware import RequestLogMiddleware, TraceIdMiddleware
 from .seed_users import ensure_seed_users
 from .stubs import factors_router, monitor_router, strategies_router
 
@@ -39,12 +42,18 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=["X-Trace-Id"],
     )
+    # Trace must wrap request logging so every log line carries the trace_id
+    # (doc §5.2). add_middleware stacks outermost-last.
+    app.add_middleware(RequestLogMiddleware)
+    app.add_middleware(TraceIdMiddleware)
     install_error_handlers(app)
 
     # --- routers ------------------------------------------------------------
     app.include_router(auth_router, prefix=API)
     app.include_router(data_router, prefix=f"{API}/data")
+    app.include_router(logs_router, prefix=API)
     app.include_router(factors_router, prefix=API)
     app.include_router(strategies_router, prefix=API)
     app.include_router(monitor_router, prefix=API)
@@ -55,11 +64,24 @@ def create_app() -> FastAPI:
 
     # --- bootstrap app state (ready before the first request, no lifespan dance) ---
     init_db()
+    # logging platform: configure threshold, start the async store, wire the
+    # data-layer sink (全链路日志方案 v2.0 §5/§4.4). Must follow init_db (app_log table).
+    configure_logging(settings.log_level)
+    store = init_store(SessionLocal, settings)
+    app.state.app_log_store = store
+    install_sinks(settings)
+    app_logger.info("app.startup", quant_data_root=settings.quant_data_root,
+                    log_to_db=settings.log_to_db, log_to_file=store.file_ok)
     if settings.seed_default_users:
         ensure_seed_users(SessionLocal)
     app.state.job_runner = JobRunner(
         SessionLocal, settings.quant_data_root, workers=settings.job_workers
     )
+
+    @app.on_event("shutdown")
+    def _flush_logs() -> None:  # drain the queue + close files (doc §7.2)
+        app_logger.info("app.shutdown")
+        store.stop()
 
     # --- serve built SPA (production single-container) ----------------------
     dist = settings.frontend_dist

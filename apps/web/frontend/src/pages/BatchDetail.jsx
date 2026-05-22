@@ -5,6 +5,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { TerminalShell, TPanel } from '../components/shell';
 import { StatusChip, StatusGlyph, CopyableId, Loading, ErrorState, Empty, Modal, DangerConfirm } from '../components/ui';
 import { endpoints } from '../lib/api';
+import { logger } from '../lib/logger';
 import { useAuth } from '../lib/auth';
 import { fmtCompact, fmtDuration, fmtN, absTime, relTime, statusMeta, toneColor } from '../lib/format';
 
@@ -53,6 +54,7 @@ export default function BatchDetail() {
 
   const invalidateMut = useMutation({
     mutationFn: () => endpoints.invalidateBatch(batchId, invalidateReason),
+    onMutate: () => logger.userAction('ui.batch.invalidate.submit', { batch_id: batchId }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['batch', batchId] });
       qc.invalidateQueries({ queryKey: ['batches'] });
@@ -63,6 +65,8 @@ export default function BatchDetail() {
 
   const supersedeMut = useMutation({
     mutationFn: () => endpoints.supersede(batchId, newBatchId),
+    onMutate: () => logger.userAction('ui.batch.supersede.submit',
+      { old_batch_id: batchId, new_batch_id: newBatchId }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['batch', batchId] });
       qc.invalidateQueries({ queryKey: ['batches'] });

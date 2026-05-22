@@ -8,13 +8,17 @@ extras_as_columns compat layer keeps old code working without changes (doc §7.3
 from __future__ import annotations
 
 import os
+import time
 
 import duckdb
 import pyarrow.parquet as pq
 
 from . import ids, storage
+from .logging import get_logger
 from .metadata import batches, field_registry
 from .schemas import ARROW_TYPE_BY_NAME, get_spec
+
+_log = get_logger("quant_data.migration")
 
 
 def dry_run_promote(table: str, field: str, dtype: str | None = None,
@@ -92,6 +96,9 @@ def promote_field_to_core(table: str, field: str, dtype: str | None = None,
     files = storage.list_data_files(spec, root=root)
     params = {"operation": "promote_to_core", "field": field, "dtype": dtype}
     bid = batches.register_batch("internal:schema-migration", table, parameters=params, root=root)
+    _log.info("migration.promote.start", table=table, field=field, dtype=dtype,
+              batch_id=bid, total_files=len(files))
+    start = time.perf_counter()
 
     try:
         con = duckdb.connect()
@@ -127,6 +134,8 @@ def promote_field_to_core(table: str, field: str, dtype: str | None = None,
             os.replace(tmp, f)
             if progress_cb is not None:
                 progress_cb(i + 1, len(files))
+            _log.debug("migration.promote.file_rewritten", file_index=i + 1,
+                       total_files=len(files))
         con.close()
 
         if reg is None:
@@ -138,7 +147,11 @@ def promote_field_to_core(table: str, field: str, dtype: str | None = None,
             partition_keys=None, root=root,
         )
         batches.update_batch(bid, notes=f"promoted {field} -> core ({len(files)} files)", root=root)
+        _log.info("migration.promote.done", table=table, field=field,
+                  files_rewritten=len(files), batch_id=bid, row_count=total,
+                  duration_ms=int((time.perf_counter() - start) * 1000))
         return {"field": field, "dtype": dtype, "files_rewritten": len(files), "batch_id": bid}
     except Exception as exc:  # noqa: BLE001
+        _log.exception("migration.promote.failed", table=table, field=field, batch_id=bid)
         batches.finalize_batch(bid, "failed", error_message=str(exc), root=root)
         raise

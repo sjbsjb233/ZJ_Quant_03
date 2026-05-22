@@ -10,10 +10,15 @@ from concurrent.futures import ThreadPoolExecutor
 from sqlalchemy.orm import sessionmaker
 
 from ..db.models import Job
+from ..logging import app_logger
 
 
 class JobCancelled(Exception):
     pass
+
+
+def _ms_since(start: dt.datetime) -> int:
+    return int((dt.datetime.utcnow() - start).total_seconds() * 1000)
 
 
 class JobContext:
@@ -69,7 +74,9 @@ class JobRunner:
                        initiated_by=initiated_by, params=params or {}, log=[],
                        progress_unit="items"))
             db.commit()
-        self._pool.submit(self._run, job_id, fn, params or {})
+        app_logger.info(f"job.{job_type}.submit", job_id=job_id, job_type=job_type,
+                        initiated_by=initiated_by, params=params or {})
+        self._pool.submit(self._run, job_id, job_type, fn, params or {})
         return job_id
 
     def cancel(self, job_id: str) -> bool:
@@ -81,8 +88,10 @@ class JobRunner:
         return True
 
     # -- internals -----------------------------------------------------------
-    def _run(self, job_id: str, fn: Callable, params: dict) -> None:
+    def _run(self, job_id: str, job_type: str, fn: Callable, params: dict) -> None:
         self._update(job_id, status="running", started_at=dt.datetime.utcnow())
+        app_logger.info(f"job.{job_type}.start", job_id=job_id, job_type=job_type)
+        started = dt.datetime.utcnow()
         ctx = JobContext(self, job_id, self._root)
         try:
             result = fn(ctx, **params)
@@ -90,11 +99,17 @@ class JobRunner:
                 raise JobCancelled(job_id)
             self._update(job_id, status="success", result=result or {},
                          finished_at=dt.datetime.utcnow())
+            app_logger.info(f"job.{job_type}.done", job_id=job_id, job_type=job_type,
+                            duration_ms=_ms_since(started))
         except JobCancelled:
             self._update(job_id, status="cancelled", finished_at=dt.datetime.utcnow())
+            app_logger.warn(f"job.{job_type}.cancelled", job_id=job_id, job_type=job_type,
+                            duration_ms=_ms_since(started))
         except Exception as exc:  # noqa: BLE001
             self._update(job_id, status="failed", error=str(exc),
                          finished_at=dt.datetime.utcnow())
+            app_logger.error(f"job.{job_type}.failed", exc=exc, job_id=job_id,
+                             job_type=job_type, duration_ms=_ms_since(started))
         finally:
             self._clear_cancel(job_id)
 

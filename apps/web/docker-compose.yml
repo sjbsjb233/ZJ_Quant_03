@@ -14,8 +14,16 @@ services:
       ALLOWED_ORIGINS: http://localhost:8000
       JWT_SECRET: ${JWT_SECRET:-change-me-in-prod}
       SEED_DEFAULT_USERS: "true"
+      # === logging platform (全链路日志方案 v2.0 §15.2) — reuses the /data volume ===
+      LOG_LEVEL: INFO
+      LOG_TO_DB: "true"
+      LOG_TO_FILE: "true"
+      LOG_FILE_DIR: /data/logs
+      LOG_FILE_MAX_MB: "100"
+      LOG_FILE_BACKUP_COUNT: "10"
+      LOG_DB_RETENTION_DAYS: "30"
     volumes:
-      - quant_data:/data
+      - quant_data:/data         # single volume carries data + audit DB + app_log + /data/logs
 
 volumes:
   quant_data:

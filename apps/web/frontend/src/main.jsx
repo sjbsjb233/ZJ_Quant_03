@@ -6,7 +6,12 @@ import './tokens.css';
 import { queryClient } from './lib/query';
 import { AuthProvider } from './lib/auth';
 import { ThemeProvider } from './lib/theme';
+import { installGlobalErrorHandlers } from './lib/logger';
+import ErrorBoundary from './components/ErrorBoundary';
 import App from './App';
+
+// window.onerror / unhandledrejection / periodic flush (doc §6.1)
+installGlobalErrorHandlers();
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
@@ -14,7 +19,9 @@ ReactDOM.createRoot(document.getElementById('root')).render(
       <ThemeProvider>
         <BrowserRouter>
           <AuthProvider>
-            <App />
+            <ErrorBoundary>
+              <App />
+            </ErrorBoundary>
           </AuthProvider>
         </BrowserRouter>
       </ThemeProvider>

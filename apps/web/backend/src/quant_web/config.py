@@ -36,9 +36,30 @@ class Settings(BaseSettings):
     # accounts; enable explicitly for local/demo (see .env.example / docker-compose).
     seed_default_users: bool = False
 
+    # --- logging platform (全链路日志方案 v2.0 §5.7) -----------------------
+    log_level: str = "INFO"                  # global emission threshold
+    log_to_db: bool = True                   # write the app_log table
+    log_to_file: bool = True                 # write JSON Lines files
+    log_file_dir: str = "/data/logs"         # container default; dev overrides to ./logs
+    log_file_max_mb: int = 100               # single-file rotate threshold
+    log_file_backup_count: int = 10
+    log_db_retention_days: int = 30          # DB window before archive/delete
+    log_slow_request_ms: int = 2000
+    log_slow_query_ms: int = 2000
+    log_sensitive_keys: str = "password,token,authorization,secret,api_key"
+    client_log_max_batch: int = 100          # frontend records per POST
+    client_log_rate_limit_per_min: int = 600  # per-user sliding window
+    log_alert_webhook: str = ""              # opt-in ERROR+ webhook (钉钉/企业微信 robot)
+    log_alert_min_level: str = "ERROR"
+    log_alert_rate_per_min: int = 20
+
     @property
     def origins(self) -> list[str]:
         return [o.strip() for o in self.allowed_origins.split(",") if o.strip()]
+
+    @property
+    def sensitive_keys(self) -> list[str]:
+        return [k.strip().lower() for k in self.log_sensitive_keys.split(",") if k.strip()]
 
 
 @lru_cache

@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from ..db.models import AuditLog
 from ..events import bus
+from ..logging import app_logger
 
 
 @dataclass
@@ -51,6 +52,13 @@ class Auditor:
         self.db.add(entry)
         self.db.commit()
         self.db.refresh(entry)
+        # Mirror the business action onto the technical timeline (doc §5.4) so a
+        # trace search shows audit + app logs interleaved on one timeline.
+        app_logger.info(
+            f"audit.{action}", actor=self.actor, audit_id=entry.id,
+            target_type=target_type, target_id=target_id, status=status,
+            message=error if status == "failed" else None,
+        )
         if event:
             bus.publish(event, {"actor": self.actor, "target_id": target_id, **(event_payload or {})})
         return entry

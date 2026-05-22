@@ -1,9 +1,9 @@
-"""ORM models for the audit/app DB: users, audit log, jobs, chart templates."""
+"""ORM models for the audit/app DB: users, audit log, jobs, chart templates, app log."""
 from __future__ import annotations
 
 import datetime as dt
 
-from sqlalchemy import JSON, Boolean, DateTime, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base
@@ -70,3 +70,44 @@ class ChartTemplate(Base):
     chart_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
     config: Mapped[dict] = mapped_column(JSON)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_utcnow)
+
+
+class AppLog(Base):
+    """Structured technical log ledger (全链路日志方案 v2.0 §5.1 / appendix A).
+
+    Lives in the same SQLite file as ``audit_log`` (same volume) but is a
+    separate table: ``audit_log`` records "who did what business action" and is
+    永久保留; ``app_log`` records "what technical event happened" and rolls off
+    after ``log_db_retention_days``. The two are joined by ``trace_id``.
+    """
+
+    __tablename__ = "app_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ts: Mapped[dt.datetime] = mapped_column(DateTime, default=_utcnow, index=True)
+    level: Mapped[str] = mapped_column(String(8), index=True)          # DEBUG..CRITICAL
+    logger: Mapped[str] = mapped_column(String(64), index=True)
+    event: Mapped[str] = mapped_column(String(128), index=True)
+    source: Mapped[str] = mapped_column(String(16), index=True)        # backend|quant_data|frontend
+    trace_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    session_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)  # frontend
+    actor: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    route: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    method: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    extra: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    exc_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    exc_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    stack: Mapped[str | None] = mapped_column(Text, nullable=True)
+    host: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    # composite indexes for the high-frequency query shapes (doc §5.1). SQLite
+    # walks an ascending index backwards for ORDER BY ts DESC, so ascending is fine.
+    __table_args__ = (
+        Index("idx_app_log_ts_level", "ts", "level"),
+        Index("idx_app_log_source_ts", "source", "ts"),
+        Index("idx_app_log_logger_ts", "logger", "ts"),
+    )

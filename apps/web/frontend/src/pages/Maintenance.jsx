@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { TerminalShell, TPanel, KpiStrip } from '../components/shell';
 import { Loading, Empty, ErrorState, DangerConfirm, StatusChip, RelTime } from '../components/ui';
 import { endpoints } from '../lib/api';
+import { logger } from '../lib/logger';
 import { fmtBytes, fmtN, fmtDuration, relTime, absTime, statusMeta, toneColor } from '../lib/format';
 import { useAuth } from '../lib/auth';
 
@@ -97,6 +98,8 @@ export default function Maintenance() {
       older_than_days: vacuumDays,
       confirm: 'VACUUM',
     }),
+    onMutate: () => logger.userAction('ui.maintenance.vacuum.execute',
+      { tables: vacuumTables, older_than_days: vacuumDays }),
     onSuccess: (data) => {
       setVacuumJobId(data.job_id);
       setShowVacuumConfirm(false);
@@ -109,6 +112,7 @@ export default function Maintenance() {
       ...(compactTables.length && { tables: compactTables }),
       confirm: 'COMPACT',
     }),
+    onMutate: () => logger.userAction('ui.maintenance.compact.execute', { tables: compactTables }),
     onSuccess: (data) => {
       setCompactJobId(data.job_id);
       setShowCompactConfirm(false);

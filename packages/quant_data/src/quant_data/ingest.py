@@ -15,11 +15,13 @@ import warnings
 from dataclasses import dataclass, field
 
 from . import ids, quality, storage
+from .logging import get_logger, timed
 from .metadata import batches, field_registry, sources
 from .metadata._common import metadata_lock
 from .schemas import REFERENCE_TABLES, get_spec
 
 _PASSTHROUGH_META = ("_batch_id", "_source", "_ingested_at")
+_log = get_logger("quant_data.ingest")
 
 
 @dataclass
@@ -121,11 +123,16 @@ def ingest(
 
     bid = batches.register_batch(source, target_table, parameters=parameters, notes=notes,
                                  batch_id=batch_id, root=root)
+    _log.info("ingest.batch.register", batch_id=bid, table=target_table, source=source,
+              row_count=len(records))
     try:
         if apply_mapping:
             records = apply_field_mapping(records, source, target_table, root=root)
+            _log.debug("ingest.field_mapping.applied", source=source, table=target_table)
 
         processed = _split_core_extras(records, set(spec.business_names()))
+        _log.debug("ingest.split_extras.done", table=target_table,
+                   core_cols=len(spec.business_names()))
         now = ids.utc_now()
         for row in processed:
             row["_batch_id"] = bid
@@ -139,9 +146,22 @@ def ingest(
             issues = quality.run_quality_checks(spec, tbl)
             for iss in issues:
                 warnings.warn(str(iss), stacklevel=2)
+            by_level: dict[str, int] = {}
+            for iss in issues:
+                by_level[iss.level] = by_level.get(iss.level, 0) + 1
+            _log.info("ingest.quality.checked", batch_id=bid, table=target_table,
+                      issue_count=len(issues), issue_count_by_level=by_level or None)
 
-        partitions = storage.write_append(spec, tbl, bid, root=root)
-        discover_new_extras(processed, target_table, bid, root=root)
+        _log.info("ingest.write.start", batch_id=bid, target_table=target_table,
+                  row_count=tbl.num_rows)
+        with timed(_log, "ingest.write", batch_id=bid, table=target_table,
+                   row_count=tbl.num_rows) as _m:
+            partitions = storage.write_append(spec, tbl, bid, root=root)
+            _m["partitions"] = partitions
+        newly = discover_new_extras(processed, target_table, bid, root=root)
+        if newly:
+            _log.info("ingest.extras.auto_register", table=target_table,
+                      new_fields=list(newly))
 
         if issues:  # persist findings so the Web platform can query them (doc §7.1)
             try:
@@ -159,8 +179,11 @@ def ingest(
                                partition_keys=partitions, root=root)
         if note != notes:
             batches.update_batch(bid, notes=note, root=root)
+        _log.info("ingest.batch.finalize", batch_id=bid, status="success",
+                  row_count=tbl.num_rows, partitions=partitions)
         return IngestResult(bid, target_table, tbl.num_rows, partitions, issues)
     except Exception as exc:  # noqa: BLE001 - record failure then re-raise
+        _log.exception("ingest.write.failed", batch_id=bid, table=target_table)
         batches.finalize_batch(bid, "failed", error_message=str(exc), root=root)
         raise
 

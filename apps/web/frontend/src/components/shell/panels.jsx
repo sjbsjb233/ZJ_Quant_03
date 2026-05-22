@@ -2,9 +2,9 @@
 import React from 'react';
 import { toneColor } from '../../lib/format';
 
-export function TPanel({ title, meta, action, children, noBorderRight, noBorderBottom, last, style, headerExtra, padding }) {
+export function TPanel({ title, meta, action, children, noBorderRight, noBorderBottom, last, style, headerExtra, padding, testId }) {
   return (
-    <section style={{
+    <section data-testid={testId} style={{
       borderRight: last || noBorderRight ? 'none' : '1px solid var(--border)',
       borderBottom: noBorderBottom ? 'none' : '1px solid var(--border)',
       display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0,
@@ -48,11 +48,12 @@ export function FilterBar({ children, applied = [], onClear }) {
   );
 }
 
-export function FInput({ label, placeholder, value, onChange, width = 160, onEnter }) {
+export function FInput({ label, placeholder, value, onChange, width = 160, onEnter, testId }) {
   return (
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
       {label && <span style={{ color: 'var(--fg-3)', fontSize: 10 }}>{label}:</span>}
       <input
+        data-testid={testId}
         placeholder={placeholder}
         value={value ?? ''}
         onChange={(e) => onChange && onChange(e.target.value)}
@@ -67,11 +68,12 @@ export function FInput({ label, placeholder, value, onChange, width = 160, onEnt
   );
 }
 
-export function FSelect({ label, value, options = [], onChange, width = 120 }) {
+export function FSelect({ label, value, options = [], onChange, width = 120, testId }) {
   return (
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
       {label && <span style={{ color: 'var(--fg-3)', fontSize: 10 }}>{label}:</span>}
       <select
+        data-testid={testId}
         value={value}
         onChange={(e) => onChange && onChange(e.target.value)}
         style={{

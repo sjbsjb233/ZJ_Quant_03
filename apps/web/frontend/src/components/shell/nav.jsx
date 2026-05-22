@@ -18,6 +18,7 @@ export const DATA_NAV = [
   { id: 'quality', label: '数据质量', to: '/data/quality', warn: true },
   { id: 'maintenance', label: '维护操作', to: '/data/maintenance' },
   { id: 'audit', label: '审计日志', to: '/data/audit' },
+  { id: 'logs', label: '日志中心', to: '/data/logs', warn: true },
 ];
 
 export const VIZ_NAV = [
@@ -38,6 +39,7 @@ export function NavGlyph({ id }) {
     quality: <svg {...p}><path d="M8 1l6 3v5c0 3.5-3 6-6 6s-6-2.5-6-6V4z" /><path d="M5.5 8l2 2 3-3.5" /></svg>,
     maintenance: <svg {...p}><path d="M3 13l5-5M7 4l5 5M5 3l3 3M11 9l3 3" /></svg>,
     audit: <svg {...p}><path d="M3 2h7l3 3v9H3z" /><path d="M5 6h6M5 9h6M5 12h4" /></svg>,
+    logs: <svg {...p}><path d="M2 3h12M2 6h12M2 9h8M2 12h5" /><circle cx="13" cy="12" r="2" /></svg>,
     center: <svg {...p}><circle cx="8" cy="8" r="6" /><path d="M8 2v12M2 8h12" /></svg>,
     kline: <svg {...p}><path d="M3 12V7M3 5V3M8 13V9M8 7V4M13 11V6M13 4V2" /></svg>,
     fundamentals: <svg {...p}><path d="M2 12L6 8L9 10L14 4" /><circle cx="6" cy="8" r="1" /><circle cx="9" cy="10" r="1" /><circle cx="14" cy="4" r="1" /></svg>,

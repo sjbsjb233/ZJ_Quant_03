@@ -15,6 +15,7 @@ from .config import Settings, get_settings
 from .db.base import get_db
 from .db.models import User
 from .errors import ApiError
+from .logging.context import trace_id_var
 
 bearer = HTTPBearer(auto_error=False)
 
@@ -76,5 +77,8 @@ def get_auditor(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> Auditor:
+    # Reuse the request's trace_id (set by TraceIdMiddleware) so the audit row,
+    # the technical app_log line, and the data-layer logs all share one id.
+    trace_id = trace_id_var.get() or ("t_" + uuid.uuid4().hex[:16])
     return Auditor(db=db, actor=user.username, ip=request.client.host if request.client else None,
-                   trace_id=uuid.uuid4().hex)
+                   trace_id=trace_id)

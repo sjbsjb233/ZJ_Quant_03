@@ -299,6 +299,13 @@ export default function Audit() {
                       }}
                     >跳到对象 →</button>
                   )}
+                  {selected.trace_id && (
+                    <button
+                      className="btn ghost sm"
+                      style={{ fontSize: 10 }}
+                      onClick={() => window.location.assign(`/data/logs/trace/${selected.trace_id}`)}
+                    >关联技术日志 →</button>
+                  )}
                 </div>
               </div>
             )}
