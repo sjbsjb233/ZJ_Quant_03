@@ -58,11 +58,12 @@ def locked(fn):
 
     @functools.wraps(fn)
     def wrap(*args, **kwargs):
-        start = time.perf_counter()
         with metadata_lock(kwargs.get("root")):
+            # measure inside the lock so lock_held_ms is hold time, not wait time
+            start = time.perf_counter()
             result = fn(*args, **kwargs)
-        _log.debug(f"metadata.{ledger}.write", op=fn.__name__,
-                   lock_held_ms=int((time.perf_counter() - start) * 1000))
+            held_ms = int((time.perf_counter() - start) * 1000)
+        _log.debug(f"metadata.{ledger}.write", op=fn.__name__, lock_held_ms=held_ms)
         return result
 
     return wrap

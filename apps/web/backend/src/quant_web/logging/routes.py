@@ -145,7 +145,7 @@ def logs_summary(db: Session = Depends(get_db), _: User = Depends(require_admin)
         "slow": _count(AppLog.event == "http.request.slow"),
         "5xx": _count(AppLog.status_code >= 500),
         "frontend_crash": _count(AppLog.source == "frontend",
-                                 AppLog.level.in_(_ERROR_LEVELS)),
+                                 AppLog.event.in_(_FE_CRASH_EVENTS)),
     }
 
     # 24h hourly histogram, bucketed in SQL (SQLite strftime)
@@ -350,11 +350,23 @@ def _rate_limited(actor: str, limit_per_min: int) -> bool:
 
 
 def _truncate(value, max_bytes: int):
+    """Truncate, preserving the original type when small enough (for JSON `extra`)."""
     if value is None:
         return None
     s = value if isinstance(value, str) else json.dumps(value, default=str, ensure_ascii=False)
     if len(s.encode("utf-8")) <= max_bytes:
         return value
+    return s[:max_bytes] + "…(truncated)"
+
+
+def _truncate_text(value, max_bytes: int):
+    """Coerce to str then truncate -- for the Text columns (message/exc_message/
+    stack), so a client sending a non-string can't break the DB binding."""
+    if value is None:
+        return None
+    s = value if isinstance(value, str) else json.dumps(value, default=str, ensure_ascii=False)
+    if len(s.encode("utf-8")) <= max_bytes:
+        return s
     return s[:max_bytes] + "…(truncated)"
 
 
@@ -414,11 +426,11 @@ def ingest_client(body: ClientLogBatch, request: Request, token: str | None = No
             "session_id": (rec.get("session_id") or None) and str(rec["session_id"])[:64],
             "actor": user.username,                     # never trust client-supplied actor
             "route": (rec.get("route") or None) and str(rec["route"])[:255],
-            "message": _truncate(rec.get("message"), _MAX_EXTRA_BYTES),
+            "message": _truncate_text(rec.get("message"), _MAX_EXTRA_BYTES),
             "extra": _truncate(extra, _MAX_EXTRA_BYTES),
             "exc_type": (rec.get("exc_type") or None) and str(rec["exc_type"])[:128],
-            "exc_message": _truncate(rec.get("exc_message"), _MAX_EXTRA_BYTES),
-            "stack": _truncate(rec.get("stack"), _MAX_STACK_BYTES),
+            "exc_message": _truncate_text(rec.get("exc_message"), _MAX_EXTRA_BYTES),
+            "stack": _truncate_text(rec.get("stack"), _MAX_STACK_BYTES),
             "duration_ms": rec.get("duration_ms") if isinstance(rec.get("duration_ms"), int) else None,
         }
         if store is not None:

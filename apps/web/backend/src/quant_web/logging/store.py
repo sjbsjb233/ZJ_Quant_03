@@ -328,10 +328,19 @@ class AppLogStore:
                         for rec in recs:
                             gz.write(json.dumps(rec, default=str, ensure_ascii=False) + "\n")
                             written += 1
-            if written or not self.file_ok:
+            # Only delete what was actually archived (or when there was nothing to
+            # archive). If rows exist but the archive sink failed, KEEP the rows --
+            # never delete un-archived logs (avoids silent data loss).
+            deleted = False
+            if written or not by_day:
                 db.query(AppLog).filter(AppLog.ts < cutoff).delete(synchronize_session=False)
                 db.commit()
-        return {"archived": written, "cutoff": cutoff.isoformat(), "days": len(by_day)}
+                deleted = True
+        result = {"archived": written, "cutoff": cutoff.isoformat(), "days": len(by_day),
+                  "deleted": deleted}
+        if by_day and not written:
+            result["note"] = "archive sink unavailable; rows kept (not deleted)"
+        return result
 
 
 def _coerce_ts(ts) -> dt.datetime:

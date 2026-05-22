@@ -285,8 +285,13 @@ def timed(logger: QDLogger, event: str, level: str = "INFO", **extra: Any) -> It
     """
     start = time.perf_counter()
     bag: dict = dict(extra)
+    ok = False
     try:
         yield bag
+        ok = True
     finally:
-        duration_ms = int((time.perf_counter() - start) * 1000)
-        logger._log(level, f"{event}.done", duration_ms=duration_ms, extra=bag or None)
+        # only emit `{event}.done` on the success path -- a raising block must not
+        # leave a misleading ".done" in the trace; the caller logs the failure.
+        if ok:
+            duration_ms = int((time.perf_counter() - start) * 1000)
+            logger._log(level, f"{event}.done", duration_ms=duration_ms, extra=bag or None)

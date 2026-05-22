@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import threading
 from dataclasses import dataclass, field
 
 _LEVELS = {"DEBUG": 10, "INFO": 20, "WARN": 30, "ERROR": 40, "CRITICAL": 50}
@@ -38,15 +39,17 @@ class SSEHub:
     def __init__(self) -> None:
         self._clients: dict[int, _Client] = {}
         self._ids = itertools.count(1)
+        # register/unregister run on the loop thread; broadcast runs on request /
+        # background threads -- guard the dict so concurrent access can't race.
+        self._lock = threading.Lock()
 
     @property
     def client_count(self) -> int:
-        return len(self._clients)
+        with self._lock:
+            return len(self._clients)
 
     def register(self, level: str | None = None, sources: set[str] | None = None) -> _Client | None:
         """Register the *current* coroutine's queue. Returns None if at capacity."""
-        if len(self._clients) >= _MAX_CLIENTS:
-            return None
         client = _Client(
             queue=asyncio.Queue(maxsize=_CLIENT_QUEUE_MAX),
             loop=asyncio.get_running_loop(),
@@ -54,22 +57,33 @@ class SSEHub:
             sources=sources,
             cid=next(self._ids),
         )
-        self._clients[client.cid] = client
+        with self._lock:
+            if len(self._clients) >= _MAX_CLIENTS:
+                return None
+            self._clients[client.cid] = client
         return client
 
     def unregister(self, client: _Client | None) -> None:
         if client is not None:
-            self._clients.pop(client.cid, None)
+            with self._lock:
+                self._clients.pop(client.cid, None)
 
     def broadcast(self, record: dict) -> None:
         """Fan a record out to every interested client (safe from any thread)."""
-        for client in list(self._clients.values()):
+        with self._lock:
+            clients = list(self._clients.values())   # snapshot under lock
+        dead: list[int] = []
+        for client in clients:
             if not client.wants(record):
                 continue
             try:
                 client.loop.call_soon_threadsafe(self._offer, client, record)
             except RuntimeError:  # pragma: no cover - loop already closed
-                self._clients.pop(client.cid, None)
+                dead.append(client.cid)
+        if dead:
+            with self._lock:
+                for cid in dead:
+                    self._clients.pop(cid, None)
 
     @staticmethod
     def _offer(client: _Client, record: dict) -> None:
