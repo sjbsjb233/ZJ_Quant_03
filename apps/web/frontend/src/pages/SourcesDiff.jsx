@@ -84,7 +84,7 @@ export default function SourcesDiff() {
       title="跨源对比"
       subtitle="cross-source diff · 选择两个源比较指定表的数据差异"
       actions={
-        <button className="btn sm" onClick={handleRun} disabled={!canRun || diffMut.isPending}
+        <button className="btn sm" data-testid="diff-run-btn" onClick={handleRun} disabled={!canRun || diffMut.isPending}
           style={{ background: canRun ? 'var(--fg)' : undefined, color: canRun ? 'var(--bg)' : undefined, borderColor: canRun ? 'var(--fg)' : undefined }}>
           {diffMut.isPending ? '运行中…' : '运行对比'}
         </button>

@@ -138,6 +138,7 @@ export default function BatchDetail() {
           >关联替换</button>
           <button
             className="btn ghost sm"
+            data-testid="batch-invalidate-btn"
             style={{ color: 'var(--err)', borderColor: canInvalidate ? 'var(--err)' : undefined }}
             disabled={!canInvalidate}
             onClick={() => setShowInvalidate(true)}
@@ -186,7 +187,7 @@ export default function BatchDetail() {
             countTone = qualityErr ? 'err' : qualityWarn ? 'warn' : null;
           }
           return (
-            <button key={t.id} onClick={() => setTab(t.id)} style={{
+            <button key={t.id} data-testid={`batch-tab-${t.id}`} onClick={() => setTab(t.id)} style={{
               height: 32, padding: '0 14px',
               background: tab === t.id ? 'var(--surface)' : 'transparent',
               border: 'none',

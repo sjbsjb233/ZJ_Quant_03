@@ -82,11 +82,28 @@ export function Kline({ candles, mainIndicators = ['MA'], subIndicators = ['VOL'
   }, [theme]);
 
   useEffect(() => {
+    const el = elRef.current;
     const chart = chartRef.current;
+    // mark "rendering" while we (re)apply data — E2E waits for this to flip to true
+    if (el) el.setAttribute('data-kline-ready', 'false');
     if (chart && candles) {
-      try { chart.applyNewData(candles); } catch (e) {}
+      try {
+        chart.applyNewData(candles);
+        // === E2E render-complete signal (charts.jsx Kline, doc §4-bis.4) ===
+        if (el) {
+          el.setAttribute('data-kline-ready', 'true');
+          el.setAttribute('data-kline-candle-count', String(candles.length));
+        }
+      } catch (e) { /* keep ready=false on failure */ }
     }
   }, [candles]);
 
-  return <div ref={elRef} style={{ width: '100%', height: '100%' }} />;
+  return (
+    <div
+      ref={elRef}
+      data-testid="kline-chart"
+      data-kline-ready="false"
+      style={{ width: '100%', height: '100%' }}
+    />
+  );
 }

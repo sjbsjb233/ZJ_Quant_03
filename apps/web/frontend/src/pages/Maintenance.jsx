@@ -206,6 +206,7 @@ export default function Maintenance() {
           <TPanel title="VACUUM 旧版本" meta="删除超保留期文件" noBorderRight noBorderBottom={false}
             action={
               <button className="btn ghost sm" style={{ height: 20, fontSize: 10, color: 'var(--err)' }}
+                data-testid="vacuum-execute-btn"
                 onClick={() => setShowVacuumConfirm(true)}
                 disabled={vacuumJob.data?.status === 'running'}>
                 ⚠ 立即执行
@@ -262,6 +263,7 @@ export default function Maintenance() {
           <TPanel title="COMPACT 文件" meta="合并小文件" noBorderRight last
             action={
               <button className="btn ghost sm" style={{ height: 20, fontSize: 10 }}
+                data-testid="compact-execute-btn"
                 onClick={() => setShowCompactConfirm(true)}
                 disabled={compactJob.data?.status === 'running'}>
                 立即执行
@@ -310,6 +312,7 @@ export default function Maintenance() {
           <TPanel title="SNAPSHOTS" meta={`${fmtN(snapshots.data?.total ?? 0)} total`} last
             action={
               <button className="btn sm" style={{ height: 20, fontSize: 10, background: 'var(--fg)', color: 'var(--bg)', borderColor: 'var(--fg)' }}
+                data-testid="snapshot-create-btn"
                 onClick={() => snapshotCreate.mutate()}
                 disabled={snapshotCreate.isPending}>
                 {snapshotCreate.isPending ? '创建中…' : '+ 立即创建快照'}

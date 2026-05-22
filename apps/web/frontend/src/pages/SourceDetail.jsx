@@ -92,7 +92,7 @@ export default function SourceDetail() {
         flexShrink: 0,
       }}>
         {tabs.map(t => (
-          <button key={t} onClick={() => setTab(t)} style={{
+          <button key={t} data-testid={`source-detail-tab-${t}`} onClick={() => setTab(t)} style={{
             height: 30, padding: '0 14px',
             background: tab === t ? 'var(--surface)' : 'transparent',
             border: 'none',

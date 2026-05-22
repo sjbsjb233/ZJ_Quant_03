@@ -134,7 +134,7 @@ export default function Quality() {
         display: 'flex', alignItems: 'flex-end', flexShrink: 0,
       }}>
         {TABS.map(t => (
-          <button key={t.id} onClick={() => setTab(t.id)} style={{
+          <button key={t.id} data-testid={`quality-tab-${t.id}`} onClick={() => setTab(t.id)} style={{
             height: 30, padding: '0 14px',
             background: tab === t.id ? 'var(--surface)' : 'transparent',
             border: 'none',
