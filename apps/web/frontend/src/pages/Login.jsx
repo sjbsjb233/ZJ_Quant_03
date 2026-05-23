@@ -3,6 +3,7 @@ import React, { useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/auth';
 import { logger } from '../lib/logger';
+import { ZjLogo } from '../components/ui';
 
 export default function Login() {
   const { login, user } = useAuth();
@@ -44,12 +45,9 @@ export default function Login() {
 
       <div style={{ flex: 1, display: 'grid', placeItems: 'center', padding: 40, minHeight: 0 }}>
         <form onSubmit={submit} style={{ width: 460 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 32 }}>
-            <div style={{ width: 56, height: 56, borderRadius: 6, background: 'var(--fg)', color: 'var(--bg)', display: 'grid', placeItems: 'center', fontFamily: 'var(--font-serif)', fontSize: 34, fontStyle: 'italic' }}>Z</div>
-            <div>
-              <div style={{ fontSize: 22, fontWeight: 500 }}>ZJ Quant</div>
-              <div style={{ fontSize: 11, color: 'var(--fg-3)', marginTop: 3 }}>多因子量化交易系统监控管理平台</div>
-            </div>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginBottom: 32 }}>
+            <ZjLogo size={64} inverse />
+            <div style={{ fontSize: 11, color: 'var(--fg-3)', marginTop: 16, letterSpacing: '0.02em' }}>多因子量化交易系统监控管理平台</div>
           </div>
 
           <div style={{ background: 'var(--surface)', border: '1px solid var(--border-strong)', borderRadius: 4, padding: 24 }}>
