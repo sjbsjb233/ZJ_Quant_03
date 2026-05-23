@@ -69,12 +69,14 @@ export function ZjLogo({
         paddingLeft: '0.32em', // optical re-centre against the trailing letter-spacing
       };
 
+  // role="img" + a single aria-label exposes the logo as one "ZJ Quant" image; the
+  // visible glyphs are hidden from AT so "Q U A N T" isn't spelled out letter by letter.
   return (
-    <span style={container} aria-label="ZJ Quant" {...rest}>
-      <span style={markStyle}>
+    <span style={container} role="img" aria-label="ZJ Quant" {...rest}>
+      <span style={markStyle} aria-hidden="true">
         ZJ<span style={dotStyle} />
       </span>
-      {!markOnly && <span style={tagStyle}>Q U A N T</span>}
+      {!markOnly && <span style={tagStyle} aria-hidden="true">Q U A N T</span>}
     </span>
   );
 }

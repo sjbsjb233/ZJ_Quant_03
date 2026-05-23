@@ -3,7 +3,7 @@ import React, { useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/auth';
 import { logger } from '../lib/logger';
-import { ZjLogo } from '../components/ui/Logo';
+import { ZjLogo } from '../components/ui';
 
 export default function Login() {
   const { login, user } = useAuth();
