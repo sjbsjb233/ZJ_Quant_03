@@ -20,6 +20,13 @@ services:
       dockerfile: apps/web/Dockerfile
     container_name: zj-quant-web
     restart: unless-stopped
+    # Container-level OOM containment (止血). Without this an unbounded
+    # /tables/{name}/rows scan could eat the host's RAM and take other
+    # services down with it; with it the kernel only kills this container
+    # and restart: unless-stopped brings it back. memswap_limit == mem_limit
+    # disables swap so we don't silently mask the leak.
+    mem_limit: 12g
+    memswap_limit: 12g
     ports:
       - "${WEB_PORT:-8000}:8000"
     environment:
@@ -29,6 +36,17 @@ services:
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:8000}
       JWT_SECRET: ${JWT_SECRET:-change-me-in-prod}
       SEED_DEFAULT_USERS: "true"
+      # DuckDB memory guardrails (see DataReader.__init__). The reader honours
+      # PRAGMA memory_limit; when exceeded DuckDB raises instead of OOM-killing
+      # the process, and intermediates spill to QUANT_DUCKDB_TEMP_DIR (reused
+      # /data volume so it survives container restarts cleanly).
+      QUANT_DUCKDB_MEMORY_LIMIT: "2GB"
+      QUANT_DUCKDB_TEMP_DIR: /data/duck_tmp
+      # Healthcheck and any localhost callbacks must bypass the host proxy —
+      # otherwise urlopen('http://localhost:8000/...') goes through HTTP_PROXY
+      # and the container is reported unhealthy (502) even when alive.
+      NO_PROXY: "localhost,127.0.0.1"
+      no_proxy: "localhost,127.0.0.1"
       # === logging platform (全链路日志方案 v2.0 §15.2) — reuses the /data volume ===
       LOG_LEVEL: INFO
       LOG_TO_DB: "true"

@@ -12,6 +12,7 @@ that:
 from __future__ import annotations
 
 import datetime as dt
+import os
 import time
 
 import duckdb
@@ -95,6 +96,16 @@ class DataReader:
     def __init__(self, root=None):
         self.root = root
         self._con = duckdb.connect()
+        # Memory guardrails. DuckDB's default is "80% of RAM" -- in a container
+        # without mem_limit that turns one runaway full-table scan into a host
+        # OOM (the bug behind the 2026-05-23 incident). With a finite cap, the
+        # engine spills to disk if temp_directory is set and raises a clean
+        # error otherwise -- both far better than getting OOM-killed.
+        mem = os.environ.get("QUANT_DUCKDB_MEMORY_LIMIT", "2GB")
+        self._con.execute(f"PRAGMA memory_limit='{mem}'")
+        tmp = os.environ.get("QUANT_DUCKDB_TEMP_DIR")
+        if tmp:
+            self._con.execute(f"PRAGMA temp_directory='{tmp}'")
 
     # -- core current-view engine (doc §6.1) ---------------------------------
     # default dedup ranking: source priority, then newest batch.
@@ -109,7 +120,27 @@ class DataReader:
         extras_as_columns: dict[str, str] | None = None,
         order_by: str | None = None,
         dedup_order: str | None = None,
+        post_filters: list[str] | None = None,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> pa.Table:
+        """Materialise the current view.
+
+        ``filters`` are pushed into the dwp CTE -- applied **before** dedup, so
+        they prune source rows (typical: symbol / date predicates).
+        ``post_filters`` are AND'd onto the final ``WHERE rn = 1`` -- applied
+        **after** dedup, so e.g. a ``_source = 'akshare'`` filter selects only
+        cases where akshare's row actually won, never resurrecting a row that
+        lost to a higher-priority source. Order matters here: putting these in
+        ``filters`` would silently flip the dedup winner.
+
+        ``limit`` / ``offset`` push pagination into SQL so callers materialise
+        one page instead of the whole table (root cause of the 2026-05-23 OOM).
+        Only safe when downstream post-processing preserves row count and is
+        value-stable per row -- e.g. ``_adjust(adjust="post")`` uses a window
+        over the whole symbol and is NOT page-stable; callers using it must
+        paginate in memory after the typed reader returns.
+        """
         self._validate_extras_types(extras_as_columns)
         files = storage.list_data_files(spec, self.root)
         valid_ids = [
@@ -143,6 +174,9 @@ class DataReader:
         excepts += overridden
         except_sql = f" EXCLUDE ({', '.join(_ident(c) for c in excepts)})" if excepts else ""
         order_sql = f" ORDER BY {order_by}" if order_by else ""
+        post_sql = (" AND " + " AND ".join(post_filters)) if post_filters else ""
+        # LIMIT/OFFSET literals: validated as ints so SQL injection is not a risk.
+        page_sql = f" LIMIT {int(limit)} OFFSET {int(offset)}" if limit is not None else ""
 
         sql = f"""
         WITH dwp AS (
@@ -158,10 +192,12 @@ class DataReader:
             FROM dwp
         )
         SELECT *{except_sql}{extra_select}
-        FROM ranked WHERE rn = 1{order_sql}
+        FROM ranked WHERE rn = 1{post_sql}{order_sql}{page_sql}
         """
         _log.debug("reader.query.built", table=spec.name,
-                   predicates=len(filters or []), columns=len(present))
+                   predicates=len(filters or []),
+                   post_predicates=len(post_filters or []),
+                   columns=len(present), limit=limit, offset=offset)
         start = time.perf_counter()
         try:
             result = con.execute(sql, [files]).to_arrow_table()
@@ -180,6 +216,60 @@ class DataReader:
             _log.info("reader.query.executed", table=spec.name,
                       rows_returned=result.num_rows, duration_ms=duration_ms)
         return result
+
+    def count_current_view(
+        self,
+        spec: TableSpec,
+        filters: list[str] | None = None,
+        post_filters: list[str] | None = None,
+        dedup_order: str | None = None,
+    ) -> int:
+        """Count rows in the current view (applying the same pre/post filters).
+
+        Used by the paged ``/rows`` endpoint to fill the ``total`` field without
+        materialising the data. Dedup ranking still runs because post_filters
+        select on the winner, but only COUNT(*) is returned -- O(rows) without
+        the to-Arrow copy + Python conversion that caused the original blow-up.
+        """
+        files = storage.list_data_files(spec, self.root)
+        valid_ids = [
+            b["batch_id"]
+            for b in batches.list_batches(target_table=spec.name, status="success", root=self.root)
+        ]
+        prio = sources.priority_map(self.root)
+        if not files or not valid_ids or not prio:
+            return 0
+        con = self._con
+        con.register("_valid_batches", pa.table({"batch_id": pa.array(valid_ids, pa.string())}))
+        con.register(
+            "_src_prio",
+            pa.table(
+                {
+                    "source_id": pa.array(list(prio), pa.string()),
+                    "priority": pa.array(list(prio.values()), pa.int32()),
+                }
+            ),
+        )
+        where = ["t._batch_id IN (SELECT batch_id FROM _valid_batches)"] + (filters or [])
+        where_sql = " AND ".join(where)
+        pk = ", ".join(spec.primary_key)
+        post_sql = (" AND " + " AND ".join(post_filters)) if post_filters else ""
+        sql = f"""
+        WITH dwp AS (
+            SELECT t.*, p.priority AS _src_priority
+            FROM read_parquet(?, hive_partitioning=true, union_by_name=true) t
+            JOIN _src_prio p ON t._source = p.source_id
+            WHERE {where_sql}
+        ),
+        ranked AS (
+            SELECT *, ROW_NUMBER() OVER (
+                PARTITION BY {pk} ORDER BY {dedup_order or self._DEFAULT_DEDUP}
+            ) AS rn
+            FROM dwp
+        )
+        SELECT COUNT(*) FROM ranked WHERE rn = 1{post_sql}
+        """
+        return int(con.execute(sql, [files]).fetchone()[0])
 
     @staticmethod
     def _validate_extras_types(extras_as_columns: dict[str, str] | None) -> None:
@@ -416,10 +506,17 @@ class DataReader:
         )
         return self._con.execute(sql).to_arrow_table()
 
-    # -- generic escape hatch (used by governance.diff_sources) --------------
+    # -- generic escape hatch (used by governance.diff_sources + paged /rows)
     def current_view(self, table_name: str, filters: list[str] | None = None,
-                     extras_as_columns=None, order_by=None) -> pa.Table:
-        return self._current_view(get_spec(table_name), filters, extras_as_columns, order_by)
+                     extras_as_columns=None, order_by=None,
+                     post_filters: list[str] | None = None,
+                     dedup_order: str | None = None,
+                     limit: int | None = None, offset: int = 0) -> pa.Table:
+        return self._current_view(
+            get_spec(table_name), filters, extras_as_columns, order_by,
+            dedup_order=dedup_order, post_filters=post_filters,
+            limit=limit, offset=offset,
+        )
 
     # -- web-platform read paths (doc §7.5 / §7.6 / §7.8) --------------------
     def _batches_arrow(self) -> pa.Table:
@@ -448,12 +545,14 @@ class DataReader:
             }
         )
 
-    def read_batch(self, batch_id: str, table: str) -> pa.Table:
+    def read_batch(self, batch_id: str, table: str,
+                   limit: int | None = None, offset: int = 0) -> pa.Table:
         """Every row a single batch wrote, bypassing the current view (doc §7.5).
 
         Used by the batch-detail "written rows" preview and the table browser's
         single-batch view -- shows the raw file content even after it has been
-        invalidated or superseded.
+        invalidated or superseded. ``limit``/``offset`` are pushed into SQL so
+        a multi-million-row batch can be previewed without materialising it.
         """
         spec = get_spec(table)
         files = storage.list_data_files(spec, self.root)
@@ -465,11 +564,24 @@ class DataReader:
             else "SELECT * "
         )
         order = ", ".join(spec.primary_key)
+        page_sql = f" LIMIT {int(limit)} OFFSET {int(offset)}" if limit is not None else ""
         q = (
             f"{sql} FROM read_parquet(?, hive_partitioning=true, union_by_name=true) "
-            f"WHERE _batch_id = {_str_lit(batch_id)} ORDER BY {order}"
+            f"WHERE _batch_id = {_str_lit(batch_id)} ORDER BY {order}{page_sql}"
         )
         return self._con.execute(q, [files]).to_arrow_table()
+
+    def count_batch(self, batch_id: str, table: str) -> int:
+        """Total rows a batch wrote (for the ``total`` field next to read_batch)."""
+        spec = get_spec(table)
+        files = storage.list_data_files(spec, self.root)
+        if not files:
+            return 0
+        q = (
+            "SELECT COUNT(*) FROM read_parquet(?, hive_partitioning=true, union_by_name=true) "
+            f"WHERE _batch_id = {_str_lit(batch_id)}"
+        )
+        return int(self._con.execute(q, [files]).fetchone()[0])
 
     def read_full_view(
         self, table: str, filters: list[str] | None = None, order_by: str | None = None
