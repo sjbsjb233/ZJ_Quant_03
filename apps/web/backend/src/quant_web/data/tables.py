@@ -15,6 +15,19 @@ router = APIRouter(prefix="/tables", tags=["tables"])
 
 _BROWSEABLE = {**RAW_TABLES, **REFERENCE_TABLES}
 
+# High-cardinality tables must be filtered before browsing. Without symbols or
+# a (start, end) window even a paged request makes DuckDB scan the entire
+# table; with the cap from P0-2 that "only" fails the query, but for these
+# three tables a full scan is never useful interactively either.
+_REQUIRE_FILTER = {"raw.bars_daily", "raw.bars_minute", "raw.universe"}
+
+# Fundamentals carries its own PIT ranking (publish_date DESC) -- the default
+# dedup picks the latest-INGESTED revision, which can leak a stale value when
+# an older revision is backfilled. Keep this in sync with read_fundamentals.
+_FUNDAMENTALS_DEDUP = (
+    "_src_priority DESC, publish_date DESC, _ingested_at DESC, _batch_id DESC"
+)
+
 _NOTES = {
     "raw.bars_daily": "日频行情", "raw.bars_minute": "分钟行情 (实时降采样)",
     "raw.fundamentals": "财务 (PIT 约束)", "raw.universe": "成分/可交易",
@@ -158,6 +171,114 @@ def _post_filter_and_page(columns, items, p: dict) -> dict:
             "total": total, "page": offset // limit + 1, "page_size": limit}
 
 
+def _parse_symbols(raw: str | None) -> list[str]:
+    """Canonical split for the comma-separated symbols query parameter.
+
+    Used by both _split_filters (predicate construction) and
+    _require_filter_for_large_tables (presence check) so that
+    ``symbols=`` / ``symbols=,`` / ``symbols= , `` can't bypass the guard
+    while producing an empty SQL predicate -- that's the very combination
+    that would let an unfiltered large-table scan through.
+    """
+    if not raw:
+        return []
+    return [s.strip() for s in raw.split(",") if s.strip()]
+
+
+def _split_filters(spec, name: str, p: dict) -> tuple[list[str], list[str]]:
+    """Build (pre_filters, post_filters) for SQL pushdown.
+
+    Pre-filters run inside the dwp CTE (before dedup) so they prune source
+    rows. Post-filters run after dedup picks a winner -- a row that lost the
+    rank to a higher-priority source must never resurface just because the
+    caller asked for that source.
+    """
+    pre: list[str] = []
+    cols = set(spec.all_names())
+    syms = _parse_symbols(p.get("symbols")) if "symbol" in cols else []
+    if syms:
+        pre.append("t.symbol IN (" + ",".join(_str_lit(s) for s in syms) + ")")
+    time_col = (
+        "date" if "date" in cols
+        else "datetime" if "datetime" in cols
+        else "action_date" if "action_date" in cols
+        else None
+    )
+    if time_col and p.get("start"):
+        lit = _ts_lit if spec.type_of(time_col) == TS else _date_lit
+        pre.append(f"t.{time_col} >= {lit(p['start'])}")
+    if time_col and p.get("end"):
+        lit = _ts_lit if spec.type_of(time_col) == TS else _date_lit
+        pre.append(f"t.{time_col} <= {lit(p['end'])}")
+    if name == "raw.fundamentals" and p.get("as_of_date"):
+        pre.append(f"t.publish_date <= {_date_lit(p['as_of_date'])}")
+    if name == "raw.fundamentals" and p.get("period_type"):
+        pre.append(f"t.period_type = {_str_lit(p['period_type'])}")
+    if name == "raw.calendar" and p.get("market"):
+        pre.append(f"t.market = {_str_lit(p['market'])}")
+    if name == "raw.corporate_actions" and p.get("action_type"):
+        pre.append(f"t.action_type = {_str_lit(p['action_type'])}")
+
+    post: list[str] = []
+    if p.get("batch_id"):
+        post.append(f"_batch_id = {_str_lit(p['batch_id'])}")
+    if p.get("source"):
+        srcs = [s for s in p["source"].split(",") if s]
+        if srcs:
+            post.append("_source IN (" + ",".join(_str_lit(s) for s in srcs) + ")")
+    return pre, post
+
+
+def _needs_in_memory_pagination(name: str, p: dict) -> bool:
+    """Tables/options that must go through the typed reader + in-memory slice.
+
+    Two distinct reasons (both end up at the same legacy fallback):
+
+    1. **Paging is value-unstable.** ``raw.bars_minute`` calls
+       ``_downsample`` which aggregates across minutes -- slicing rows
+       before aggregation changes both row count and content. Similarly
+       ``raw.bars_daily`` with ``adjust=post`` runs ``first_value()
+       OVER (PARTITION BY symbol ORDER BY date)`` -- the normalization
+       baseline is the first row of the SQL result, which shifts every
+       page.
+
+    2. **The pushdown path bypasses the typed reader.** ``raw.bars_daily``
+       with ``adjust=pre`` or ``recompute_adj`` is per-row safe to paginate,
+       but the SQL-pushdown route calls ``current_view`` directly and so
+       would drop ``_adjust`` / ``_recomputed_factors`` silently. Routing
+       these through legacy is the only way the transforms still apply.
+
+    ``reference.symbols`` / ``reference.sectors`` are mutable single-file
+    tables that don't go through ``_current_view`` at all; their data is
+    small enough that paging in memory is fine.
+    """
+    if name == "raw.bars_minute":
+        return True
+    if name == "raw.bars_daily" and (
+        (p.get("adjust") or "none") != "none" or p.get("recompute_adj")
+    ):
+        return True
+    if name in ("reference.symbols", "reference.sectors"):
+        return True
+    return False
+
+
+def _require_filter_for_large_tables(name: str, p: dict) -> None:
+    if name not in _REQUIRE_FILTER:
+        return
+    # Must mirror what _split_filters actually produces: a raw "symbols=,"
+    # parses to an empty list and emits no SQL predicate, so the bool() of
+    # the raw string alone would falsely report "filtered" and let the
+    # full-table scan through.
+    has_symbols = bool(_parse_symbols(p.get("symbols")))
+    has_window = bool(p.get("start") and p.get("end"))
+    if not (has_symbols or has_window):
+        raise ApiError(
+            "MISSING_PARAMETER",
+            f"浏览大表 {name} 必须指定 symbols 或 start+end 日期范围",
+        )
+
+
 def _all_query_params(
     symbols: str | None = None, start: str | None = None, end: str | None = None,
     source: str | None = None, batch_id: str | None = None,
@@ -175,16 +296,55 @@ def _all_query_params(
 @router.get("/{name}/rows")
 def rows(name: str, p: dict = Depends(_all_query_params),
          reader=Depends(get_reader), user=Depends(get_current_user)):
-    _spec_or_404(name)
-    tbl = _current_view_table(name, reader, p)
-    columns, items = table_payload(tbl)
-    return _post_filter_and_page(columns, items, p)
+    spec = _spec_or_404(name)
+    _require_filter_for_large_tables(name, p)
+
+    # Tables/options that can't push pagination into SQL safely (see
+    # _needs_in_memory_pagination): fall back to the original typed-reader +
+    # in-memory slice path. The P1 forced-filter check above keeps the working
+    # set small enough that materialising it is cheap.
+    if _needs_in_memory_pagination(name, p):
+        tbl = _current_view_table(name, reader, p)
+        columns, items = table_payload(tbl)
+        return _post_filter_and_page(columns, items, p)
+
+    # SQL-pushdown path: one COUNT for total + one paged read. Never
+    # materialises the full table even without any user-supplied filter --
+    # fixes the 2026-05-23 OOM where 18.66M rows × ~80 cols were converted to
+    # Python dicts just to be sliced by [offset:offset+limit] at the end.
+    if name == "raw.fundamentals" and not p.get("as_of_date"):
+        raise ApiError("MISSING_PARAMETER", "fundamentals 当前视图必须指定 as_of_date")
+
+    offset = max(0, int(p.get("offset") or 0))
+    limit = max(1, min(int(p.get("limit") or 100), 1000))
+    pre, post = _split_filters(spec, name, p)
+    extras = _parse_extras(p.get("extras_as_columns"))
+    dedup_order = _FUNDAMENTALS_DEDUP if name == "raw.fundamentals" else None
+    order_by = ", ".join(spec.primary_key)
+    try:
+        total = reader.count_current_view(
+            spec, filters=pre or None, post_filters=post or None,
+            dedup_order=dedup_order,
+        )
+        page = reader.current_view(
+            name, filters=pre or None, post_filters=post or None,
+            extras_as_columns=extras, order_by=order_by, dedup_order=dedup_order,
+            limit=limit, offset=offset,
+        )
+    except ValueError as e:
+        raise ApiError("INVALID_PARAMETER", str(e)) from e
+    columns, items = table_payload(page)
+    return {
+        "columns": columns, "items": items, "total": total,
+        "page": offset // limit + 1, "page_size": limit,
+    }
 
 
 @router.get("/{name}/rows/all")
 def rows_all(name: str, p: dict = Depends(_all_query_params),
              reader=Depends(get_reader), user=Depends(get_current_user)):
     spec = _spec_or_404(name)
+    _require_filter_for_large_tables(name, p)
     if spec.mutable:  # reference tables have no append-only history
         tbl = _current_view_table(name, reader, p)
         columns, items = table_payload(tbl)

@@ -246,14 +246,19 @@ def batch_quality(batch_id: str, root: str = Depends(get_root),
 
 
 @router.get("/{batch_id}/rows")
-def batch_rows(batch_id: str, limit: int = 100, root: str = Depends(get_root),
+def batch_rows(batch_id: str, limit: int = 100, offset: int = 0,
+               root: str = Depends(get_root),
                reader=Depends(get_reader), user=Depends(get_current_user)):
     b = _require_batch(batch_id, root)
-    tbl = reader.read_batch(batch_id, b["target_table"])
-    if limit and tbl.num_rows > limit:
-        tbl = tbl.slice(0, limit)
+    # Push limit/offset into SQL so a multi-million-row batch isn't fully
+    # materialised just to be sliced (same class of bug as the /rows OOM).
+    limit = max(1, min(int(limit or 100), 1000))
+    offset = max(0, int(offset or 0))
+    tbl = reader.read_batch(batch_id, b["target_table"], limit=limit, offset=offset)
+    total = reader.count_batch(batch_id, b["target_table"])
     columns, items = table_payload(tbl)
-    return {"columns": columns, "items": items, "total": tbl.num_rows,
+    return {"columns": columns, "items": items, "total": total,
+            "page": offset // limit + 1, "page_size": limit,
             "target_table": b["target_table"]}
 
 

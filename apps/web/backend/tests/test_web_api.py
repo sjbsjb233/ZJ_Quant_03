@@ -110,6 +110,111 @@ def test_full_view_has_status_column(client, admin):
     assert any(c["name"] == "_status" for c in fv["columns"])
 
 
+def test_rows_requires_filter_for_large_tables(client, admin):
+    """Browsing bars_daily / bars_minute / universe without symbols or a date
+    window must 400 -- not silently scan the whole table (the 2026-05-23 OOM)."""
+    for name in ("raw.bars_daily", "raw.bars_minute", "raw.universe"):
+        r = client.get(f"/api/v1/data/tables/{name}/rows", headers=admin)
+        assert r.status_code == 400, name
+        assert r.json()["error"]["code"] == "MISSING_PARAMETER"
+
+
+def test_rows_pagination_total_and_concat(client, admin):
+    """SQL-pushdown pagination must return correct total and stable order:
+    page 1 ++ page 2 of size N == page 1 of size 2N."""
+    full = client.get("/api/v1/data/tables/raw.bars_daily/rows", headers=admin,
+                     params={"symbols": "600519.SH", "limit": 10, "offset": 0}).json()
+    assert full["total"] >= 5
+    assert full["page_size"] == 10 and full["page"] == 1
+
+    half = full["total"] // 2 if full["total"] >= 4 else 2
+    p1 = client.get("/api/v1/data/tables/raw.bars_daily/rows", headers=admin,
+                    params={"symbols": "600519.SH", "limit": half, "offset": 0}).json()
+    p2 = client.get("/api/v1/data/tables/raw.bars_daily/rows", headers=admin,
+                    params={"symbols": "600519.SH", "limit": half, "offset": half}).json()
+    big = client.get("/api/v1/data/tables/raw.bars_daily/rows", headers=admin,
+                     params={"symbols": "600519.SH", "limit": half * 2, "offset": 0}).json()
+    assert p1["total"] == p2["total"] == big["total"]
+    assert (p1["items"] + p2["items"]) == big["items"]
+
+
+def test_rows_source_post_filter_does_not_resurrect_loser(client, admin):
+    """seed_demo writes akshare's full year of 600519 bars, plus on the most
+    recent 5 days both a 'bad' akshare batch AND a 'good' tushare_pro batch.
+    tushare_pro is registered with priority 200 vs akshare 100, so it WINS
+    those overlapping days and akshare wins everything before.
+
+    The post_filter-after-dedup invariant says: asking ``source=akshare`` for
+    the days tushare won must return zero rows for those dates, because
+    akshare's row for them lost the dedup rank and must not resurface. If
+    post_filter were applied BEFORE ``WHERE rn = 1`` the losing akshare row
+    would silently come back (the bug this test pins shut)."""
+    full = client.get(
+        "/api/v1/data/tables/raw.bars_daily/rows", headers=admin,
+        params={"symbols": "600519.SH", "limit": 1000},
+    ).json()
+    by_source: dict[str, set[str]] = {}
+    for r in full["items"]:
+        by_source.setdefault(r["_source"], set()).add(r["date"])
+    tushare_dates = by_source.get("tushare_pro", set())
+    akshare_dates = by_source.get("akshare", set())
+    assert tushare_dates, "seed expected tushare_pro to win on the recent 5 days"
+    assert akshare_dates, "seed expected akshare to win on earlier days"
+    assert not (tushare_dates & akshare_dates), \
+        "each date has exactly one winner in the current view"
+
+    # Ask source=akshare for the date window tushare won -> none of those
+    # dates may come back, because for them akshare lost the dedup rank.
+    days = sorted(tushare_dates)
+    akshare_only = client.get(
+        "/api/v1/data/tables/raw.bars_daily/rows", headers=admin,
+        params={"symbols": "600519.SH", "source": "akshare",
+                "start": days[0], "end": days[-1], "limit": 1000},
+    ).json()
+    returned_dates = {row["date"] for row in akshare_only["items"]}
+    assert not (returned_dates & tushare_dates), (
+        "akshare rows resurfaced for dates tushare won — "
+        "post_filter was applied before dedup"
+    )
+    # Every row that DID come back must indeed be sourced from akshare.
+    for r in akshare_only["items"]:
+        assert r["_source"] == "akshare"
+
+
+def test_rows_filter_rejects_empty_symbols_value(client, admin):
+    """A non-empty-but-effectively-empty ``symbols`` value (``symbols=,`` or
+    ``symbols= , ``) used to bypass the large-table filter guard because
+    bool(',') is truthy yet _split_filters produces no SQL predicate -- the
+    request then scanned the entire table (the original OOM vector). The
+    guard now uses the same parser as _split_filters."""
+    for bypass in (",", " ,", " , ,  ,"):
+        r = client.get("/api/v1/data/tables/raw.bars_daily/rows", headers=admin,
+                       params={"symbols": bypass})
+        assert r.status_code == 400, bypass
+        assert r.json()["error"]["code"] == "MISSING_PARAMETER"
+
+
+def test_batch_rows_pagination(client, admin):
+    """batch_rows pushes limit/offset into SQL and returns the real total."""
+    bid = client.get("/api/v1/data/batches", headers=admin,
+                     params={"status": "success", "page_size": 1}).json()["items"][0]["batch_id"]
+    p1 = client.get(f"/api/v1/data/batches/{bid}/rows", headers=admin,
+                    params={"limit": 3, "offset": 0}).json()
+    p2 = client.get(f"/api/v1/data/batches/{bid}/rows", headers=admin,
+                    params={"limit": 3, "offset": 3}).json()
+    assert p1["total"] == p2["total"] >= 1
+    assert p1["page_size"] == 3
+    # When the batch has more than 6 rows, the two pages must be disjoint.
+    # Compare by primary key only -- batch rows include _extras which may be a
+    # dict and so isn't hashable as part of a set element.
+    def _pk_set(items):
+        return {tuple((r.get(c) for c in ("date", "symbol", "datetime", "report_period")))
+                for r in items}
+    if p1["total"] >= 6:
+        assert len(p1["items"]) == 3 and len(p2["items"]) == 3
+        assert not (_pk_set(p1["items"]) & _pk_set(p2["items"]))
+
+
 def test_fundamentals_requires_as_of(client, admin):
     r = client.get("/api/v1/data/tables/raw.fundamentals/rows", headers=admin)
     assert r.status_code == 400 and r.json()["error"]["code"] == "MISSING_PARAMETER"
