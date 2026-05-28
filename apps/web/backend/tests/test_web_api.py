@@ -139,17 +139,59 @@ def test_rows_pagination_total_and_concat(client, admin):
 
 
 def test_rows_source_post_filter_does_not_resurrect_loser(client, admin):
-    """The seed demo writes a 'bad' batch from akshare then a 'good' batch from
-    tushare_pro (lower priority) for the recent 5 days of 600519. Asking for
-    source=tushare_pro must NOT bring back the losing tushare rows for those
-    days where akshare won."""
-    rows = client.get("/api/v1/data/tables/raw.bars_daily/rows", headers=admin,
-                     params={"symbols": "600519.SH", "source": "tushare_pro",
-                             "limit": 1000}).json()
-    # tushare_pro lost to akshare on every day it competed; either no rows
-    # or only rows where akshare wasn't present.
-    for r in rows["items"]:
-        assert r["_source"] == "tushare_pro"
+    """seed_demo writes akshare's full year of 600519 bars, plus on the most
+    recent 5 days both a 'bad' akshare batch AND a 'good' tushare_pro batch.
+    tushare_pro is registered with priority 200 vs akshare 100, so it WINS
+    those overlapping days and akshare wins everything before.
+
+    The post_filter-after-dedup invariant says: asking ``source=akshare`` for
+    the days tushare won must return zero rows for those dates, because
+    akshare's row for them lost the dedup rank and must not resurface. If
+    post_filter were applied BEFORE ``WHERE rn = 1`` the losing akshare row
+    would silently come back (the bug this test pins shut)."""
+    full = client.get(
+        "/api/v1/data/tables/raw.bars_daily/rows", headers=admin,
+        params={"symbols": "600519.SH", "limit": 1000},
+    ).json()
+    by_source: dict[str, set[str]] = {}
+    for r in full["items"]:
+        by_source.setdefault(r["_source"], set()).add(r["date"])
+    tushare_dates = by_source.get("tushare_pro", set())
+    akshare_dates = by_source.get("akshare", set())
+    assert tushare_dates, "seed expected tushare_pro to win on the recent 5 days"
+    assert akshare_dates, "seed expected akshare to win on earlier days"
+    assert not (tushare_dates & akshare_dates), \
+        "each date has exactly one winner in the current view"
+
+    # Ask source=akshare for the date window tushare won -> none of those
+    # dates may come back, because for them akshare lost the dedup rank.
+    days = sorted(tushare_dates)
+    akshare_only = client.get(
+        "/api/v1/data/tables/raw.bars_daily/rows", headers=admin,
+        params={"symbols": "600519.SH", "source": "akshare",
+                "start": days[0], "end": days[-1], "limit": 1000},
+    ).json()
+    returned_dates = {row["date"] for row in akshare_only["items"]}
+    assert not (returned_dates & tushare_dates), (
+        "akshare rows resurfaced for dates tushare won — "
+        "post_filter was applied before dedup"
+    )
+    # Every row that DID come back must indeed be sourced from akshare.
+    for r in akshare_only["items"]:
+        assert r["_source"] == "akshare"
+
+
+def test_rows_filter_rejects_empty_symbols_value(client, admin):
+    """A non-empty-but-effectively-empty ``symbols`` value (``symbols=,`` or
+    ``symbols= , ``) used to bypass the large-table filter guard because
+    bool(',') is truthy yet _split_filters produces no SQL predicate -- the
+    request then scanned the entire table (the original OOM vector). The
+    guard now uses the same parser as _split_filters."""
+    for bypass in (",", " ,", " , ,  ,"):
+        r = client.get("/api/v1/data/tables/raw.bars_daily/rows", headers=admin,
+                       params={"symbols": bypass})
+        assert r.status_code == 400, bypass
+        assert r.json()["error"]["code"] == "MISSING_PARAMETER"
 
 
 def test_batch_rows_pagination(client, admin):

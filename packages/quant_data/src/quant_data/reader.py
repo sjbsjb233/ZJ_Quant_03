@@ -101,11 +101,14 @@ class DataReader:
         # OOM (the bug behind the 2026-05-23 incident). With a finite cap, the
         # engine spills to disk if temp_directory is set and raises a clean
         # error otherwise -- both far better than getting OOM-killed.
+        # Env values go through _str_lit so a stray quote in the env var can't
+        # break out of the PRAGMA literal or silently set the wrong value.
         mem = os.environ.get("QUANT_DUCKDB_MEMORY_LIMIT", "2GB")
-        self._con.execute(f"PRAGMA memory_limit='{mem}'")
+        self._con.execute(f"PRAGMA memory_limit={_str_lit(mem)}")
         tmp = os.environ.get("QUANT_DUCKDB_TEMP_DIR")
         if tmp:
-            self._con.execute(f"PRAGMA temp_directory='{tmp}'")
+            os.makedirs(tmp, exist_ok=True)  # DuckDB won't create the dir itself
+            self._con.execute(f"PRAGMA temp_directory={_str_lit(tmp)}")
 
     # -- core current-view engine (doc §6.1) ---------------------------------
     # default dedup ranking: source priority, then newest batch.

@@ -171,6 +171,20 @@ def _post_filter_and_page(columns, items, p: dict) -> dict:
             "total": total, "page": offset // limit + 1, "page_size": limit}
 
 
+def _parse_symbols(raw: str | None) -> list[str]:
+    """Canonical split for the comma-separated symbols query parameter.
+
+    Used by both _split_filters (predicate construction) and
+    _require_filter_for_large_tables (presence check) so that
+    ``symbols=`` / ``symbols=,`` / ``symbols= , `` can't bypass the guard
+    while producing an empty SQL predicate -- that's the very combination
+    that would let an unfiltered large-table scan through.
+    """
+    if not raw:
+        return []
+    return [s.strip() for s in raw.split(",") if s.strip()]
+
+
 def _split_filters(spec, name: str, p: dict) -> tuple[list[str], list[str]]:
     """Build (pre_filters, post_filters) for SQL pushdown.
 
@@ -181,10 +195,9 @@ def _split_filters(spec, name: str, p: dict) -> tuple[list[str], list[str]]:
     """
     pre: list[str] = []
     cols = set(spec.all_names())
-    if p.get("symbols") and "symbol" in cols:
-        syms = [s for s in p["symbols"].split(",") if s]
-        if syms:
-            pre.append("t.symbol IN (" + ",".join(_str_lit(s) for s in syms) + ")")
+    syms = _parse_symbols(p.get("symbols")) if "symbol" in cols else []
+    if syms:
+        pre.append("t.symbol IN (" + ",".join(_str_lit(s) for s in syms) + ")")
     time_col = (
         "date" if "date" in cols
         else "datetime" if "datetime" in cols
@@ -217,15 +230,27 @@ def _split_filters(spec, name: str, p: dict) -> tuple[list[str], list[str]]:
 
 
 def _needs_in_memory_pagination(name: str, p: dict) -> bool:
-    """Tables/options that can't safely push limit/offset into SQL.
+    """Tables/options that must go through the typed reader + in-memory slice.
 
-    - bars_minute: ``_downsample`` aggregates across minutes, so a paged
-      pre-aggregation slice would silently change row count + content.
-    - bars_daily with adjust=post: ``_adjust`` uses ``first_value() OVER
-      (PARTITION BY symbol)`` -- the normalization baseline shifts every page.
-    - bars_daily with recompute_adj: harmless per-row but keep it on the
-      typed-reader path so behaviour matches ``read_bars_daily`` exactly.
-    - reference.*: small mutable tables, no current-view dedup at all.
+    Two distinct reasons (both end up at the same legacy fallback):
+
+    1. **Paging is value-unstable.** ``raw.bars_minute`` calls
+       ``_downsample`` which aggregates across minutes -- slicing rows
+       before aggregation changes both row count and content. Similarly
+       ``raw.bars_daily`` with ``adjust=post`` runs ``first_value()
+       OVER (PARTITION BY symbol ORDER BY date)`` -- the normalization
+       baseline is the first row of the SQL result, which shifts every
+       page.
+
+    2. **The pushdown path bypasses the typed reader.** ``raw.bars_daily``
+       with ``adjust=pre`` or ``recompute_adj`` is per-row safe to paginate,
+       but the SQL-pushdown route calls ``current_view`` directly and so
+       would drop ``_adjust`` / ``_recomputed_factors`` silently. Routing
+       these through legacy is the only way the transforms still apply.
+
+    ``reference.symbols`` / ``reference.sectors`` are mutable single-file
+    tables that don't go through ``_current_view`` at all; their data is
+    small enough that paging in memory is fine.
     """
     if name == "raw.bars_minute":
         return True
@@ -241,7 +266,11 @@ def _needs_in_memory_pagination(name: str, p: dict) -> bool:
 def _require_filter_for_large_tables(name: str, p: dict) -> None:
     if name not in _REQUIRE_FILTER:
         return
-    has_symbols = bool(p.get("symbols"))
+    # Must mirror what _split_filters actually produces: a raw "symbols=,"
+    # parses to an empty list and emits no SQL predicate, so the bool() of
+    # the raw string alone would falsely report "filtered" and let the
+    # full-table scan through.
+    has_symbols = bool(_parse_symbols(p.get("symbols")))
     has_window = bool(p.get("start") and p.get("end"))
     if not (has_symbols or has_window):
         raise ApiError(
