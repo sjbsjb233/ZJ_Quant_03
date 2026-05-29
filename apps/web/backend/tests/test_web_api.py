@@ -294,9 +294,24 @@ def test_maintenance_requires_admin(client, viewer):
 
 
 def test_stub_501(client, admin):
-    for path in ("/api/v1/factors", "/api/v1/strategies/backtests", "/api/v1/monitor/alerts"):
+    # /factors/* is now proxied to factor-api (see test_factors_proxy_*).
+    for path in ("/api/v1/strategies/backtests", "/api/v1/monitor/alerts"):
         r = client.get(path, headers=admin)
         assert r.status_code == 501 and r.json()["error"]["code"] == "NOT_IMPLEMENTED"
+
+
+def test_factors_proxy_attempts_upstream(client, admin, monkeypatch):
+    """Without a running factor-api, the proxy returns a clean INTERNAL error
+    wrapped in our standard envelope (not raw 500/503)."""
+    monkeypatch.setenv("FACTOR_API_BASE", "http://127.0.0.1:1")  # unreachable
+    r = client.get("/api/v1/factors", headers=admin)
+    assert r.status_code in (400, 500, 502, 503)
+    body = r.json()
+    assert "error" in body and body["error"]["code"] in (
+        "INTERNAL",
+        "PROXY_ERROR",
+    )
+    assert body["error"]["trace_id"]
 
 
 # ===========================================================================

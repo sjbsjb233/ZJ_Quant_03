@@ -19,7 +19,11 @@ from .logging import app_logger, configure as configure_logging, init_store, ins
 from .logging.routes import router as logs_router
 from .middleware import RequestLogMiddleware, TraceIdMiddleware
 from .seed_users import ensure_seed_users
-from .stubs import factors_router, monitor_router, strategies_router
+from .stubs import monitor_router, strategies_router
+
+# Factor service proxy — replaces the 501 stub. /factors/*, /runs/*,
+# /tasks/*, /universe/*, /imports/*, /queue/* are forwarded to factor-api.
+from .factors_proxy import factors_proxy_router
 
 logging.basicConfig(level=logging.INFO)
 
@@ -54,7 +58,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_router, prefix=API)
     app.include_router(data_router, prefix=f"{API}/data")
     app.include_router(logs_router, prefix=API)
-    app.include_router(factors_router, prefix=API)
+    app.include_router(factors_proxy_router, prefix=API)
     app.include_router(strategies_router, prefix=API)
     app.include_router(monitor_router, prefix=API)
 

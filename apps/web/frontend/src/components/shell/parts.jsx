@@ -4,7 +4,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../lib/auth';
 import { useTheme } from '../../lib/theme';
 import { getLastTraceId } from '../../lib/logger';
-import { DATA_NAV, MODULES, NavGlyph, VIZ_NAV } from './nav';
+import { DATA_NAV, FACTOR_NAV, MODULES, NavGlyph, VIZ_NAV } from './nav';
 
 export function ModuleStrip({ current, env = 'PROD' }) {
   const nav = useNavigate();
@@ -57,7 +57,9 @@ export function ModuleStrip({ current, env = 'PROD' }) {
 }
 
 export function TerminalSidebar({ module = 'data', current }) {
-  const nav = module === 'viz' ? VIZ_NAV : DATA_NAV;
+  const nav = module === 'viz' ? VIZ_NAV : module === 'factor' ? FACTOR_NAV : DATA_NAV;
+  const moduleLabel =
+    module === 'viz' ? '数据可视化' : module === 'factor' ? '因子管理' : '数据管理';
   return (
     <aside style={{
       width: 184, background: 'var(--surface-2)', borderRight: '1px solid var(--border)',
@@ -67,7 +69,7 @@ export function TerminalSidebar({ module = 'data', current }) {
         padding: '12px 14px 8px', fontFamily: 'var(--font-mono)', fontSize: 10,
         color: 'var(--fg-3)', textTransform: 'uppercase', letterSpacing: '0.08em',
         borderBottom: '1px solid var(--border-faint)',
-      }}>{module === 'viz' ? '数据可视化' : '数据管理'}</div>
+      }}>{moduleLabel}</div>
       <nav style={{ padding: '6px', flex: 1 }}>
         {nav.map((it) => {
           const isCur = it.id === current;
@@ -82,7 +84,18 @@ export function TerminalSidebar({ module = 'data', current }) {
               {isCur && <span style={{ position: 'absolute', left: -6, top: 6, bottom: 6, width: 2, background: 'var(--fg)' }} />}
               <NavGlyph id={it.id} />
               <span style={{ flex: 1 }}>{it.label}</span>
-              {it.hot && <span style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, color: 'var(--info)', letterSpacing: '0.05em' }}>HOT</span>}
+              {it.badge && (
+                <span style={{
+                  fontFamily: 'var(--font-mono)', fontSize: 8.5,
+                  color: it.badge === 'NEW' ? 'var(--ok)' : 'var(--info)', letterSpacing: '0.05em',
+                }}>{it.badge}</span>
+              )}
+              {!it.badge && it.hot && (
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, color: 'var(--info)', letterSpacing: '0.05em' }}>HOT</span>
+              )}
+              {!it.badge && !it.hot && it.warn && (
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, color: 'var(--warn)' }}>!</span>
+              )}
             </Link>
           );
         })}

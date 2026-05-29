@@ -28,6 +28,12 @@ import AppLogs from './pages/logs/AppLogs';
 import ClientLogs from './pages/logs/ClientLogs';
 import LogStream from './pages/logs/LogStream';
 import TraceDetail from './pages/logs/TraceDetail';
+import FactorLibrary from './pages/factors/FactorLibrary';
+import FactorDetail from './pages/factors/FactorDetail';
+import FactorTasks from './pages/factors/FactorTasks';
+import UniverseManager from './pages/factors/UniverseManager';
+import FactorImport from './pages/factors/FactorImport';
+import FactorCorrelation from './pages/factors/FactorCorrelation';
 
 const ROLE_RANK = { viewer: 0, editor: 1, admin: 2 };
 
@@ -75,7 +81,16 @@ export default function App() {
       <Route path="/data/charts/explorer" element={<Protected><Explorer /></Protected>} />
 
       <Route path="/settings" element={<Protected><Settings /></Protected>} />
-      <Route path="/factors/*" element={<Protected><Placeholder module="factor" /></Protected>} />
+
+      {/* Factor management — 6 sub-pages */}
+      <Route path="/factors" element={<Navigate to="/factors/library" replace />} />
+      <Route path="/factors/library" element={<Protected><FactorLibrary /></Protected>} />
+      <Route path="/factors/library/:factorId" element={<Protected><FactorDetail /></Protected>} />
+      <Route path="/factors/tasks" element={<Protected><FactorTasks /></Protected>} />
+      <Route path="/factors/universe" element={<Protected><UniverseManager /></Protected>} />
+      <Route path="/factors/import" element={<Protected role="editor"><FactorImport /></Protected>} />
+      <Route path="/factors/correlation" element={<Protected><FactorCorrelation /></Protected>} />
+
       <Route path="/strategies/*" element={<Protected><Placeholder module="strategy" /></Protected>} />
       <Route path="/monitor/*" element={<Protected><Placeholder module="live" /></Protected>} />
 

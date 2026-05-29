@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     redis_url: str = ""
     job_workers: int = 4
 
+    # factor service (proxied at /api/v1/factors|runs|tasks|universe|imports|queue)
+    # In dev: defaults to localhost. In compose: service DNS http://factor-api:8100.
+    factor_api_base: str = "http://factor-api:8100"
+
     # serving the built SPA (set to the frontend dist dir to serve it)
     frontend_dist: str = ""
 

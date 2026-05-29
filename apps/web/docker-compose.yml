@@ -42,6 +42,9 @@ services:
       # /data volume so it survives container restarts cleanly).
       QUANT_DUCKDB_MEMORY_LIMIT: "2GB"
       QUANT_DUCKDB_TEMP_DIR: /data/duck_tmp
+      # factor-api address inside the compose network — the web service
+      # proxies /api/v1/factors|runs|tasks|universe|imports|queue to it.
+      FACTOR_API_BASE: http://factor-api:8100
       # Healthcheck and any localhost callbacks must bypass the host proxy —
       # otherwise urlopen('http://localhost:8000/...') goes through HTTP_PROXY
       # and the container is reported unhealthy (502) even when alive.
@@ -69,6 +72,62 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
+  # ── factor-api (P1) ──────────────────────────────────────────────────
+  # FastAPI service that owns its own SQLite (factor.db) for factor metadata,
+  # the persistent task queue, and the universe registry. Mounts /data read-
+  # only so it can read bars/fundamentals via DataReader but never write them.
+  factor-api:
+    image: ${FACTOR_IMAGE:-zj-quant-factor:local}
+    build:
+      context: ../../
+      dockerfile: apps/factor/Dockerfile
+    container_name: zj-quant-factor-api
+    restart: unless-stopped
+    depends_on:
+      - web
+    environment:
+      QUANT_DATA_ROOT: /data
+      FACTOR_STORE_ROOT: /factor-store
+      FACTOR_DB_URL: sqlite:////factor-store/factor.db
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-prod}
+      FACTOR_ROLE: api
+      TRUST_PROXY_USER_HEADERS: "true"
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:8000}
+    volumes:
+      - ./data:/data:ro
+      - factor_store:/factor-store
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+  # ── factor-worker (P1) ───────────────────────────────────────────────
+  # Same image, different role: drains the SQLite queue and executes
+  # evaluation / correlation / import_validate tasks. Shares the
+  # factor-store volume with factor-api (single SQLite file, WAL mode).
+  factor-worker:
+    image: ${FACTOR_IMAGE:-zj-quant-factor:local}
+    build:
+      context: ../../
+      dockerfile: apps/factor/Dockerfile
+    container_name: zj-quant-factor-worker
+    restart: unless-stopped
+    command: ["python", "-m", "factor_service.queue.dispatcher"]
+    depends_on:
+      - factor-api
+    environment:
+      QUANT_DATA_ROOT: /data
+      FACTOR_STORE_ROOT: /factor-store
+      FACTOR_DB_URL: sqlite:////factor-store/factor.db
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-prod}
+      FACTOR_ROLE: worker
+      FACTOR_CONCURRENCY: ${FACTOR_CONCURRENCY:-4}
+      FACTOR_RESERVE_INTERACTIVE: ${FACTOR_RESERVE_INTERACTIVE:-1}
+      FACTOR_POLL_INTERVAL_MS: ${FACTOR_POLL_INTERVAL_MS:-1000}
+    volumes:
+      - ./data:/data:ro
+      - factor_store:/factor-store
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
   # Production-only. Activated by `--profile production`; ignored in plain dev `docker compose up`.
   watchtower:
     image: containrrr/watchtower:latest
@@ -86,6 +145,10 @@ services:
       WATCHTOWER_CLEANUP: "true"          # GC old images
       WATCHTOWER_POLL_INTERVAL: "300"     # poll every 5 min
       WATCHTOWER_ROLLING_RESTART: "true"
+
+volumes:
+  factor_store:
+
 # First seed a demo world (dev, unchanged):
 #   cd apps/web && docker compose run --rm web python -m quant_web.seed_demo
 # Then:

@@ -118,7 +118,7 @@ export function KpiStrip({ cells, height = 56, cols }) {
       background: 'var(--surface)', borderBottom: '1px solid var(--border-strong)', height, flexShrink: 0,
     }}>
       {cells.map((c, i) => (
-        <div key={i} style={{
+        <div key={i} data-testid={c.testId} style={{
           padding: '6px 14px', borderRight: i < cells.length - 1 ? '1px solid var(--border-faint)' : 'none',
           display: 'flex', flexDirection: 'column', justifyContent: 'space-between',
         }}>
