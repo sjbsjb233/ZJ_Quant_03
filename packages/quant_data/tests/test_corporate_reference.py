@@ -82,3 +82,25 @@ def test_sectors_multi_classification(root, reader):
     ], root=root)
     assert reader.read_sectors("sw").column("name").to_pylist() == ["农林牧渔"]
     assert reader.read_sectors("citics").num_rows == 1
+
+
+def test_sectors_members_roster(root, reader):
+    import json
+
+    ingest.ingest_sectors([
+        {"code": "801780", "name": "银行", "level": 1, "classification_system": "sw",
+         "members": json.dumps(["600519.SH", "000001.SZ"]), "member_count": 2},
+    ], root=root)
+    row = reader.read_sectors("sw").to_pylist()[0]
+    assert row["member_count"] == 2
+    assert json.loads(row["members"]) == ["600519.SH", "000001.SZ"]
+
+
+def test_sectors_members_optional(root, reader):
+    # rows without a roster (e.g. the demo dict) land with NULL members.
+    ingest.ingest_sectors([
+        {"code": "801010", "name": "农林牧渔", "level": 1, "classification_system": "sw"},
+    ], root=root)
+    row = reader.read_sectors("sw").to_pylist()[0]
+    assert row["members"] is None
+    assert row["member_count"] is None

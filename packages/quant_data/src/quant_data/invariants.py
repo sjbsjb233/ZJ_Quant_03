@@ -142,6 +142,32 @@ def check_all(root=None) -> list[Violation]:
                      "SELECT table_name,field_name,status FROM fieldreg "
                      "WHERE status NOT IN ('extras','promoted','core','deprecated')"))
 
+    # --- reference.sectors structure (doc §3 of the sectors import plan) ----
+    # parent_code must resolve inside the same classification_system.
+    out.append(_viol(con, "INV-SEC-001", FATAL, "reference.sectors",
+                     "parent_code does not resolve",
+                     "SELECT a.code FROM sec a LEFT JOIN sec b "
+                     "ON a.parent_code=b.code "
+                     "AND a.classification_system=b.classification_system "
+                     "WHERE a.parent_code IS NOT NULL AND b.code IS NULL"))
+    # a parent must sit exactly one level above its child.
+    out.append(_viol(con, "INV-SEC-002", FATAL, "reference.sectors",
+                     "parent/child levels not adjacent",
+                     "SELECT a.code FROM sec a JOIN sec b "
+                     "ON a.parent_code=b.code "
+                     "AND a.classification_system=b.classification_system "
+                     "WHERE a.level != b.level + 1"))
+    # roots carry no parent; non-roots must carry one.
+    out.append(_viol(con, "INV-SEC-003", WARN, "reference.sectors",
+                     "root has parent or non-root lacks parent",
+                     "SELECT code FROM sec WHERE (level=1 AND parent_code IS NOT NULL) "
+                     "OR (level>1 AND parent_code IS NULL)"))
+    # member_count must match the JSON members array length.
+    out.append(_viol(con, "INV-SEC-004", WARN, "reference.sectors",
+                     "member_count != json_array_length(members)",
+                     "SELECT code FROM sec WHERE members IS NOT NULL "
+                     "AND member_count IS DISTINCT FROM json_array_length(members)"))
+
     # --- §8.3 cross-table invariants ---------------------------------------
     out.append(_viol(con, "INV-201", WARN, "raw.bars_daily",
                      "volume=0 but not suspended (or suspended but volume>0)",

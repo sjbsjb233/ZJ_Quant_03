@@ -169,6 +169,37 @@ def test_inv107_bad_field_status(standard_world):
     assert _by(invariants.check_all(root=root), "INV-107").severity == "FATAL"
 
 
+# --- reference.sectors structure --------------------------------------------
+def test_inv_sec001_unresolvable_parent(standard_world):
+    root = standard_world["root"]
+    ingest.ingest_sectors([{"code": "851231", "name": "孤儿", "level": 2,
+                            "parent_code": "999999", "classification_system": "sw"}], root=root)
+    assert _by(invariants.check_all(root=root), "INV-SEC-001").severity == "FATAL"
+
+
+def test_inv_sec002_non_adjacent_levels(standard_world):
+    root = standard_world["root"]
+    # parent 801120 is level 1 in the standard world; a level-3 child skips level 2.
+    ingest.ingest_sectors([{"code": "850001", "name": "跳级", "level": 3,
+                            "parent_code": "801120", "classification_system": "sw"}], root=root)
+    assert _by(invariants.check_all(root=root), "INV-SEC-002").severity == "FATAL"
+
+
+def test_inv_sec003_non_root_without_parent(standard_world):
+    root = standard_world["root"]
+    ingest.ingest_sectors([{"code": "850002", "name": "无父二级", "level": 2,
+                            "parent_code": None, "classification_system": "sw"}], root=root)
+    assert "INV-SEC-003" in _ids(invariants.check_all(root=root))
+
+
+def test_inv_sec004_member_count_mismatch(standard_world):
+    root = standard_world["root"]
+    ingest.ingest_sectors([{"code": "850003", "name": "数错", "level": 1,
+                            "parent_code": None, "classification_system": "sw",
+                            "members": '["600519.SH","000001.SZ"]', "member_count": 5}], root=root)
+    assert "INV-SEC-004" in _ids(invariants.check_all(root=root))
+
+
 # --- §8.3 cross-table -------------------------------------------------------
 def test_inv201_zero_volume_not_suspended(standard_world):
     root = standard_world["root"]

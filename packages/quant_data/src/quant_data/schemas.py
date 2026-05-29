@@ -321,6 +321,10 @@ SECTORS = TableSpec(
         ("level", INT, False),
         ("parent_code", STR, True),
         ("classification_system", STR, False),
+        # de-normalised member roster: a sector row carries the full list of its
+        # constituent symbols so rotation/backtest reads need no JOIN to symbols.
+        ("members", STR, True),       # JSON array string, e.g. '["600519.SH"]'
+        ("member_count", INT, True),  # len(members); lets SQL filter without JSON parse
     ),
     meta_columns=REF_META_NO_EXTRAS,  # no _extras (doc §5.2)
     mutable=True,
