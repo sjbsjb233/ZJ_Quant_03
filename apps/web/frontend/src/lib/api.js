@@ -157,6 +157,61 @@ export const endpoints = {
   // audit
   audit: (params) => get('/data/audit', params),
 
+  // ── factor management (proxied to factor-api) ────────────────────────
+  factors: (params) => get('/factors', params),
+  factor: (factorId) => get(`/factors/${factorId}`),
+  factorVersions: (factorId) => get(`/factors/${factorId}/versions`),
+  factorIc: (factorId) => get(`/factors/${factorId}/ic`),
+  factorTracking: (factorId) => get(`/factors/${factorId}/tracking`),
+  factorDependencies: (factorId) => get(`/factors/${factorId}/dependencies`),
+  factorConsumers: (factorId) => get(`/factors/${factorId}/consumers`),
+  patchFactor: (factorId, body) => patch(`/factors/${factorId}`, body),
+  archiveFactor: (factorId) => del(`/factors/${factorId}`),
+  enableVersion: (factorId, version) => post(`/factors/${factorId}/versions/${version}/enable`, {}),
+  factorValues: (factorId, body) => post(`/factors/${factorId}/values`, body),
+
+  // runs
+  submitRun: (body) => post('/runs', body),
+  previewEta: (body) => post('/runs/preview-eta', body),
+  runs: (params) => get('/runs', params),
+  run: (runId) => get(`/runs/${runId}`),
+  cancelRun: (runId) => post(`/runs/${runId}/cancel`, {}),
+  retryRun: (runId) => post(`/runs/${runId}/retry`, {}),
+  runIcSeries: (runId) => get(`/runs/${runId}/ic-series`),
+  runLayers: (runId) => get(`/runs/${runId}/layers`),
+  runTurnover: (runId) => get(`/runs/${runId}/turnover`),
+
+  // tasks
+  tasks: (params) => get('/tasks', params),
+  task: (taskId) => get(`/tasks/${taskId}`),
+  taskEta: (taskId) => get(`/tasks/${taskId}/eta`),
+  boostTask: (taskId) => post(`/tasks/${taskId}/boost`, {}),
+  cancelTask: (taskId) => post(`/tasks/${taskId}/cancel`, {}),
+  queueStats: () => get('/queue/stats'),
+
+  // universe (stock pools)
+  universes: () => get('/universe'),
+  universe: (uid) => get(`/universe/${uid}`),
+  createUniverse: (body) => post('/universe', body),
+  updateUniverse: (uid, body) => patch(`/universe/${uid}`, body),
+  deleteUniverse: (uid) => del(`/universe/${uid}`),
+  previewUniverse: (uid, body) => post(`/universe/${uid}/preview`, body),
+  symbolSearchUni: (q, limit = 20) => get('/universe/symbols/search', { q, limit }),
+  industries: (system, level) => get('/universe/industries', { system, level }),
+
+  // imports
+  validateFactor: (body) => post('/imports/validate', body),
+  uploadFactor: (form) => api.post('/imports/upload', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  }).then((r) => r.data),
+  scanInbox: (body) => post('/imports/scan', body || {}),
+  pendingImports: () => get('/imports/pending'),
+  importCode: (factorId, version) => get('/imports/code', { factor_id: factorId, version }),
+
+  // correlation
+  submitCorrelation: (body) => post('/factors/correlation', body),
+  correlationResult: (taskId) => get(`/factors/correlation/${taskId}`),
+
   // logs (admin) — 全链路日志方案 v2.0 §6.5
   logs: (params) => get('/logs', params),
   logsSummary: () => get('/logs/summary'),
@@ -174,4 +229,12 @@ export function logsStreamUrl({ level, source } = {}) {
   if (level) qs.set('level', level);
   if (source) qs.set('source', source);
   return `/api/v1/logs/stream?${qs.toString()}`;
+}
+
+// Run-log SSE URL — same token-in-query trick as logsStreamUrl.
+export function runLogStreamUrl(runId) {
+  const qs = new URLSearchParams();
+  const t = tokenStore.get();
+  if (t) qs.set('token', t);
+  return `/api/v1/runs/${encodeURIComponent(runId)}/logs/stream?${qs.toString()}`;
 }

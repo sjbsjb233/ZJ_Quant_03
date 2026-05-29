@@ -31,9 +31,15 @@ for pkg in packages/*/; do
   install_editable "${pkg%/}"
 done
 
-# --- step 2: apps (each app's Python distribution lives in <app>/backend) --
+# --- step 2: apps. Two layouts are supported:
+#   - apps/<name>/backend/pyproject.toml      (old layout, e.g. apps/web)
+#   - apps/<name>/pyproject.toml              (flat layout, e.g. apps/factor)
 for app in apps/*/; do
-  [[ -f "${app}backend/pyproject.toml" ]] && install_editable "${app}backend"
+  if [[ -f "${app}backend/pyproject.toml" ]]; then
+    install_editable "${app}backend"
+  elif [[ -f "${app}pyproject.toml" ]]; then
+    install_editable "${app%/}"
+  fi
 done
 
 log "done. Try:  python -c 'import quant_data, quant_web; print(quant_data.__file__)'"

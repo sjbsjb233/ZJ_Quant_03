@@ -1,0 +1,336 @@
+"""Execute a single task — evaluation / correlation / import_validate.
+
+Called from the dispatcher's thread pool. Picks up payload from `tasks`,
+hits the engine, writes results to disk + factor.db, updates progress &
+heartbeats so the UI shows live state.
+"""
+from __future__ import annotations
+
+import datetime as dt
+import logging
+import os
+from typing import Any
+
+import polars as pl
+from quant_data import DataReader
+from quant_factor import (
+    EvalConfig,
+    FactorEvaluator,
+    correlation_matrix,
+)
+from quant_factor.base import RunCancelled
+from quant_factor.registry import all_registered, instantiate, instantiate_from_code
+
+from ..config import get_settings
+from ..db import base as _db_base
+from ..db.models import (
+    EvalSummary,
+    FactorRecord,
+    FactorRun,
+    FactorVersion,
+    Task,
+    Universe,
+)
+from ..queue import store
+from .results_writer import write_correlation_cache, write_run_results
+
+
+_log = logging.getLogger("factor.executor")
+
+
+def _open_run_log(run_id: str | None) -> tuple:
+    if not run_id:
+        return None, lambda m: None
+    s = get_settings()
+    os.makedirs(s.runs_dir, exist_ok=True)
+    path = os.path.join(s.runs_dir, f"{run_id}.log")
+    f = open(path, "a", buffering=1, encoding="utf-8")  # line-buffered
+
+    def write(msg: str) -> None:
+        ts = dt.datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
+        f.write(f"{ts}  INFO  {msg}\n")
+
+    return f, write
+
+
+def execute_task(task_id: str) -> dict[str, Any]:
+    """Top-level worker — dispatches by task.type."""
+    db = _db_base.SessionLocal()
+    try:
+        t = db.get(Task, task_id)
+        if t is None:
+            return {"task_id": task_id, "status": "missing"}
+        if t.task_type == "evaluation":
+            return _run_evaluation(db, t)
+        if t.task_type == "correlation":
+            return _run_correlation(db, t)
+        if t.task_type == "import_validate":
+            return _run_import_validate(db, t)
+        return {"task_id": task_id, "status": "unknown_type"}
+    finally:
+        db.close()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+def _run_evaluation(db, t: Task) -> dict[str, Any]:
+    run_id = t.run_id or t.payload.get("run_id")
+    if not run_id:
+        raise ValueError("evaluation task has no run_id")
+
+    run = db.get(FactorRun, run_id)
+    if run is None:
+        raise ValueError(f"FactorRun {run_id} not found")
+
+    run.status = "running"
+    run.started_at = dt.datetime.utcnow()
+    db.commit()
+
+    log_file, log_write = _open_run_log(run_id)
+    try:
+        # Resolve factor + version + config
+        factor_id = run.factor_id
+        version = run.version
+        params = run.params or {}
+        cfg = EvalConfig.from_dict(run.run_config)
+
+        rec = db.get(FactorRecord, factor_id)
+        ver = (
+            db.query(FactorVersion)
+            .filter(FactorVersion.factor_id == factor_id, FactorVersion.version == version)
+            .first()
+        )
+        if rec is None or ver is None:
+            raise ValueError(
+                f"factor/{factor_id} version {version} not in registry"
+            )
+        if not ver.enabled:
+            raise PermissionError(
+                f"factor version {factor_id}@{version} is not enabled"
+            )
+
+        log_write(f"resolved factor {factor_id} @ {version} from {ver.class_name}")
+        if ver.code_path and os.path.exists(ver.code_path):
+            with open(ver.code_path, encoding="utf-8") as fh:
+                src = fh.read()
+            factor = instantiate_from_code(src, ver.class_name, params)
+            log_write(f"loaded factor code from {ver.code_path}")
+        else:
+            factor = instantiate(rec.base_name, params)
+            log_write(f"loaded builtin factor {rec.base_name}")
+
+        # Universe def from factor.db
+        uni_row = db.get(Universe, cfg.universe_id)
+        if uni_row is None:
+            raise ValueError(f"universe {cfg.universe_id} not found")
+        uni_def = _universe_row_to_dict(uni_row)
+        custom_syms = None
+        if uni_row.kind == "custom":
+            from ..db.models import UniverseMember
+
+            custom_syms = [
+                r[0]
+                for r in db.query(UniverseMember.symbol)
+                .filter(UniverseMember.universe_id == uni_row.universe_id)
+                .all()
+            ]
+        log_write(
+            f"universe {uni_row.universe_id} ({uni_row.kind}); "
+            f"members={len(custom_syms) if custom_syms is not None else '∞'}"
+        )
+
+        # Engine with progress + cancel callbacks
+        def progress(c, n):
+            store.heartbeat(db, t.task_id, current=int(c), total=int(n))
+
+        def cancelled():
+            db.refresh(t)
+            return bool(t.cancel_requested)
+
+        def log_cb(msg: str):
+            log_write(msg)
+
+        reader = DataReader(root=get_settings().quant_data_root)
+        evaluator = FactorEvaluator(
+            reader,
+            progress_cb=progress,
+            log_cb=log_cb,
+            cancel_cb=cancelled,
+        )
+
+        result = evaluator.evaluate(factor, cfg, uni_def, custom_syms)
+
+        # Persist results to disk + summary into eval_summary
+        write_run_results(run_id, factor_id, result)
+        _persist_eval_summary(db, run, cfg, uni_row.universe_id, result)
+
+        run.status = "success"
+        run.finished_at = dt.datetime.utcnow()
+        run.duration_sec = (run.finished_at - run.started_at).total_seconds()
+        run.summary = dict(result.get("summary") or {})
+        db.commit()
+        log_write(f"DONE in {run.duration_sec:.1f}s")
+        return {"task_id": t.task_id, "status": "success", "summary": run.summary}
+
+    except RunCancelled:
+        run.status = "canceled"
+        run.finished_at = dt.datetime.utcnow()
+        db.commit()
+        log_write("CANCELLED")
+        return {"task_id": t.task_id, "status": "canceled"}
+    except Exception as e:  # noqa: BLE001
+        run.status = "failed"
+        run.error = f"{type(e).__name__}: {e}"
+        run.finished_at = dt.datetime.utcnow()
+        db.commit()
+        log_write(f"FAILED · {run.error}")
+        raise
+    finally:
+        if log_file:
+            log_file.close()
+
+
+def _persist_eval_summary(
+    db, run: FactorRun, cfg: EvalConfig, uni_id: str, result: dict
+) -> None:
+    s = result.get("summary") or {}
+    # Compute a small IC spark (last 20 rank_ic values) for the library table.
+    ic_df: pl.DataFrame = result.get("ic_series") or pl.DataFrame()
+    spark: list[float] = []
+    if ic_df is not None and ic_df.height > 0 and "rank_ic" in ic_df.columns:
+        spark = [
+            float(x) if x is not None else 0.0
+            for x in ic_df.tail(20)["rank_ic"].to_list()
+        ]
+    es = EvalSummary(
+        run_id=run.run_id,
+        factor_id=run.factor_id,
+        as_of=dt.datetime.utcnow(),
+        universe_id=uni_id,
+        primary_horizon=int(cfg.primary_horizon),
+        rebalance=str(cfg.rebalance),
+        ic_mean=float(s.get("ic_mean", 0.0)),
+        rank_ic_mean=float(s.get("rank_ic_mean", 0.0)),
+        icir=float(s.get("icir", 0.0)),
+        icir_annual=float(s.get("icir_annual", 0.0)),
+        ic_t_stat=float(s.get("ic_t_stat", 0.0)),
+        ic_win_rate=float(s.get("ic_win_rate", 0.0)),
+        ls_annual_return=float(s.get("ls_annual_return", 0.0)),
+        ls_sharpe=float(s.get("ls_sharpe", 0.0)),
+        ls_max_drawdown=float(s.get("ls_max_drawdown", 0.0)),
+        long_annual_return=float(s.get("long_annual_return", 0.0)),
+        short_annual_return=float(s.get("short_annual_return", 0.0)),
+        turnover=float(s.get("turnover", 0.0)),
+        turnover_after_cost_ann=float(s.get("turnover_after_cost_ann", 0.0)),
+        coverage=float(s.get("coverage", 0.0)),
+        monotonic=bool(s.get("monotonic", False)),
+        ic_spark=spark,
+    )
+    db.add(es)
+    db.commit()
+
+
+def _universe_row_to_dict(u: Universe) -> dict:
+    return {
+        "universe_id": u.universe_id,
+        "kind": u.kind,
+        "preset_flag": u.preset_flag,
+        "classification_system": u.classification_system,
+        "default_industry_level": u.default_industry_level,
+        "exclude_st": u.exclude_st,
+        "exclude_suspended": u.exclude_suspended,
+        "min_list_days": u.min_list_days,
+        "snapshot_retention_days": u.snapshot_retention_days,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+def _run_correlation(db, t: Task) -> dict[str, Any]:
+    payload = t.payload or {}
+    fids: list[str] = list(payload.get("factor_ids") or [])
+    if len(fids) < 2:
+        raise ValueError("correlation needs at least 2 factor_ids")
+
+    cfg = EvalConfig.from_dict(payload.get("run_config") or {})
+    uni_row = db.get(Universe, cfg.universe_id)
+    if uni_row is None:
+        raise ValueError(f"universe {cfg.universe_id} not found")
+    uni_def = _universe_row_to_dict(uni_row)
+    custom = None
+    if uni_row.kind == "custom":
+        from ..db.models import UniverseMember
+
+        custom = [
+            r[0]
+            for r in db.query(UniverseMember.symbol)
+            .filter(UniverseMember.universe_id == uni_row.universe_id)
+            .all()
+        ]
+
+    # Build instances using each factor's enabled version's class.
+    instances = {}
+    icir_lookup = {}
+    for fid in fids:
+        rec = db.get(FactorRecord, fid)
+        if rec is None:
+            raise ValueError(f"factor {fid} not found")
+        # Most-recent enabled version:
+        ver = (
+            db.query(FactorVersion)
+            .filter(FactorVersion.factor_id == fid, FactorVersion.enabled == True)  # noqa: E712
+            .order_by(FactorVersion.id.desc())
+            .first()
+        )
+        if ver is None:
+            raise ValueError(f"factor {fid} has no enabled version")
+        if ver.code_path and os.path.exists(ver.code_path):
+            with open(ver.code_path, encoding="utf-8") as fh:
+                instances[fid] = instantiate_from_code(fh.read(), ver.class_name)
+        else:
+            instances[fid] = instantiate(rec.base_name)
+        last = (
+            db.query(EvalSummary)
+            .filter(EvalSummary.factor_id == fid)
+            .order_by(EvalSummary.id.desc())
+            .first()
+        )
+        icir_lookup[fid] = float(last.icir) if last else 0.0
+
+    def progress(c, n):
+        store.heartbeat(db, t.task_id, current=int(c), total=int(n))
+
+    def cancelled():
+        db.refresh(t)
+        return bool(t.cancel_requested)
+
+    reader = DataReader(root=get_settings().quant_data_root)
+    result = correlation_matrix(
+        reader,
+        instances,
+        cfg,
+        uni_def,
+        custom_symbols=custom,
+        method=str(payload.get("method", "ic_series")),
+        threshold=float(payload.get("threshold", 0.7)),
+        icir_lookup=icir_lookup,
+        progress_cb=progress,
+        cancel_cb=cancelled,
+    )
+    write_correlation_cache(t.task_id, result)
+    return {"task_id": t.task_id, "status": "success", "summary": result["summary"]}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+def _run_import_validate(db, t: Task) -> dict[str, Any]:
+    from quant_factor.validate import validate_factor
+
+    src = t.payload.get("source") or ""
+    class_hint = t.payload.get("class_name") or None
+    deps = t.payload.get("dependencies") or []
+    reader = DataReader(root=get_settings().quant_data_root)
+    rep = validate_factor(
+        src,
+        reader=reader,
+        class_name_hint=class_hint,
+        declared_dependencies=deps,
+    )
+    return {"task_id": t.task_id, "status": "success", "summary": rep["summary"]}

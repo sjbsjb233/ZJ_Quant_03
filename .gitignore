@@ -31,3 +31,4 @@ apps/web/data/        # compose bind mount (./data) — quant_data + audit DB + 
 # --- not committed: one-time E2E suite + PR assets (kept locally) ---
 playwright-tests/
 pr-screenshots/
+scratch/

@@ -4,9 +4,17 @@ import React from 'react';
 export const MODULES = [
   { id: 'data', label: '数据管理', en: 'DATA', enabled: true, to: '/data/dashboard' },
   { id: 'viz', label: '数据可视化', en: 'VIZ', enabled: true, to: '/data/charts' },
-  { id: 'factor', label: '因子管理', en: 'FACTOR', enabled: false, phase: 'Q3', to: '/factors' },
+  { id: 'factor', label: '因子管理', en: 'FACTOR', enabled: true, badge: 'NEW', to: '/factors/library' },
   { id: 'strategy', label: '策略管理', en: 'STRATEGY', enabled: false, phase: 'Q4', to: '/strategies' },
   { id: 'live', label: '实盘交易', en: 'LIVE', enabled: false, phase: '2027', to: '/monitor' },
+];
+
+export const FACTOR_NAV = [
+  { id: 'library',     label: '因子库',      to: '/factors/library',     hot: true },
+  { id: 'queue',       label: '任务队列',    to: '/factors/tasks',       badge: 'LIVE' },
+  { id: 'pools',       label: '股票池',      to: '/factors/universe' },
+  { id: 'import',      label: '因子导入',    to: '/factors/import',      warn: true },
+  { id: 'correlation', label: '因子相关性',  to: '/factors/correlation' },
 ];
 
 export const DATA_NAV = [
@@ -44,6 +52,11 @@ export function NavGlyph({ id }) {
     kline: <svg {...p}><path d="M3 12V7M3 5V3M8 13V9M8 7V4M13 11V6M13 4V2" /></svg>,
     fundamentals: <svg {...p}><path d="M2 12L6 8L9 10L14 4" /><circle cx="6" cy="8" r="1" /><circle cx="9" cy="10" r="1" /><circle cx="14" cy="4" r="1" /></svg>,
     explorer: <svg {...p}><rect x="2" y="2" width="5" height="5" /><circle cx="11.5" cy="4.5" r="2.5" /><path d="M2 9h5v5H2z" /><path d="M9 9l5 5M14 9l-5 5" /></svg>,
+    library: <svg {...p}><path d="M3 2v12M6 2v12M9 2v12" /><path d="M12 3l2.5.7-3 11L9 14z" /></svg>,
+    queue: <svg {...p}><rect x="2" y="3" width="12" height="2.5" /><rect x="2" y="7" width="9" height="2.5" /><rect x="2" y="11" width="6" height="2.5" /></svg>,
+    pools: <svg {...p}><circle cx="5" cy="5" r="3" /><circle cx="11" cy="7" r="2" /><circle cx="6" cy="11" r="2" /><circle cx="11.5" cy="12" r="1.5" /></svg>,
+    import: <svg {...p}><path d="M8 2v8M5 7l3 3 3-3" /><path d="M2 12v2h12v-2" /></svg>,
+    correlation: <svg {...p}><rect x="2" y="2" width="3" height="3" /><rect x="6.5" y="2" width="3" height="3" opacity=".6" /><rect x="11" y="2" width="3" height="3" opacity=".3" /><rect x="2" y="6.5" width="3" height="3" opacity=".6" /><rect x="6.5" y="6.5" width="3" height="3" /><rect x="11" y="6.5" width="3" height="3" opacity=".6" /><rect x="2" y="11" width="3" height="3" opacity=".3" /><rect x="6.5" y="11" width="3" height="3" opacity=".6" /><rect x="11" y="11" width="3" height="3" /></svg>,
   };
   return G[id] || <svg {...p}><circle cx="8" cy="8" r="5.5" strokeDasharray="2 2" /></svg>;
 }

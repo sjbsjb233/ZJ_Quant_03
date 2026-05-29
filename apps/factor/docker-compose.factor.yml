@@ -1,0 +1,41 @@
+# Standalone factor stack (for dev / smoke). In prod we merge these services
+# into apps/web/docker-compose.yml so web proxies to them via the compose net.
+services:
+  factor-api:
+    build:
+      context: ../..
+      dockerfile: apps/factor/Dockerfile
+    environment:
+      QUANT_DATA_ROOT: /data
+      FACTOR_STORE_ROOT: /factor-store
+      FACTOR_DB_URL: sqlite:////factor-store/factor.db
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me-in-prod}
+      FACTOR_ROLE: api
+    volumes:
+      - ../../data:/data:ro
+      - factor_store:/factor-store
+    ports:
+      - "8100:8100"
+    restart: unless-stopped
+
+  factor-worker:
+    build:
+      context: ../..
+      dockerfile: apps/factor/Dockerfile
+    command: ["python", "-m", "factor_service.queue.dispatcher"]
+    environment:
+      QUANT_DATA_ROOT: /data
+      FACTOR_STORE_ROOT: /factor-store
+      FACTOR_DB_URL: sqlite:////factor-store/factor.db
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me-in-prod}
+      FACTOR_ROLE: worker
+      FACTOR_CONCURRENCY: 4
+      FACTOR_RESERVE_INTERACTIVE: 1
+      FACTOR_POLL_INTERVAL_MS: 1000
+    volumes:
+      - ../../data:/data:ro
+      - factor_store:/factor-store
+    restart: unless-stopped
+
+volumes:
+  factor_store:

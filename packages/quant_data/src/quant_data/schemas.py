@@ -139,6 +139,14 @@ BARS_DAILY = TableSpec(
         ("amount", DOUBLE, True),
         ("vwap", DOUBLE, True),
         ("adj_factor", DOUBLE, True),
+        # Market-cap / share columns (factor-layer §6) -- nominal, NOT in
+        # _PRICE_COLS, so price-adjust does not multiply them. Sourced from
+        # tushare daily_basic / akshare per-day metrics, joined on (date,symbol).
+        ("total_mv", DOUBLE, True),  # total market cap, yuan
+        ("circ_mv", DOUBLE, True),  # ★ float market cap (neutralization)
+        ("total_share", DOUBLE, True),  # total shares
+        ("float_share", DOUBLE, True),  # float shares
+        ("free_float_share", DOUBLE, True),  # free-float shares
     ),
     meta_columns=RAW_META,
     partition=(
