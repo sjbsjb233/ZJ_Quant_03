@@ -32,3 +32,11 @@ apps/web/data/        # compose bind mount (./data) — quant_data + audit DB + 
 playwright-tests/
 pr-screenshots/
 scratch/
+
+# === 一次性架构迁移回归测试,禁止入库 (V3 回归方案 §11) ===
+/.regression/
+**/prod_sim_data/
+**/baseline_golden.json
+**/__snapshots__/
+**/pw-report/
+**/test-results/

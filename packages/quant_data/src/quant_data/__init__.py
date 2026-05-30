@@ -17,6 +17,7 @@ from . import (
     governance,
     ingest,
     invariants,
+    log_shipper,
     logging,
     metadata,
     migration,
@@ -28,11 +29,14 @@ from . import (
     table_stats,
 )
 from .bootstrap import bootstrap
+from .log_shipper import HttpLogShipper
 from .reader import DataReader
 
 __all__ = [
     "bootstrap",
     "DataReader",
+    "HttpLogShipper",
+    "log_shipper",
     "ingest",
     "logging",
     "metadata",

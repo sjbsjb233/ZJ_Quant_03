@@ -1,13 +1,15 @@
-"""FastAPI entrypoint: wires routers, auth, jobs, error format, and the SPA."""
+"""FastAPI entrypoint: wires routers, auth, jobs, error format.
+
+Pure API service (容器化重构 V3 §5): the SPA is served by the separate
+``web-frontend`` nginx container, which reverse-proxies ``/api`` here. This
+backend no longer mounts StaticFiles / a catch-all SPA route.
+"""
 from __future__ import annotations
 
 import logging
-import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
 
 from .auth.routes import router as auth_router
 from .config import get_settings
@@ -24,6 +26,10 @@ from .stubs import monitor_router, strategies_router
 # Factor service proxy — replaces the 501 stub. /factors/*, /runs/*,
 # /tasks/*, /universe/*, /imports/*, /queue/* are forwarded to factor-api.
 from .factors_proxy import factors_proxy_router
+
+# data-keeper write proxy — forwards data *write* commands + /jobs to the single
+# writer when KEEPER_BASE is set (容器化重构 V3 §4.4). Unset ⇒ local writes.
+from .keeper_proxy import keeper_proxy_router
 
 logging.basicConfig(level=logging.INFO)
 
@@ -56,6 +62,12 @@ def create_app() -> FastAPI:
 
     # --- routers ------------------------------------------------------------
     app.include_router(auth_router, prefix=API)
+    # When data-keeper is the single writer, mount the write proxy *before* the
+    # local data router so its explicit write routes (+ /jobs) shadow the local
+    # ones; every GET / read-only POST still falls through to the :ro reader
+    # handlers. Unset KEEPER_BASE ⇒ writes run locally (rollback / dev / tests).
+    if settings.keeper_base:
+        app.include_router(keeper_proxy_router, prefix=f"{API}/data")
     app.include_router(data_router, prefix=f"{API}/data")
     app.include_router(logs_router, prefix=API)
     app.include_router(factors_proxy_router, prefix=API)
@@ -86,21 +98,6 @@ def create_app() -> FastAPI:
     def _flush_logs() -> None:  # drain the queue + close files (doc §7.2)
         app_logger.info("app.shutdown")
         store.stop()
-
-    # --- serve built SPA (production single-container) ----------------------
-    dist = settings.frontend_dist
-    if dist and os.path.isdir(dist):
-        assets = os.path.join(dist, "assets")
-        if os.path.isdir(assets):
-            app.mount("/assets", StaticFiles(directory=assets), name="assets")
-
-        @app.get("/{full_path:path}", include_in_schema=False)
-        def spa(full_path: str):
-            # API + docs already matched above; everything else is the SPA shell.
-            candidate = os.path.join(dist, full_path)
-            if full_path and os.path.isfile(candidate):
-                return FileResponse(candidate)
-            return FileResponse(os.path.join(dist, "index.html"))
 
     return app
 

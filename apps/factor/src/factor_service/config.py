@@ -37,6 +37,14 @@ class Settings(BaseSettings):
     # ── trust headers from the web proxy (X-Forwarded-User / Role) ────
     trust_proxy_user_headers: bool = True
 
+    # ── logging (本地发射 + 中枢聚合, 容器化重构 V3 §6.7) ───────────────
+    # First time factor logs join the unified app_log: a shipper posts them to
+    # web-backend /logs/ingest as source="factor"; empty url ⇒ stderr only.
+    log_level: str = "INFO"
+    log_file_dir: str = "./logs"               # container default: /logs
+    log_ingest_url: str = ""                   # http://web-backend:8000/api/v1/logs/ingest
+    log_ingest_token: str = ""                 # shared service token (NOT a user JWT)
+
     @property
     def origins(self) -> list[str]:
         return [o.strip() for o in self.allowed_origins.split(",") if o.strip()]

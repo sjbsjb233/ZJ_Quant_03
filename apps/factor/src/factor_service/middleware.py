@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import jwt
+from quant_data import logging as qd_logging
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .config import get_settings
@@ -56,6 +57,10 @@ class TraceIdMiddleware:
         tid_tok = trace_id_var.set(tid)
         actor_tok = actor_var.set(actor)
         role_tok = role_var.set(role)
+        # also bind quant_data's logging context so the data-layer reads this
+        # request performs (DataReader) emit logs carrying the same trace_id,
+        # which the shipper then ships into app_log (V3 §6.4).
+        qd_tok = qd_logging.bind_context(trace_id=tid, actor=actor)
 
         async def send_wrapper(message):
             if message["type"] == "http.response.start":
@@ -67,6 +72,7 @@ class TraceIdMiddleware:
         try:
             await self.app(scope, receive, send_wrapper)
         finally:
+            qd_logging.reset_context(qd_tok)
             trace_id_var.reset(tid_tok)
             actor_var.reset(actor_tok)
             role_var.reset(role_tok)

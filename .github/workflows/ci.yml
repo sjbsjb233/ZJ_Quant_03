@@ -37,6 +37,14 @@ jobs:
         working-directory: apps/web/backend
         run: pytest
 
+      - name: data-keeper tests
+        working-directory: apps/data-keeper
+        run: pytest
+
+      - name: factor service tests
+        working-directory: apps/factor
+        run: pytest
+
   frontend:
     name: frontend (build)
     runs-on: ubuntu-latest

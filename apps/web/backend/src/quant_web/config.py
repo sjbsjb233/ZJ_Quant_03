@@ -24,13 +24,30 @@ class Settings(BaseSettings):
     # cors
     allowed_origins: str = "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173"
 
-    # jobs / cache (in-process runner needs no Redis; kept for forward-compat)
+    # jobs / cache (in-process runner needs no Redis; kept for forward-compat).
+    # When KEEPER_BASE is set the heavy-job runner lives in data-keeper; this
+    # local runner only handles the rollback (KEEPER_BASE-unset) path.
     redis_url: str = ""
     job_workers: int = 4
 
     # factor service (proxied at /api/v1/factors|runs|tasks|universe|imports|queue)
     # In dev: defaults to localhost. In compose: service DNS http://factor-api:8100.
     factor_api_base: str = "http://factor-api:8100"
+
+    # NOTE: FRONTEND_DIST removed in V3 §5 — the SPA is served by the web-frontend
+    # nginx container, not this backend. (env var, if still set, is ignored.)
+
+    # data-keeper (唯一写者). When set, data write/jobs requests are forwarded to
+    # it (容器化重构 V3 §4.4); when empty, the web backend writes locally — this is
+    # the rollback switch and the default for dev/tests (KEEPER_BASE unset → 本地写).
+    keeper_base: str = ""
+
+    # service-to-service log ingest token (容器化重构 V3 §6.7). Out-of-process
+    # services (data-keeper, factor-*) POST their structured logs to
+    # /api/v1/logs/ingest carrying X-Log-Token: <this>. NOT a user JWT. Empty
+    # disables the endpoint (returns 401) so a misconfigured deploy never accepts
+    # anonymous log injection.
+    log_ingest_token: str = ""
 
     # serving the built SPA (set to the frontend dist dir to serve it)
     frontend_dist: str = ""

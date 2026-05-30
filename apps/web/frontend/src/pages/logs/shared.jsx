@@ -30,10 +30,14 @@ export function LvlChip({ lvl, mini }) {
 const SRC_META = {
   frontend: { c: 'var(--info)', g: 'F', label: 'frontend' },
   backend: { c: 'var(--fg-2)', g: 'B', label: 'backend' },
-  quant_data: { c: 'var(--accent)', g: 'D', label: 'quant_data' },
+  // V3 §6.6: data-layer logs (web read console + data-keeper) = "data";
+  // factor-api / factor-worker = "factor". (legacy "quant_data" kept as an alias)
+  data: { c: 'var(--accent)', g: 'D', label: 'data' },
+  quant_data: { c: 'var(--accent)', g: 'D', label: 'data' },
+  factor: { c: 'var(--success, var(--accent))', g: 'X', label: 'factor' },
 };
 
-// Source mark — F (frontend) · B (backend) · D (quant_data).
+// Source mark — F (frontend) · B (backend) · D (data) · X (factor).
 export function SrcMark({ src, full }) {
   const m = SRC_META[src] || SRC_META.backend;
   return (

@@ -19,7 +19,7 @@ import json
 import time
 from collections import defaultdict, deque
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Header, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import func
@@ -391,6 +391,53 @@ def _viewer_from_request(request: Request, token: str | None, db: Session) -> Us
     if user is None or not user.is_active:
         raise ApiError("UNAUTHENTICATED", "用户不存在或已停用")
     return user
+
+
+# ---------------------------------------------------------------- POST /logs/ingest
+class ServiceLogBatch(BaseModel):
+    records: list[dict]
+
+
+# Out-of-process services may only claim these sources; anything else is coerced
+# to "data" so a compromised shipper can't forge "frontend"/spoofed rows. (V3 §6.7)
+_ALLOWED_INGEST_SOURCES = {"data", "factor", "backend"}
+
+
+@router.post("/ingest")
+def ingest_service_logs(
+    body: ServiceLogBatch,
+    x_log_token: str | None = Header(None, alias="X-Log-Token"),
+):
+    """Receive a batch of structured logs from an out-of-process service
+    (data-keeper / factor-*) and fold them into the same ``app_log`` ledger,
+    SSE stream and trace join as backend/frontend logs (容器化重构 V3 §6.7).
+
+    Authenticated by a shared service token (``LOG_INGEST_TOKEN``), NOT a user
+    JWT — these come from trusted containers on the private network, not browsers.
+    """
+    settings = get_settings()
+    expected = settings.log_ingest_token
+    if not expected or not x_log_token or x_log_token != expected:
+        raise ApiError("UNAUTHENTICATED", "无效的日志上报令牌")
+    store = get_store()
+    cap = settings.client_log_max_batch * 4
+    accepted = 0
+    for rec in body.records[:cap]:
+        if not isinstance(rec, dict):
+            continue
+        src = rec.get("source")
+        rec["source"] = src if src in _ALLOWED_INGEST_SOURCES else "data"
+        # bound the heavy text/JSON columns so a runaway service can't bloat the DB
+        if rec.get("extra") is not None:
+            rec["extra"] = _truncate(rec["extra"], _MAX_EXTRA_BYTES)
+        if rec.get("stack") is not None:
+            rec["stack"] = _truncate_text(rec["stack"], _MAX_STACK_BYTES)
+        if rec.get("message") is not None:
+            rec["message"] = _truncate_text(rec["message"], _MAX_EXTRA_BYTES)
+        if store is not None:
+            store.enqueue(rec)               # same redact + SSE + back-pressure path
+            accepted += 1
+    return {"accepted": accepted, "received": len(body.records)}
 
 
 @router.post("/client")

@@ -18,6 +18,8 @@ _DB_PATH = os.path.join(tempfile.mkdtemp(prefix="zjqweb_db_"), "audit.db")
 os.environ["QUANT_DATA_ROOT"] = _DATA_ROOT
 os.environ["AUDIT_DB_URL"] = f"sqlite:///{_DB_PATH}"
 os.environ["SEED_DEFAULT_USERS"] = "true"
+# enable the service log-ingest endpoint (容器化重构 V3 §6.7)
+os.environ["LOG_INGEST_TOKEN"] = "test-log-token"
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -345,7 +347,7 @@ def test_trace_spans_backend_and_data_layer(client, admin):
                       params={"trace_id": tid, "page_size": 100}).json()["items"]
     sources = {r["source"] for r in rows}
     assert "backend" in sources, rows
-    assert "quant_data" in sources, "data-layer log did not inherit the request trace_id"
+    assert "data" in sources, "data-layer log did not inherit the request trace_id"
     assert any(r["event"] == "reader.query.executed" for r in rows)
     assert any(r["event"] == "http.request.completed" for r in rows)
 
@@ -416,6 +418,40 @@ def test_export_jsonl(client, admin):
     r = client.get("/api/v1/logs/export", headers=admin, params={"format": "jsonl", "limit": 10})
     assert r.status_code == 200
     assert "application/x-ndjson" in r.headers["content-type"]
+
+
+def test_logs_ingest_requires_service_token(client):
+    """The service log-ingest endpoint rejects a missing/wrong token (it is a
+    service token, never a user JWT) — V3 §6.7."""
+    body = {"records": [{"level": "INFO", "event": "x", "logger": "t", "source": "data"}]}
+    assert client.post("/api/v1/logs/ingest", json=body).status_code == 401
+    assert client.post("/api/v1/logs/ingest", json=body,
+                       headers={"X-Log-Token": "wrong"}).status_code == 401
+
+
+def test_logs_ingest_accepts_and_coerces_source(client, admin):
+    """A trusted service batch lands in the same app_log ledger; a spoofed
+    source is coerced into the allowed set and host is preserved (V3 §6.6/§6.7)."""
+    tid = "t_ingest000000001"
+    body = {"records": [
+        {"level": "INFO", "event": "keeper.write.done", "logger": "quant_data.ingest",
+         "source": "data", "trace_id": tid, "host": "zj-quant-data-keeper",
+         "duration_ms": 12},
+        {"level": "ERROR", "event": "task.failed", "logger": "factor.dispatcher",
+         "source": "frontend",        # spoofed -> coerced to "data"
+         "trace_id": tid, "host": "zj-quant-factor-worker"},
+    ]}
+    res = client.post("/api/v1/logs/ingest", json=body,
+                      headers={"X-Log-Token": "test-log-token"}).json()
+    assert res["accepted"] == 2 and res["received"] == 2
+    _flush_logs(client)
+    rows = client.get("/api/v1/logs", headers=admin,
+                      params={"trace_id": tid, "page_size": 50}).json()["items"]
+    by_event = {r["event"]: r for r in rows}
+    assert by_event["keeper.write.done"]["source"] == "data"
+    assert by_event["keeper.write.done"]["host"] == "zj-quant-data-keeper"
+    # spoofed "frontend" was coerced to an allowed service source
+    assert by_event["task.failed"]["source"] == "data"
 
 
 def test_app_log_store_overflow_keeps_warn_and_self_reports(tmp_path):
