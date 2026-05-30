@@ -5,7 +5,7 @@ import { TerminalShell } from '../../components/shell';
 import { logsStreamUrl } from '../../lib/api';
 import { LvlChip, SrcMark, TraceShort, fmtTsTime } from './shared';
 
-const SOURCES = ['backend', 'quant_data', 'frontend'];
+const SOURCES = ['backend', 'data', 'factor', 'frontend'];
 const LEVEL_OPTIONS = [
   { value: 'DEBUG', label: '≥ DEBUG' },
   { value: 'INFO', label: '≥ INFO' },

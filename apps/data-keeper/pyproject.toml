@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "data-keeper"
+version = "0.1.0"
+description = "ZJ Quant — 数据策管服务 (data-keeper): the single writer of the data lake (write-command API + in-process JobRunner + scheduler)."
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.30",
+    "sqlalchemy>=2.0",
+    "pyjwt>=2.8",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "httpx>=0.27",
+    "pyarrow>=15.0",
+    "quant-data>=0.2.0",
+]
+
+[project.optional-dependencies]
+# Source connectors are only needed in the deployed image (the crawler). They are
+# heavy + network-bound, so dev/CT installs skip them; the adapters import lazily
+# and raise a clear error if a fetch is attempted without them.
+ingest = ["akshare>=1.12", "tushare>=1.4"]
+test = ["pytest>=8.0", "httpx>=0.27"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["keeper_service*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

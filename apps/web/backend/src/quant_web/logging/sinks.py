@@ -2,9 +2,10 @@
 
 ``quant_data`` stays dependency-free: it only knows how to emit ``LogRecord``s
 through registered sinks. At startup the backend registers one sink that maps a
-data-layer record into an app_log row (``source="quant_data"``) and enqueues it
--- so a parquet write / duckdb query / migration logs land in the same ledger
-and SSE stream as backend + frontend logs, joined by trace_id.
+data-layer record into an app_log row (``source="data"``, the V3 §6.6 unified
+data-layer source — also used by the out-of-process data-keeper shipper) and
+enqueues it -- so a parquet write / duckdb query / migration logs land in the
+same ledger and SSE stream as backend + frontend logs, joined by trace_id.
 """
 from __future__ import annotations
 
@@ -29,7 +30,7 @@ def install_sinks(settings: "Settings") -> None:
             return
         try:
             row = record.as_dict()
-            row["source"] = "quant_data"
+            row["source"] = "data"
             st.enqueue(row)
         except Exception:  # noqa: BLE001 - a failing sink must never break the data layer
             pass

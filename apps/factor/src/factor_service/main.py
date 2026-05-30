@@ -13,6 +13,7 @@ from .db.seed import seed_all
 from .errors import install_error_handlers
 from .logging_ctx import configure_logging
 from .middleware import TraceIdMiddleware
+from .obs import install_obs, stop_obs
 
 
 _log = logging.getLogger(__name__)
@@ -20,7 +21,8 @@ _log = logging.getLogger(__name__)
 
 def create_app() -> FastAPI:
     s = get_settings()
-    configure_logging("INFO")
+    configure_logging(s.log_level)
+    install_obs(s)               # log shipper → web /logs/ingest (source="factor")
     ensure_dirs(s)
 
     app = FastAPI(
@@ -72,6 +74,10 @@ def create_app() -> FastAPI:
         with _db_base.SessionLocal() as db:
             stats = seed_all(db)
         _log.info("factor-api up: seeded %s", stats)
+
+    @app.on_event("shutdown")
+    async def _shutdown() -> None:
+        stop_obs()               # drain the shipper queue on shutdown
 
     return app
 

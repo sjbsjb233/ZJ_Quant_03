@@ -88,7 +88,7 @@ class AppLog(Base):
     level: Mapped[str] = mapped_column(String(8), index=True)          # DEBUG..CRITICAL
     logger: Mapped[str] = mapped_column(String(64), index=True)
     event: Mapped[str] = mapped_column(String(128), index=True)
-    source: Mapped[str] = mapped_column(String(16), index=True)        # backend|quant_data|frontend
+    source: Mapped[str] = mapped_column(String(16), index=True)        # frontend|backend|data|factor (V3 §6.6)
     trace_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     request_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     session_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)  # frontend

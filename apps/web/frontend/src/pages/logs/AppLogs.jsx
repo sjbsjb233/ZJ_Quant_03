@@ -21,9 +21,10 @@ const LEVEL_OPTIONS = [
 const SOURCE_OPTIONS = [
   { value: '', label: 'all' },
   { value: 'backend', label: 'backend' },
-  { value: 'quant_data', label: 'quant_data' },
+  { value: 'data', label: 'data' },
+  { value: 'factor', label: 'factor' },
   { value: 'frontend', label: 'frontend' },
-  { value: 'backend,quant_data', label: 'be + qd' },
+  { value: 'backend,data', label: 'be + data' },
 ];
 const RANGE_OPTIONS = [
   { value: '24h', label: '24h' },

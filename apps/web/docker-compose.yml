@@ -1,70 +1,78 @@
-# Dual-purpose compose for the ZJ Quant web service.
+# ZJ Quant — 容器化重构 V3 五容器拓扑 (单文档 §3.1 / §8.2)。
 #
-# Dev (build from source, single container):
-#   cd apps/web && docker compose up --build
+#   web-frontend  唯一公网入口 (nginx: SPA 静态 + 反代 /api)
+#   web-backend   网关 / 鉴权 / 审计 / 日志中枢 / 读控制台 (/data:ro)
+#   data-keeper   唯一写者 (/data:rw): 写命令 API + 进程内 JobRunner + 进程内调度
+#   factor-api    因子查询 (/data:ro)
+#   factor-worker 因子计算 (/data:ro)
 #
-# Prod (pull GHCR image + Watchtower auto-update):
-#   cd apps/web && docker compose --profile production up -d
+# 读 = 库 (web/factor 挂 :ro 直读)；写 = 服务 (只有 data-keeper 挂 :rw)。
+# app_log / audit 只被 web-backend 写 (./state)；各服务日志写各自 ./logs/<svc>。
 #
-# Persistence: ./data on the host is bind-mounted to /data in the container.
-# That single mount carries everything stateful: quant_data files, the audit SQLite DB,
-# the app_log table file, and /data/logs (rotating log files). Container rebuilds and
-# image upgrades never touch it.
+# 数据 / 状态分离 (V3 §3.3)：
+#   ./data        原始数据湖 (data-keeper :rw, 其余 :ro)
+#   ./state       web-backend 独占：audit / app_log SQLite + duckdb temp + 日志 JSONL
+#   ./logs/<svc>  各服务本地 JSONL 兜底
+#
+# 首次启动 (重建演示世界 + 演示用户)：
+#   docker compose run --rm data-keeper python -m keeper_service.seed_demo
+#   docker compose run --rm web-backend python -m quant_web.seed_users
+#   docker compose up --build
+#   open http://localhost:${WEB_PORT:-80}   (admin / admin123)
 services:
-  web:
-    # When WEB_IMAGE is set (production .env), compose uses the remote image and SKIPS building.
-    # When unset (dev default), compose builds from the Dockerfile and tags it :local.
-    image: ${WEB_IMAGE:-zj-quant-web:local}
+  # ── 唯一公网入口 ─────────────────────────────────────────────
+  web-frontend:
     build:
-      context: ../../              # repo root — Dockerfile COPYs packages/ + apps/web/backend/
-      dockerfile: apps/web/Dockerfile
-    container_name: zj-quant-web
+      context: ../../
+      dockerfile: apps/web/frontend/Dockerfile
+    image: ${WEB_FRONTEND_IMAGE:-zj-quant-web-frontend:local}
+    container_name: zj-quant-web-frontend
+    ports:
+      - "${WEB_PORT:-80}:80"
+    depends_on:
+      - web-backend
     restart: unless-stopped
-    # Container-level OOM containment (止血). Without this an unbounded
-    # /tables/{name}/rows scan could eat the host's RAM and take other
-    # services down with it; with it the kernel only kills this container
-    # and restart: unless-stopped brings it back. memswap_limit == mem_limit
-    # disables swap so we don't silently mask the leak.
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+  # ── 网关 + 鉴权 + 审计 + 日志中枢 + 读控制台 ──────────────────
+  web-backend:
+    build:
+      context: ../../
+      dockerfile: apps/web/backend/Dockerfile
+    image: ${WEB_BACKEND_IMAGE:-zj-quant-web-backend:local}
+    container_name: zj-quant-web-backend
+    restart: unless-stopped
+    # Container-level OOM containment for the read console's big table scans.
     mem_limit: 12g
     memswap_limit: 12g
-    ports:
-      - "${WEB_PORT:-8000}:8000"
+    depends_on:
+      - data-keeper
+      - factor-api
     environment:
       QUANT_DATA_ROOT: /data
-      AUDIT_DB_URL: sqlite:////data/quant_web_audit.db
-      FRONTEND_DIST: /app/frontend/dist
-      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:8000}
+      # 写转发目标；未设则回退本地写 (回滚开关, V3 §8.1)
+      KEEPER_BASE: http://data-keeper:8300
+      FACTOR_API_BASE: http://factor-api:8100
+      AUDIT_DB_URL: sqlite:////state/quant_web_audit.db
+      # DuckDB 读护栏：超限报错而非 OOM；spill 到可写卷
+      QUANT_DUCKDB_MEMORY_LIMIT: "2GB"
+      QUANT_DUCKDB_TEMP_DIR: /state/duck_tmp
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost,http://localhost:80}
       JWT_SECRET: ${JWT_SECRET:-change-me-in-prod}
       SEED_DEFAULT_USERS: "true"
-      # DuckDB memory guardrails (see DataReader.__init__). The reader honours
-      # PRAGMA memory_limit; when exceeded DuckDB raises instead of OOM-killing
-      # the process, and intermediates spill to QUANT_DUCKDB_TEMP_DIR (reused
-      # /data volume so it survives container restarts cleanly).
-      QUANT_DUCKDB_MEMORY_LIMIT: "2GB"
-      QUANT_DUCKDB_TEMP_DIR: /data/duck_tmp
-      # factor-api address inside the compose network — the web service
-      # proxies /api/v1/factors|runs|tasks|universe|imports|queue to it.
-      FACTOR_API_BASE: http://factor-api:8100
-      # Healthcheck and any localhost callbacks must bypass the host proxy —
-      # otherwise urlopen('http://localhost:8000/...') goes through HTTP_PROXY
-      # and the container is reported unhealthy (502) even when alive.
-      NO_PROXY: "localhost,127.0.0.1"
-      no_proxy: "localhost,127.0.0.1"
-      # === logging platform (全链路日志方案 v2.0 §15.2) — reuses the /data volume ===
+      # 服务级日志上报令牌 (接收 data-keeper / factor 的 /logs/ingest)
+      LOG_INGEST_TOKEN: ${LOG_INGEST_TOKEN:-change-me-log-token}
       LOG_LEVEL: INFO
       LOG_TO_DB: "true"
       LOG_TO_FILE: "true"
-      LOG_FILE_DIR: /data/logs
-      LOG_FILE_MAX_MB: "100"
-      LOG_FILE_BACKUP_COUNT: "10"
+      LOG_FILE_DIR: /state/logs
       LOG_DB_RETENTION_DAYS: "30"
+      NO_PROXY: "localhost,127.0.0.1"
+      no_proxy: "localhost,127.0.0.1"
     volumes:
-      # Bind mount instead of named volume → rebuild/upgrade is decoupled from data.
-      # `./data` is relative to this compose file, i.e. apps/web/data on the host.
-      - ./data:/data
-    labels:
-      # Watchtower whitelist: only this container is auto-updated.
-      - "com.centurylinklabs.watchtower.enable=true"
+      - ./data:/data:ro          # 读控制台,只读 (写者唯一)
+      - ./state:/state           # app_log/audit/duck temp/日志 JSONL (可写)
     healthcheck:
       test: ["CMD", "python", "-c",
              "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health').read()"]
@@ -72,63 +80,109 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
-  # ── factor-api (P1) ──────────────────────────────────────────────────
-  # FastAPI service that owns its own SQLite (factor.db) for factor metadata,
-  # the persistent task queue, and the universe registry. Mounts /data read-
-  # only so it can read bars/fundamentals via DataReader but never write them.
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+  # ── 数据策管 (唯一写者, 单容器: 写命令 API + 进程内 JobRunner + 进程内调度) ──
+  data-keeper:
+    build:
+      context: ../../
+      dockerfile: apps/data-keeper/Dockerfile
+    image: ${DATA_KEEPER_IMAGE:-zj-quant-data-keeper:local}
+    container_name: zj-quant-data-keeper
+    restart: unless-stopped
+    environment:
+      QUANT_DATA_ROOT: /data
+      KEEPER_DB_URL: sqlite:////keeper-store/keeper.db
+      ENABLE_SCHEDULER: "${ENABLE_SCHEDULER:-true}"   # 进程内调度线程; 设 false 即关 (回滚位)
+      TZ: Asia/Shanghai                               # 调度按本地时区
+      TRUST_PROXY_USER_HEADERS: "true"
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-prod}
+      LOG_LEVEL: INFO
+      LOG_FILE_DIR: /logs
+      LOG_INGEST_URL: http://web-backend:8000/api/v1/logs/ingest
+      LOG_INGEST_TOKEN: ${LOG_INGEST_TOKEN:-change-me-log-token}
+      # tushare 备源 token (akshare 主源无需 token)
+      TUSHARE_TOKEN: ${TUSHARE_TOKEN:-}
+    volumes:
+      - ./data:/data                     # 全系统唯一写者：读写
+      - keeper_store:/keeper-store       # keeper.db (Job/调度队列, WAL)
+      - ./logs/keeper:/logs
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8300/health').read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+    # 重型写 (compaction/migration/vacuum) 跑在进程内 ThreadPoolExecutor；
+    # 定时任务由进程内调度线程投递。单写者=单实例,进程内 cron 不会重复触发。
+    # 将来若需把重型写拆成独立 worker 容器 (V3 §4.2.1),同一镜像加：
+    #   command: ["python", "-m", "keeper_service.jobs.dispatcher"]
+
+  # ── 因子查询 (现状不变, 仅加日志上报) ────────────────────────
   factor-api:
-    image: ${FACTOR_IMAGE:-zj-quant-factor:local}
     build:
       context: ../../
       dockerfile: apps/factor/Dockerfile
+    image: ${FACTOR_IMAGE:-zj-quant-factor:local}
     container_name: zj-quant-factor-api
     restart: unless-stopped
     depends_on:
-      - web
+      - data-keeper
     environment:
       QUANT_DATA_ROOT: /data
       FACTOR_STORE_ROOT: /factor-store
       FACTOR_DB_URL: sqlite:////factor-store/factor.db
-      JWT_SECRET: ${JWT_SECRET:-change-me-in-prod}
       FACTOR_ROLE: api
       TRUST_PROXY_USER_HEADERS: "true"
-      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:8000}
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-prod}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost,http://localhost:80}
+      LOG_LEVEL: INFO
+      LOG_FILE_DIR: /logs
+      LOG_INGEST_URL: http://web-backend:8000/api/v1/logs/ingest
+      LOG_INGEST_TOKEN: ${LOG_INGEST_TOKEN:-change-me-log-token}
     volumes:
       - ./data:/data:ro
       - factor_store:/factor-store
+      - ./logs/factor:/logs
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
 
-  # ── factor-worker (P1) ───────────────────────────────────────────────
-  # Same image, different role: drains the SQLite queue and executes
-  # evaluation / correlation / import_validate tasks. Shares the
-  # factor-store volume with factor-api (single SQLite file, WAL mode).
+  # ── 因子计算 (worker) ────────────────────────────────────────
   factor-worker:
-    image: ${FACTOR_IMAGE:-zj-quant-factor:local}
     build:
       context: ../../
       dockerfile: apps/factor/Dockerfile
+    image: ${FACTOR_IMAGE:-zj-quant-factor:local}
     container_name: zj-quant-factor-worker
-    restart: unless-stopped
     command: ["python", "-m", "factor_service.queue.dispatcher"]
+    restart: unless-stopped
     depends_on:
       - factor-api
     environment:
       QUANT_DATA_ROOT: /data
       FACTOR_STORE_ROOT: /factor-store
       FACTOR_DB_URL: sqlite:////factor-store/factor.db
-      JWT_SECRET: ${JWT_SECRET:-change-me-in-prod}
       FACTOR_ROLE: worker
       FACTOR_CONCURRENCY: ${FACTOR_CONCURRENCY:-4}
       FACTOR_RESERVE_INTERACTIVE: ${FACTOR_RESERVE_INTERACTIVE:-1}
       FACTOR_POLL_INTERVAL_MS: ${FACTOR_POLL_INTERVAL_MS:-1000}
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-prod}
+      LOG_LEVEL: INFO
+      LOG_FILE_DIR: /logs
+      LOG_INGEST_URL: http://web-backend:8000/api/v1/logs/ingest
+      LOG_INGEST_TOKEN: ${LOG_INGEST_TOKEN:-change-me-log-token}
     volumes:
       - ./data:/data:ro
       - factor_store:/factor-store
+      - ./logs/factor:/logs
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
 
-  # Production-only. Activated by `--profile production`; ignored in plain dev `docker compose up`.
+  # ── 生产自动更新 (profile) ───────────────────────────────────
   watchtower:
     image: containrrr/watchtower:latest
     container_name: zj-quant-watchtower
@@ -136,21 +190,14 @@ services:
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      # GHCR auth for private packages. After `docker login ghcr.io` on the host,
-      # creds live in ~/.docker/config.json. Drop this line if your GHCR package is public.
       - ${HOME}/.docker/config.json:/config.json:ro
     environment:
       TZ: "Asia/Shanghai"
-      WATCHTOWER_LABEL_ENABLE: "true"     # only update labelled containers
-      WATCHTOWER_CLEANUP: "true"          # GC old images
-      WATCHTOWER_POLL_INTERVAL: "300"     # poll every 5 min
+      WATCHTOWER_LABEL_ENABLE: "true"
+      WATCHTOWER_CLEANUP: "true"
+      WATCHTOWER_POLL_INTERVAL: "300"
       WATCHTOWER_ROLLING_RESTART: "true"
 
 volumes:
+  keeper_store:
   factor_store:
-
-# First seed a demo world (dev, unchanged):
-#   cd apps/web && docker compose run --rm web python -m quant_web.seed_demo
-# Then:
-#   cd apps/web && docker compose up
-# Open http://localhost:8000  (admin / admin123)

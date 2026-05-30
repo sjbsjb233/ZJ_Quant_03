@@ -24,6 +24,7 @@ import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 
+from quant_data import logging as qd_logging
 from sqlalchemy.orm import Session
 
 from ..config import ensure_dirs, get_settings
@@ -31,6 +32,7 @@ from ..db import base as _db_base
 from ..db.models import Task
 from ..db.seed import seed_all
 from ..logging_ctx import configure_logging, trace_id_var
+from ..obs import install_obs
 from ..services.run_executor import execute_task
 from . import store
 from .estimator import update_stats
@@ -47,9 +49,13 @@ def _handle_signal(signum, _frame):  # noqa: ARG001
 
 def _run_one(task_id: str, trace_id: str | None) -> dict:
     tok = trace_id_var.set(trace_id or "-")
+    # bind quant_data's context too so the task's data-layer reads carry the
+    # task's trace_id into app_log (V3 §6.4 — autonomous/worker task tracing).
+    qd_tok = qd_logging.bind_context(trace_id=trace_id)
     try:
         return execute_task(task_id)
     finally:
+        qd_logging.reset_context(qd_tok)
         trace_id_var.reset(tok)
 
 
@@ -98,8 +104,9 @@ def _now_utc():
 
 
 def main() -> None:
-    configure_logging("INFO")
     s = get_settings()
+    configure_logging(s.log_level)
+    install_obs(s)               # log shipper → web /logs/ingest (source="factor")
     ensure_dirs(s)
     _db_base.init_db()
     # Seed builtins + presets on first launch (idempotent).
