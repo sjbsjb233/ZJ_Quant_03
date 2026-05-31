@@ -9,10 +9,12 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import os
+import time
 from typing import Any
 
 import polars as pl
 from quant_data import DataReader
+from quant_data import logging as qd_logging
 from quant_factor import (
     EvalConfig,
     FactorEvaluator,
@@ -36,6 +38,11 @@ from .results_writer import write_correlation_cache, write_run_results
 
 
 _log = logging.getLogger("factor.executor")
+# Structured data-layer logger: emits as source="factor" with the worker's
+# re-bound trace_id (dispatcher._run_one), so a run's full chain — run.start →
+# run.stage.* → run.done — lands in app_log joined to the submitting request
+# (容器化重构 V3 §4.3). No-op when no shipper sink is installed (standalone dev).
+_qlog = qd_logging.get_logger("factor.executor")
 
 
 def _open_run_log(run_id: str | None) -> tuple:
@@ -85,83 +92,106 @@ def _run_evaluation(db, t: Task) -> dict[str, Any]:
     run.started_at = dt.datetime.utcnow()
     db.commit()
 
+    t0 = time.perf_counter()
+    stage = "load"
+    _qlog.info("run.start", run_id=run_id, factor_id=run.factor_id, version=run.version)
+
     log_file, log_write = _open_run_log(run_id)
     try:
-        # Resolve factor + version + config
-        factor_id = run.factor_id
-        version = run.version
-        params = run.params or {}
-        cfg = EvalConfig.from_dict(run.run_config)
+        # ── stage: load (resolve factor/version/universe + build the engine) ──
+        with qd_logging.timed(_qlog, "run.stage.load", run_id=run_id) as m:
+            # Resolve factor + version + config
+            factor_id = run.factor_id
+            version = run.version
+            params = run.params or {}
+            cfg = EvalConfig.from_dict(run.run_config)
 
-        rec = db.get(FactorRecord, factor_id)
-        ver = (
-            db.query(FactorVersion)
-            .filter(FactorVersion.factor_id == factor_id, FactorVersion.version == version)
-            .first()
-        )
-        if rec is None or ver is None:
-            raise ValueError(
-                f"factor/{factor_id} version {version} not in registry"
+            rec = db.get(FactorRecord, factor_id)
+            ver = (
+                db.query(FactorVersion)
+                .filter(FactorVersion.factor_id == factor_id, FactorVersion.version == version)
+                .first()
             )
-        if not ver.enabled:
-            raise PermissionError(
-                f"factor version {factor_id}@{version} is not enabled"
+            if rec is None or ver is None:
+                raise ValueError(
+                    f"factor/{factor_id} version {version} not in registry"
+                )
+            if not ver.enabled:
+                raise PermissionError(
+                    f"factor version {factor_id}@{version} is not enabled"
+                )
+
+            log_write(f"resolved factor {factor_id} @ {version} from {ver.class_name}")
+            if ver.code_path and os.path.exists(ver.code_path):
+                with open(ver.code_path, encoding="utf-8") as fh:
+                    src = fh.read()
+                factor = instantiate_from_code(src, ver.class_name, params)
+                log_write(f"loaded factor code from {ver.code_path}")
+            else:
+                factor = instantiate(rec.base_name, params)
+                log_write(f"loaded builtin factor {rec.base_name}")
+
+            # Universe def from factor.db
+            uni_row = db.get(Universe, cfg.universe_id)
+            if uni_row is None:
+                raise ValueError(f"universe {cfg.universe_id} not found")
+            uni_def = _universe_row_to_dict(uni_row)
+            custom_syms = None
+            if uni_row.kind == "custom":
+                from ..db.models import UniverseMember
+
+                custom_syms = [
+                    r[0]
+                    for r in db.query(UniverseMember.symbol)
+                    .filter(UniverseMember.universe_id == uni_row.universe_id)
+                    .all()
+                ]
+            log_write(
+                f"universe {uni_row.universe_id} ({uni_row.kind}); "
+                f"members={len(custom_syms) if custom_syms is not None else '∞'}"
             )
 
-        log_write(f"resolved factor {factor_id} @ {version} from {ver.class_name}")
-        if ver.code_path and os.path.exists(ver.code_path):
-            with open(ver.code_path, encoding="utf-8") as fh:
-                src = fh.read()
-            factor = instantiate_from_code(src, ver.class_name, params)
-            log_write(f"loaded factor code from {ver.code_path}")
-        else:
-            factor = instantiate(rec.base_name, params)
-            log_write(f"loaded builtin factor {rec.base_name}")
+            # Engine with progress + cancel callbacks
+            def progress(c, n):
+                store.heartbeat(db, t.task_id, current=int(c), total=int(n))
 
-        # Universe def from factor.db
-        uni_row = db.get(Universe, cfg.universe_id)
-        if uni_row is None:
-            raise ValueError(f"universe {cfg.universe_id} not found")
-        uni_def = _universe_row_to_dict(uni_row)
-        custom_syms = None
-        if uni_row.kind == "custom":
-            from ..db.models import UniverseMember
+            def cancelled():
+                db.refresh(t)
+                return bool(t.cancel_requested)
 
-            custom_syms = [
-                r[0]
-                for r in db.query(UniverseMember.symbol)
-                .filter(UniverseMember.universe_id == uni_row.universe_id)
-                .all()
-            ]
-        log_write(
-            f"universe {uni_row.universe_id} ({uni_row.kind}); "
-            f"members={len(custom_syms) if custom_syms is not None else '∞'}"
-        )
+            def log_cb(msg: str):
+                log_write(msg)
 
-        # Engine with progress + cancel callbacks
-        def progress(c, n):
-            store.heartbeat(db, t.task_id, current=int(c), total=int(n))
+            reader = DataReader(root=get_settings().quant_data_root)
+            evaluator = FactorEvaluator(
+                reader,
+                progress_cb=progress,
+                log_cb=log_cb,
+                cancel_cb=cancelled,
+            )
+            m["universe_id"] = uni_row.universe_id
+            m["n_symbols"] = len(custom_syms) if custom_syms is not None else None
 
-        def cancelled():
-            db.refresh(t)
-            return bool(t.cancel_requested)
+        # ── stage: compute (run the factor + evaluation engine) ──────────────
+        stage = "compute"
+        with qd_logging.timed(_qlog, "run.stage.compute", run_id=run_id) as m:
+            result = evaluator.evaluate(factor, cfg, uni_def, custom_syms)
+            _ic = result.get("ic_series")
+            ic_rows = int(_ic.height) if isinstance(_ic, pl.DataFrame) else 0
+            m["ic_rows"] = ic_rows
 
-        def log_cb(msg: str):
-            log_write(msg)
+        # ── stage: write (persist IC / layer / decay / turnover artifacts) ───
+        stage = "write"
+        with qd_logging.timed(_qlog, "run.results.write", run_id=run_id) as m:
+            write_run_results(run_id, factor_id, result)
+            m["rows_written"] = ic_rows
+            m["path"] = os.path.join(get_settings().evaluations_dir, factor_id)
 
-        reader = DataReader(root=get_settings().quant_data_root)
-        evaluator = FactorEvaluator(
-            reader,
-            progress_cb=progress,
-            log_cb=log_cb,
-            cancel_cb=cancelled,
-        )
-
-        result = evaluator.evaluate(factor, cfg, uni_def, custom_syms)
-
-        # Persist results to disk + summary into eval_summary
-        write_run_results(run_id, factor_id, result)
-        _persist_eval_summary(db, run, cfg, uni_row.universe_id, result)
+        # ── stage: eval (roll the metrics summary into eval_summary) ─────────
+        stage = "eval"
+        with qd_logging.timed(_qlog, "run.stage.eval", run_id=run_id) as m:
+            _persist_eval_summary(db, run, cfg, uni_row.universe_id, result)
+            m["metrics_n"] = len(result.get("summary") or {})
 
         run.status = "success"
         run.finished_at = dt.datetime.utcnow()
@@ -169,6 +199,8 @@ def _run_evaluation(db, t: Task) -> dict[str, Any]:
         run.summary = dict(result.get("summary") or {})
         db.commit()
         log_write(f"DONE in {run.duration_sec:.1f}s")
+        _qlog.info("run.done", run_id=run_id, status="success",
+                   total_ms=int((time.perf_counter() - t0) * 1000))
         return {"task_id": t.task_id, "status": "success", "summary": run.summary}
 
     except RunCancelled:
@@ -176,6 +208,8 @@ def _run_evaluation(db, t: Task) -> dict[str, Any]:
         run.finished_at = dt.datetime.utcnow()
         db.commit()
         log_write("CANCELLED")
+        _qlog.warn("run.canceled", run_id=run_id, stage=stage,
+                   total_ms=int((time.perf_counter() - t0) * 1000))
         return {"task_id": t.task_id, "status": "canceled"}
     except Exception as e:  # noqa: BLE001
         run.status = "failed"
@@ -183,6 +217,8 @@ def _run_evaluation(db, t: Task) -> dict[str, Any]:
         run.finished_at = dt.datetime.utcnow()
         db.commit()
         log_write(f"FAILED · {run.error}")
+        # ERROR auto-attaches the stack; `stage` pinpoints which phase blew up.
+        _qlog.error("run.failed", exc=e, run_id=run_id, stage=stage)
         raise
     finally:
         if log_file:
@@ -194,9 +230,15 @@ def _persist_eval_summary(
 ) -> None:
     s = result.get("summary") or {}
     # Compute a small IC spark (last 20 rank_ic values) for the library table.
-    ic_df: pl.DataFrame = result.get("ic_series") or pl.DataFrame()
+    # NB: must be an explicit `is None` check — `df or default` evaluates
+    # bool(df), which a non-empty polars DataFrame refuses ("truth value is
+    # ambiguous"), so the old `or` form crashed every successful eval that
+    # produced a real ic_series (only latent because demo data yielded none).
+    ic_df = result.get("ic_series")
+    if ic_df is None:
+        ic_df = pl.DataFrame()
     spark: list[float] = []
-    if ic_df is not None and ic_df.height > 0 and "rank_ic" in ic_df.columns:
+    if ic_df.height > 0 and "rank_ic" in ic_df.columns:
         spark = [
             float(x) if x is not None else 0.0
             for x in ic_df.tail(20)["rank_ic"].to_list()
@@ -303,19 +345,28 @@ def _run_correlation(db, t: Task) -> dict[str, Any]:
         return bool(t.cancel_requested)
 
     reader = DataReader(root=get_settings().quant_data_root)
-    result = correlation_matrix(
-        reader,
-        instances,
-        cfg,
-        uni_def,
-        custom_symbols=custom,
-        method=str(payload.get("method", "ic_series")),
-        threshold=float(payload.get("threshold", 0.7)),
-        icir_lookup=icir_lookup,
-        progress_cb=progress,
-        cancel_cb=cancelled,
-    )
-    write_correlation_cache(t.task_id, result)
+    _qlog.info("correlation.start", task_id=t.task_id, n_factors=len(fids),
+               method=str(payload.get("method", "ic_series")))
+    try:
+        with qd_logging.timed(_qlog, "correlation.compute", task_id=t.task_id) as m:
+            result = correlation_matrix(
+                reader,
+                instances,
+                cfg,
+                uni_def,
+                custom_symbols=custom,
+                method=str(payload.get("method", "ic_series")),
+                threshold=float(payload.get("threshold", 0.7)),
+                icir_lookup=icir_lookup,
+                progress_cb=progress,
+                cancel_cb=cancelled,
+            )
+            write_correlation_cache(t.task_id, result)
+            m["n_factors"] = len(fids)
+            m["matrix_size"] = len(fids) * len(fids)
+    except Exception as e:  # noqa: BLE001
+        _qlog.error("correlation.failed", exc=e, task_id=t.task_id, n_factors=len(fids))
+        raise
     return {"task_id": t.task_id, "status": "success", "summary": result["summary"]}
 
 

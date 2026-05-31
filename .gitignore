@@ -21,8 +21,16 @@ apps/web/frontend/dist/
 .env
 *.db
 /data/
-apps/web/data/        # compose bind mount (./data) — quant_data + audit DB + logs
+apps/web/data/        # legacy compose bind mount — superseded by deploy/data/
 .devdata/
+
+# --- deploy/ runtime bind mounts (V3 §2.4) — auto-created on first `up`, never committed ---
+/deploy/.env
+/deploy/data/
+/deploy/state/
+/deploy/keeper-store/
+/deploy/factor-store/
+/deploy/logs/
 
 # --- OS / local tooling ---
 .DS_Store

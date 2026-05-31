@@ -12,6 +12,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from quant_data import DataReader
+from quant_data import logging as qd_logging
 from quant_factor.universe import resolve_universe
 
 from ..db.models import FactorRecord, Universe, UniverseMember
@@ -20,6 +21,8 @@ from ..errors import ApiError
 
 
 router = APIRouter()
+
+_qlog = qd_logging.get_logger("factor.universe")
 
 
 def _register_specific_universe_routes() -> None:
@@ -141,13 +144,15 @@ def create_universe(
     db.add(u)
     db.commit()
     # de-dup symbols
-    seen: set[str] = set()
-    for sym in symbols:
-        if sym in seen:
-            continue
-        seen.add(sym)
-        db.add(UniverseMember(universe_id=uid, symbol=sym))
-    db.commit()
+    with qd_logging.timed(_qlog, "universe.build", universe_id=uid) as m:
+        seen: set[str] = set()
+        for sym in symbols:
+            if sym in seen:
+                continue
+            seen.add(sym)
+            db.add(UniverseMember(universe_id=uid, symbol=sym))
+        db.commit()
+        m["n_symbols"] = len(seen)
     return _serialize_universe(u, member_count=len(seen), used_by=0)
 
 
@@ -175,12 +180,14 @@ def update_universe(
         if k in body:
             setattr(u, k, body[k])
     if "symbols" in body:
-        syms = list(body["symbols"])
-        db.query(UniverseMember).filter(
-            UniverseMember.universe_id == universe_id
-        ).delete()
-        for s in syms:
-            db.add(UniverseMember(universe_id=universe_id, symbol=s))
+        with qd_logging.timed(_qlog, "universe.build", universe_id=universe_id) as m:
+            syms = list(body["symbols"])
+            db.query(UniverseMember).filter(
+                UniverseMember.universe_id == universe_id
+            ).delete()
+            for s in syms:
+                db.add(UniverseMember(universe_id=universe_id, symbol=s))
+            m["n_symbols"] = len(syms)
     db.commit()
     db.refresh(u)
     mc = (
@@ -283,6 +290,8 @@ def preview_universe(
         {"symbol": s, "name": name_map.get(s) or ""} for s in syms_list
     ]
 
+    _qlog.info("universe.preview", universe_id=universe_id, date=date_str,
+               selected=selected, tradable=final, coverage=coverage)
     return {
         "universe_id": universe_id,
         "date": date_str,

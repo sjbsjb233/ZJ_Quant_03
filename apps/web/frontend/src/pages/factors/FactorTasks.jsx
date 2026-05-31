@@ -8,6 +8,7 @@ import { TerminalShell, FilterBar, FSelect, KpiStrip } from '../../components/sh
 import { Empty } from '../../components/ui';
 import { DrawerHeader } from './RunConfigDrawer';
 import RunConfigDrawer from './RunConfigDrawer';
+import LogPanel from '../logs/LogPanel';
 
 export default function FactorTasks() {
   const nav = useNavigate();
@@ -263,7 +264,21 @@ function QueuedCard({ t, onBoost, onCancel }) {
   );
 }
 
+// Run-log drawer with two views (V3 §4.4 D):
+//   • 结构化 — the run's app_log rows by trace_id (run.start→stage→done, durations),
+//     via the embedded <LogPanel source="factor"> with its own SSE live toggle;
+//   • 原始   — the raw runs/<run_id>.log file tail (the pre-existing view).
 function LogsDrawer({ runId, factorId, onClose }) {
+  const nav = useNavigate();
+  const [view, setView] = React.useState('structured');   // 'structured' | 'raw'
+  const runQ = useQuery({
+    queryKey: ['run', runId],
+    queryFn: () => endpoints.run(runId),
+    enabled: !!runId,
+  });
+  const traceId = runQ.data?.trace_id || '';
+
+  // raw file-tail state
   const [lines, setLines] = React.useState([]);
   const [grep, setGrep] = React.useState('');
   const [levelFilter, setLevelFilter] = React.useState(new Set(['INFO', 'WARN', 'ERROR']));
@@ -271,7 +286,7 @@ function LogsDrawer({ runId, factorId, onClose }) {
   const bodyRef = React.useRef(null);
 
   React.useEffect(() => {
-    if (!runId) return;
+    if (!runId || view !== 'raw') return undefined;        // only tail when raw tab is open
     const es = new EventSource(runLogStreamUrl(runId));
     es.onmessage = (e) => {
       const text = e.data || '';
@@ -282,7 +297,7 @@ function LogsDrawer({ runId, factorId, onClose }) {
     };
     es.onerror = () => es.close();
     return () => es.close();
-  }, [runId]);
+  }, [runId, view]);
 
   React.useEffect(() => {
     if (!paused && bodyRef.current) {
@@ -298,52 +313,90 @@ function LogsDrawer({ runId, factorId, onClose }) {
     setLevelFilter(n);
   };
 
+  const Tab = ({ id, children }) => (
+    <span data-testid={`logsdrawer-tab-${id}`} onClick={() => setView(id)} style={{
+      padding: '3px 10px', cursor: 'pointer', fontFamily: 'var(--font-mono)', fontSize: 10.5,
+      borderRadius: 3, background: view === id ? 'var(--fg)' : 'var(--surface)',
+      color: view === id ? 'var(--bg)' : 'var(--fg-2)', border: '1px solid var(--border)',
+    }}>{children}</span>
+  );
+
   return (
-    <aside style={{ width: 520, flexShrink: 0, background: 'var(--surface)', display: 'flex', flexDirection: 'column', minHeight: 0, borderLeft: '1px solid var(--border)' }}>
-      <DrawerHeader title={`实时日志 · ${runId || '—'}`} subtitle={factorId} onClose={onClose} />
+    <aside style={{ width: 560, flexShrink: 0, background: 'var(--surface)', display: 'flex', flexDirection: 'column', minHeight: 0, borderLeft: '1px solid var(--border)' }}>
+      <DrawerHeader title={`运行日志 · ${runId || '—'}`} subtitle={factorId} onClose={onClose} />
       <div style={{
-        height: 28, padding: '0 16px', borderBottom: '1px solid var(--border)', background: 'var(--surface-2)',
-        display: 'flex', alignItems: 'center', gap: 10, fontFamily: 'var(--font-mono)', fontSize: 10,
+        height: 30, padding: '0 16px', borderBottom: '1px solid var(--border)', background: 'var(--surface-2)',
+        display: 'flex', alignItems: 'center', gap: 8,
       }}>
-        <span style={{ color: 'var(--fg-3)' }}>level:</span>
-        {['DEBUG', 'INFO', 'WARN', 'ERROR'].map((l) => (
-          <span key={l} onClick={() => toggleLevel(l)} style={{
-            padding: '1px 6px', borderRadius: 2, cursor: 'pointer',
-            background: levelFilter.has(l) ? 'var(--surface)' : 'transparent',
-            color: levelFilter.has(l) ? 'var(--fg)' : 'var(--fg-4)',
-            border: `1px solid ${levelFilter.has(l) ? 'var(--border)' : 'transparent'}`,
-          }}>{l}</span>
-        ))}
-        <span style={{ color: 'var(--fg-mute)' }}>│</span>
-        <input placeholder="grep…" value={grep} onChange={(e) => setGrep(e.target.value)} style={{
-          flex: 1, height: 20, padding: '0 7px', background: 'var(--surface)', border: '1px solid var(--border)',
-          borderRadius: 3, fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--fg)',
-        }} />
+        <Tab id="structured">结构化 · app_log</Tab>
+        <Tab id="raw">原始 · file tail</Tab>
+        <span style={{ flex: 1 }} />
+        {traceId && (
+          <span onClick={() => nav(`/data/logs/trace/${traceId}`)} title="看整条 trace"
+            style={{ cursor: 'pointer', fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--info)' }}>
+            trace: t_{traceId.replace(/^t_/, '').slice(-6)} →
+          </span>
+        )}
       </div>
-      <div ref={bodyRef} className="scroll" style={{
-        flex: 1, minHeight: 0, padding: '8px 0', background: 'var(--surface-3)',
-        fontFamily: 'var(--font-mono)', fontSize: 11, lineHeight: 1.55, color: 'var(--fg-2)',
-      }}>
-        {filtered.map((l, i) => {
-          const c = l.level === 'WARN' ? 'var(--warn)' : l.level === 'ERROR' ? 'var(--err)' : l.level === 'INFO' ? 'var(--info)' : 'var(--fg-3)';
-          return (
-            <div key={i} style={{ padding: '1px 16px', display: 'grid', gridTemplateColumns: '180px 56px 1fr', gap: 8 }}>
-              <span style={{ color: 'var(--fg-4)' }}>{l.ts?.slice(0, 19)}</span>
-              <span style={{ color: c, fontWeight: 500 }}>{l.level}</span>
-              <span>{l.msg}</span>
-            </div>
-          );
-        })}
-        {!filtered.length && <div style={{ padding: 12, color: 'var(--fg-4)' }}><span className="dot running" /> 等待日志…</div>}
-      </div>
-      <footer style={{
-        padding: '6px 16px', borderTop: '1px solid var(--border)', background: 'var(--surface-2)',
-        display: 'flex', alignItems: 'center', fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-3)',
-      }}>
-        <span>{filtered.length} / {lines.length} lines · auto-scroll: <span style={{ color: paused ? 'var(--warn)' : 'var(--ok)' }}>{paused ? 'paused' : 'on'}</span></span>
-        <div style={{ flex: 1 }} />
-        <span onClick={() => setPaused(!paused)} style={{ cursor: 'pointer', color: 'var(--fg-2)' }}>{paused ? '继续' : '暂停'}</span>
-      </footer>
+
+      {view === 'structured' ? (
+        traceId ? (
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, padding: 8 }}>
+            <LogPanel source="factor" lockSource traceId={traceId} embed
+              onTrace={(t) => nav(`/data/logs/trace/${t}`)} />
+          </div>
+        ) : (
+          <div style={{ flex: 1, display: 'grid', placeItems: 'center', padding: 24, color: 'var(--fg-3)', fontFamily: 'var(--font-mono)', fontSize: 11 }}>
+            {runQ.isLoading ? '加载运行信息…' : '该运行无 trace_id,请切换到「原始」视图'}
+          </div>
+        )
+      ) : (
+        <>
+          <div style={{
+            height: 28, padding: '0 16px', borderBottom: '1px solid var(--border)', background: 'var(--surface-2)',
+            display: 'flex', alignItems: 'center', gap: 10, fontFamily: 'var(--font-mono)', fontSize: 10,
+          }}>
+            <span style={{ color: 'var(--fg-3)' }}>level:</span>
+            {['DEBUG', 'INFO', 'WARN', 'ERROR'].map((l) => (
+              <span key={l} onClick={() => toggleLevel(l)} style={{
+                padding: '1px 6px', borderRadius: 2, cursor: 'pointer',
+                background: levelFilter.has(l) ? 'var(--surface)' : 'transparent',
+                color: levelFilter.has(l) ? 'var(--fg)' : 'var(--fg-4)',
+                border: `1px solid ${levelFilter.has(l) ? 'var(--border)' : 'transparent'}`,
+              }}>{l}</span>
+            ))}
+            <span style={{ color: 'var(--fg-mute)' }}>│</span>
+            <input placeholder="grep…" value={grep} onChange={(e) => setGrep(e.target.value)} style={{
+              flex: 1, height: 20, padding: '0 7px', background: 'var(--surface)', border: '1px solid var(--border)',
+              borderRadius: 3, fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--fg)',
+            }} />
+          </div>
+          <div ref={bodyRef} className="scroll" style={{
+            flex: 1, minHeight: 0, padding: '8px 0', background: 'var(--surface-3)',
+            fontFamily: 'var(--font-mono)', fontSize: 11, lineHeight: 1.55, color: 'var(--fg-2)',
+          }}>
+            {filtered.map((l, i) => {
+              const c = l.level === 'WARN' ? 'var(--warn)' : l.level === 'ERROR' ? 'var(--err)' : l.level === 'INFO' ? 'var(--info)' : 'var(--fg-3)';
+              return (
+                <div key={i} style={{ padding: '1px 16px', display: 'grid', gridTemplateColumns: '180px 56px 1fr', gap: 8 }}>
+                  <span style={{ color: 'var(--fg-4)' }}>{l.ts?.slice(0, 19)}</span>
+                  <span style={{ color: c, fontWeight: 500 }}>{l.level}</span>
+                  <span>{l.msg}</span>
+                </div>
+              );
+            })}
+            {!filtered.length && <div style={{ padding: 12, color: 'var(--fg-4)' }}><span className="dot running" /> 等待日志…</div>}
+          </div>
+          <footer style={{
+            padding: '6px 16px', borderTop: '1px solid var(--border)', background: 'var(--surface-2)',
+            display: 'flex', alignItems: 'center', fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-3)',
+          }}>
+            <span>{filtered.length} / {lines.length} lines · auto-scroll: <span style={{ color: paused ? 'var(--warn)' : 'var(--ok)' }}>{paused ? 'paused' : 'on'}</span></span>
+            <div style={{ flex: 1 }} />
+            <span onClick={() => setPaused(!paused)} style={{ cursor: 'pointer', color: 'var(--fg-2)' }}>{paused ? '继续' : '暂停'}</span>
+          </footer>
+        </>
+      )}
     </aside>
   );
 }

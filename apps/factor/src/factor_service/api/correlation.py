@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
+from quant_data import logging as qd_logging
 from quant_factor.config import EvalConfig, config_signature
 
 from ..db.models import FactorRecord, Task
@@ -19,6 +20,10 @@ from ..services import results_writer
 
 
 router = APIRouter()
+
+# The matching compute chain (correlation.compute.done) is in run_executor; same
+# trace_id stitches submit → compute in app_log (V3 §4.3).
+_qlog = qd_logging.get_logger("factor.correlation")
 
 
 @router.post("/factors/correlation")
@@ -56,6 +61,8 @@ def submit_correlation(
         initiated_by=user.username,
         trace_id=trace_id_var.get(),
     )
+    _qlog.info("correlation.submit", task_id=task.task_id, n_factors=len(fids),
+               method=method, threshold=threshold, lane=task.lane)
     return {
         "task_id": task.task_id,
         "status": "queued",

@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
+from quant_data import logging as qd_logging
 from quant_factor.config import EvalConfig
 
 from ..config import get_settings
@@ -22,6 +23,11 @@ from ..queue import store
 
 
 router = APIRouter()
+
+# Structured logger (source="factor", carries the request trace_id). The matching
+# worker-side chain (run.start → run.stage.* → run.done) is in run_executor; both
+# share the same trace_id so a run reads end-to-end in app_log (V3 §4.3).
+_qlog = qd_logging.get_logger("factor.runs")
 
 
 @router.post("/runs")
@@ -117,6 +123,9 @@ def submit_run(
     )
     run.task_id = task.task_id
     db.commit()
+    _qlog.info("run.submit", run_id=run_id, factor_id=factor_id, version=version,
+               task_id=task.task_id, universe=cfg.universe_id, lane=task.lane,
+               **{"from": str(cfg.start), "to": str(cfg.end)})
     return {
         "run_id": run_id,
         "task_id": task.task_id,
@@ -281,6 +290,8 @@ def retry_run(
     )
     nr.task_id = task.task_id
     db.commit()
+    _qlog.info("run.submit", run_id=new_id, factor_id=r.factor_id, version=r.version,
+               task_id=task.task_id, retried_from=run_id)
     return {"run_id": new_id, "task_id": task.task_id, "status": "queued"}
 
 

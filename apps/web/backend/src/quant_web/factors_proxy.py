@@ -25,7 +25,7 @@ import httpx
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import StreamingResponse
 
-from .deps import get_current_user
+from .deps import get_current_user, get_current_user_sse
 from .errors import ApiError
 from .logging.context import trace_id_var
 
@@ -94,7 +94,9 @@ async def proxy_factors(
     "/runs{path:path}",
     methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
 )
-async def proxy_runs(path: str, request: Request, user=Depends(get_current_user)):
+async def proxy_runs(path: str, request: Request, user=Depends(get_current_user_sse)):
+    # SSE-aware auth: /runs/{id}/logs/stream is consumed by EventSource, which
+    # can't set an Authorization header — accept the ?token= query param too.
     return await _do_proxy("/runs" + path, request, user)
 
 
