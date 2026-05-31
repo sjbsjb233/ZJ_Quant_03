@@ -11,6 +11,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from quant_data import DataReader
+from quant_data import logging as qd_logging
 from quant_factor.registry import all_registered, instantiate, instantiate_from_code
 
 from ..db.models import (
@@ -24,6 +25,8 @@ from ..errors import ApiError
 
 
 router = APIRouter()
+
+_qlog = qd_logging.get_logger("factor.factors")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -398,11 +401,13 @@ def patch_factor(
         "category",
         "direction",
     }
+    changed = [k for k in body if k in allowed]
     for k, v in body.items():
         if k in allowed:
             setattr(f, k, v)
     db.commit()
     db.refresh(f)
+    _qlog.info("factor.update", factor_id=factor_id, fields=sorted(changed))
     latest = (
         db.query(EvalSummary)
         .filter(EvalSummary.factor_id == factor_id)
@@ -423,6 +428,7 @@ def archive_factor(
         raise ApiError("FACTOR_NOT_FOUND", f"因子 {factor_id} 不存在")
     f.status = "archived"
     db.commit()
+    _qlog.info("factor.archive", factor_id=factor_id)
     return {"factor_id": factor_id, "status": "archived"}
 
 
@@ -448,6 +454,8 @@ def enable_version(
     ).update({"enabled": False})
     v.enabled = True
     db.commit()
+    _qlog.info("factor.version.enable", factor_id=factor_id, version=version,
+               expr_hash=v.code_sha256)
     return {"factor_id": factor_id, "version": version, "enabled": True}
 
 

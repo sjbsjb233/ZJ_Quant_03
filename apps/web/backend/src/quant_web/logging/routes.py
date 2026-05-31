@@ -1,13 +1,19 @@
-"""Log-centre API (全链路日志方案 v2.0 §6.5 / appendix B).
+"""Log-centre API (全链路日志方案 v2.0 §6.5 / appendix B; layering V3 §4.2).
 
-| route                       | role   | purpose                                  |
-|-----------------------------|--------|------------------------------------------|
-| POST /logs/client           | viewer | frontend batch upload (rate limited)     |
-| GET  /logs                  | admin  | app_log query (paged + multi-filter)     |
-| GET  /logs/summary          | admin  | dashboard aggregates                     |
-| GET  /logs/trace/{trace_id} | admin  | one trace: app_log + audit_log joined    |
-| GET  /logs/stream           | admin  | live tail over SSE (token via query)     |
-| GET  /logs/export           | admin  | CSV / JSON Lines download                |
+| route                       | role        | purpose                              |
+|-----------------------------|-------------|--------------------------------------|
+| POST /logs/client           | viewer      | frontend batch upload (rate limited) |
+| GET  /logs                  | log-access* | app_log query (paged + multi-filter) |
+| GET  /logs/summary          | log-access* | dashboard aggregates                 |
+| GET  /logs/trace/{trace_id} | log-access* | one trace: app_log + audit_log join  |
+| GET  /logs/stream           | log-access* | live tail over SSE (token via query) |
+| GET  /logs/export           | log-access* | CSV / JSON Lines download            |
+| POST /logs/archive          | admin       | roll old rows to gzip (destructive)  |
+
+\\*log-access = any role with ≥1 visible ``source`` (V3 §4.2). The returned
+rows are always narrowed to the caller's ``allowed_sources_for`` set, so a
+viewer can never pull a layer they're not entitled to — the frontend's
+``lockSource`` is UX only, the boundary is enforced here (V3 §6.2).
 """
 from __future__ import annotations
 
@@ -29,13 +35,33 @@ from ..auth.security import decode_token
 from ..config import get_settings
 from ..db.base import get_db
 from ..db.models import AppLog, AuditLog, User
-from ..deps import require_admin
+from ..deps import ALL_SOURCES, allowed_sources_for, require_admin, require_log_access
 from ..errors import ApiError
 from ..pagination import paginate
 from . import sse
 from .store import get_store
 
 router = APIRouter(prefix="/logs", tags=["logs"])
+
+
+def _scoped_source(source: str | None, user: User) -> str | None:
+    """Intersect a requested ``source`` filter with the caller's allowed layers.
+
+    admin passes through unchanged — including ``None`` (no filter) — so it sees
+    every layer, present or future (matches "admin 全开", V3 §4.2). A narrowed
+    role (editor/viewer) is always intersected with :func:`allowed_sources_for`
+    and the result sorted for determinism; an empty intersection is a 403 — that
+    intersection, not the frontend's lockSource, is the real boundary (防越权).
+    """
+    if user.role == "admin":
+        return source
+    allowed = allowed_sources_for(user)
+    requested = ({s.strip() for s in source.split(",") if s.strip()}
+                 if source else set(allowed))
+    eff = requested & allowed
+    if not eff:
+        raise ApiError("PERMISSION_DENIED", "无权查看所选日志层")
+    return ",".join(sorted(eff))
 
 _LEVELS = ["DEBUG", "INFO", "WARN", "ERROR", "CRITICAL"]
 _ERROR_LEVELS = ("ERROR", "CRITICAL")
@@ -101,7 +127,7 @@ def _apply_filters(q, *, level=None, source=None, logger=None, event=None, actor
 # ---------------------------------------------------------------- GET /logs
 @router.get("")
 def query_logs(
-    db: Session = Depends(get_db), _: User = Depends(require_admin),
+    db: Session = Depends(get_db), user: User = Depends(require_log_access),
     level: str | None = None, source: str | None = None, logger: str | None = None,
     event: str | None = None, actor: str | None = None, route: str | None = None,
     status_code: int | None = None, min_duration_ms: int | None = None,
@@ -110,6 +136,7 @@ def query_logs(
     to: dt.datetime | None = None, page: int = 1, page_size: int = 50,
 ):
     _flush()
+    source = _scoped_source(source, user)            # 防越权: narrow to allowed layers
     q = _apply_filters(
         db.query(AppLog), level=level, source=source, logger=logger, event=event,
         actor=actor, route=route, status_code=status_code, min_duration_ms=min_duration_ms,
@@ -126,15 +153,19 @@ def query_logs(
 
 # ---------------------------------------------------------------- GET /logs/summary
 @router.get("/summary")
-def logs_summary(db: Session = Depends(get_db), _: User = Depends(require_admin)):
+def logs_summary(db: Session = Depends(get_db), user: User = Depends(require_log_access)):
     _flush()
     now = dt.datetime.utcnow()
     day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     since_24h = now - dt.timedelta(hours=24)
 
+    # Narrow every aggregate to the caller's visible layers (admin → no narrowing).
+    allowed = allowed_sources_for(user)
+    scope = [] if allowed >= ALL_SOURCES else [AppLog.source.in_(sorted(allowed))]
+
     def _count(*filters) -> int:
         q = db.query(func.count(AppLog.id)).filter(AppLog.ts >= day_start)
-        for f in filters:
+        for f in (*scope, *filters):
             q = q.filter(f)
         return int(q.scalar() or 0)
 
@@ -151,7 +182,7 @@ def logs_summary(db: Session = Depends(get_db), _: User = Depends(require_admin)
     # 24h hourly histogram, bucketed in SQL (SQLite strftime)
     hour = func.strftime("%Y-%m-%dT%H:00:00Z", AppLog.ts)
     rows = (db.query(hour.label("h"), AppLog.level, func.count(AppLog.id))
-            .filter(AppLog.ts >= since_24h).group_by("h", AppLog.level).all())
+            .filter(AppLog.ts >= since_24h, *scope).group_by("h", AppLog.level).all())
     buckets: dict[str, dict] = {}
     for h, lvl, cnt in rows:
         b = buckets.setdefault(h, {"hour": h, "info": 0, "warn": 0, "err": 0})
@@ -166,7 +197,7 @@ def logs_summary(db: Session = Depends(get_db), _: User = Depends(require_admin)
     top_errors_rows = (
         db.query(AppLog.event, func.count(AppLog.id).label("c"),
                  func.max(AppLog.id).label("last_id"))
-        .filter(AppLog.ts >= day_start, AppLog.level.in_(_ERROR_LEVELS))
+        .filter(AppLog.ts >= day_start, AppLog.level.in_(_ERROR_LEVELS), *scope)
         .group_by(AppLog.event).order_by(func.count(AppLog.id).desc()).limit(10).all()
     )
     last_traces = {}
@@ -179,12 +210,12 @@ def logs_summary(db: Session = Depends(get_db), _: User = Depends(require_admin)
 
     top_actors_rows = (
         db.query(AppLog.actor, func.count(AppLog.id))
-        .filter(AppLog.ts >= day_start, AppLog.actor.isnot(None))
+        .filter(AppLog.ts >= day_start, AppLog.actor.isnot(None), *scope)
         .group_by(AppLog.actor).order_by(func.count(AppLog.id).desc()).limit(10).all()
     )
     top_actors = [{"actor": a, "count": int(c)} for a, c in top_actors_rows]
 
-    recent = (db.query(AppLog).filter(AppLog.level.in_(_ERROR_LEVELS))
+    recent = (db.query(AppLog).filter(AppLog.level.in_(_ERROR_LEVELS), *scope)
               .order_by(AppLog.ts.desc()).limit(20).all())
 
     store = get_store()
@@ -202,8 +233,12 @@ def logs_summary(db: Session = Depends(get_db), _: User = Depends(require_admin)
 
 # ---------------------------------------------------------------- GET /logs/trace/{id}
 @router.get("/trace/{trace_id}")
-def trace_detail(trace_id: str, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+def trace_detail(trace_id: str, db: Session = Depends(get_db),
+                 user: User = Depends(require_log_access)):
     _flush()
+    # The summary spans the *whole* chain (so a narrowed role still sees the true
+    # total / duration / level mix), but the returned detail rows are filtered to
+    # the caller's visible layers (V3 §4.2 — editor 仍可排障跨层 trace, 只看有权层明细).
     logs = (db.query(AppLog).filter(AppLog.trace_id == trace_id)
             .order_by(AppLog.ts.asc(), AppLog.id.asc()).all())
     audit = (db.query(AuditLog).filter(AuditLog.trace_id == trace_id)
@@ -217,14 +252,18 @@ def trace_detail(trace_id: str, db: Session = Depends(get_db), _: User = Depends
     route = next((r.route for r in logs if r.route), None)
     method = next((r.method for r in logs if r.method), None)
     actor = next((r.actor for r in logs if r.actor), None)
+
+    allowed = allowed_sources_for(user)
+    visible = logs if allowed >= ALL_SOURCES else [r for r in logs if r.source in allowed]
     return {
         "trace_id": trace_id,
         "summary": {
             "total": len(logs), "start_ts": start_ts, "end_ts": end_ts,
             "duration_ms": duration_ms, "actor": actor, "route": route, "method": method,
             "by_level": dict(by_level),
+            "visible_total": len(visible),       # how many rows the caller may actually see
         },
-        "logs": [_to_dict(r) for r in logs],
+        "logs": [_to_dict(r) for r in visible],
         "audit": [_audit_to_dict(a) for a in audit],
     }
 
@@ -239,8 +278,10 @@ def _audit_to_dict(a: AuditLog) -> dict:
 
 
 # ---------------------------------------------------------------- GET /logs/stream (SSE)
-def _admin_from_token(token: str | None, db: Session) -> User:
-    """Resolve an admin from a query-param token (EventSource can't set headers)."""
+def _log_user_from_token(token: str | None, db: Session) -> User:
+    """Resolve a log-access user from a query-param token (EventSource can't set
+    headers). Any role with ≥1 visible source may tail; the source filter is
+    narrowed to that role's allowed layers by the caller (V3 §4.2)."""
     if not token:
         raise ApiError("UNAUTHENTICATED", "缺少访问令牌")
     payload = decode_token(token)
@@ -249,16 +290,20 @@ def _admin_from_token(token: str | None, db: Session) -> User:
     user = db.query(User).filter(User.username == payload.get("sub")).first()
     if user is None or not user.is_active:
         raise ApiError("UNAUTHENTICATED", "用户不存在或已停用")
-    if user.role != "admin":
-        raise ApiError("PERMISSION_DENIED", "需要 admin 角色")
+    if not allowed_sources_for(user):
+        raise ApiError("PERMISSION_DENIED", "当前角色无任何日志查看权限")
     return user
 
 
 @router.get("/stream")
 async def stream_logs(token: str | None = None, level: str | None = None,
                       source: str | None = None, db: Session = Depends(get_db)):
-    _admin_from_token(token, db)
-    sources = {s.strip() for s in source.split(",")} if source else None
+    user = _log_user_from_token(token, db)
+    # Narrow the live source filter to the caller's allowed layers (admin → as
+    # requested, possibly None = all). A narrowed role can never tail a layer it
+    # isn't entitled to, even by passing ?source=.
+    scoped = _scoped_source(source, user)
+    sources = {s.strip() for s in scoped.split(",")} if scoped else None
     client = sse.hub.register(level=level, sources=sources)
     if client is None:
         raise ApiError("SERVICE_UNAVAILABLE", "实时日志连接数已达上限,请稍后重试")
@@ -282,7 +327,7 @@ async def stream_logs(token: str | None = None, level: str | None = None,
 # ---------------------------------------------------------------- GET /logs/export
 @router.get("/export")
 def export_logs(
-    db: Session = Depends(get_db), _: User = Depends(require_admin),
+    db: Session = Depends(get_db), user: User = Depends(require_log_access),
     format: str = "jsonl", level: str | None = None, source: str | None = None,
     logger: str | None = None, event: str | None = None, actor: str | None = None,
     route: str | None = None, trace_id: str | None = None, search: str | None = None,
@@ -290,6 +335,7 @@ def export_logs(
     limit: int = 50_000,
 ):
     _flush()
+    source = _scoped_source(source, user)            # 防越权: never export forbidden layers
     q = _apply_filters(db.query(AppLog), level=level, source=source, logger=logger,
                        event=event, actor=actor, route=route, trace_id=trace_id,
                        search=search, from_=from_, to=to)

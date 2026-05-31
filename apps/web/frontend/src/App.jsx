@@ -34,6 +34,7 @@ import FactorTasks from './pages/factors/FactorTasks';
 import UniverseManager from './pages/factors/UniverseManager';
 import FactorImport from './pages/factors/FactorImport';
 import FactorCorrelation from './pages/factors/FactorCorrelation';
+import FactorLogs from './pages/factors/FactorLogs';
 
 const ROLE_RANK = { viewer: 0, editor: 1, admin: 2 };
 
@@ -68,12 +69,14 @@ export default function App() {
       <Route path="/data/maintenance" element={<Protected><Maintenance /></Protected>} />
       <Route path="/data/audit" element={<Protected><Audit /></Protected>} />
 
-      {/* Log centre — admin only (doc §8.1 / §8.8.3) */}
+      {/* Log centre — 中枢 admin only (doc §8.1 / §8.8.3). The cross-layer trace
+          view drops to login-only so any layer's page can follow "看整条 trace";
+          the backend narrows the rows to the caller's allowed layers (V3 §4.2). */}
       <Route path="/data/logs" element={<Protected role="admin"><LogsHub /></Protected>} />
       <Route path="/data/logs/app" element={<Protected role="admin"><AppLogs /></Protected>} />
       <Route path="/data/logs/client" element={<Protected role="admin"><ClientLogs /></Protected>} />
       <Route path="/data/logs/stream" element={<Protected role="admin"><LogStream /></Protected>} />
-      <Route path="/data/logs/trace/:traceId" element={<Protected role="admin"><TraceDetail /></Protected>} />
+      <Route path="/data/logs/trace/:traceId" element={<Protected><TraceDetail /></Protected>} />
 
       <Route path="/data/charts" element={<Protected><ChartsHub /></Protected>} />
       <Route path="/data/charts/kline" element={<Protected><Kline /></Protected>} />
@@ -90,6 +93,8 @@ export default function App() {
       <Route path="/factors/universe" element={<Protected><UniverseManager /></Protected>} />
       <Route path="/factors/import" element={<Protected role="editor"><FactorImport /></Protected>} />
       <Route path="/factors/correlation" element={<Protected><FactorCorrelation /></Protected>} />
+      {/* 因子层日志页 — login-only; backend narrows ?source=factor by role (V3 §4.4). */}
+      <Route path="/factors/logs" element={<Protected><FactorLogs /></Protected>} />
 
       <Route path="/strategies/*" element={<Protected><Placeholder module="strategy" /></Protected>} />
       <Route path="/monitor/*" element={<Protected><Placeholder module="live" /></Protected>} />

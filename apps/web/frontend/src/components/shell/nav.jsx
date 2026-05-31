@@ -15,6 +15,7 @@ export const FACTOR_NAV = [
   { id: 'pools',       label: '股票池',      to: '/factors/universe' },
   { id: 'import',      label: '因子导入',    to: '/factors/import',      warn: true },
   { id: 'correlation', label: '因子相关性',  to: '/factors/correlation' },
+  { id: 'logs',        label: '因子日志',    to: '/factors/logs' },
 ];
 
 export const DATA_NAV = [

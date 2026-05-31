@@ -51,6 +51,11 @@ def viewer(client):
     return {"Authorization": f"Bearer {_token(client, 'viewer', 'viewer123')}"}
 
 
+@pytest.fixture(scope="module")
+def editor(client):
+    return {"Authorization": f"Bearer {_token(client, 'editor', 'editor123')}"}
+
+
 def test_health(client):
     assert client.get("/api/v1/health").json()["status"] == "ok"
 
@@ -385,9 +390,94 @@ def test_client_log_ingest_redacts_and_overrides_actor(client, viewer, admin):
     assert row["extra"]["note"] == "ok"
 
 
-def test_logs_query_is_admin_only(client, viewer):
-    assert client.get("/api/v1/logs", headers=viewer).status_code == 403
-    assert client.get("/api/v1/logs/summary", headers=viewer).status_code == 403
+def test_logs_layered_access_viewer_frontend_only(client, viewer, admin):
+    """Layered log visibility (V3 §4.2): a viewer may enter the log centre but
+    only ever sees the ``frontend`` layer — every other source is a 403, even
+    via ?source=, /export, /summary and the trace detail."""
+    # seed at least one frontend row so the positive path is non-trivial
+    client.post("/api/v1/logs/client", headers=viewer, json={"records": [
+        {"level": "INFO", "event": "frontend.event", "logger": "fe.t",
+         "session_id": "s_layered01", "message": "hi"}]})
+    _flush_logs(client)
+
+    # viewer can now query (no longer admin-only) but is narrowed to frontend
+    r = client.get("/api/v1/logs", headers=viewer, params={"page_size": 200})
+    assert r.status_code == 200, r.text
+    assert all(row["source"] == "frontend" for row in r.json()["items"]), \
+        "viewer leaked a non-frontend source"
+
+    # explicitly asking for the frontend layer is fine
+    assert client.get("/api/v1/logs", headers=viewer,
+                      params={"source": "frontend"}).status_code == 200
+    # asking for a forbidden layer is a hard 403 (防越权)
+    for forbidden in ("data", "factor", "backend", "data,factor"):
+        rr = client.get("/api/v1/logs", headers=viewer, params={"source": forbidden})
+        assert rr.status_code == 403, f"{forbidden}: {rr.status_code}"
+    # export can't exfiltrate a forbidden layer either
+    assert client.get("/api/v1/logs/export", headers=viewer,
+                      params={"source": "data"}).status_code == 403
+    # summary is allowed and only counts the visible layer
+    assert client.get("/api/v1/logs/summary", headers=viewer).status_code == 200
+
+
+def test_logs_layered_access_editor_sees_data_and_factor(client, editor):
+    """An editor sees data / factor / backend / frontend (V3 §4.2 default map)."""
+    for src in ("data", "factor", "backend", "frontend", "data,factor"):
+        r = client.get("/api/v1/logs", headers=editor, params={"source": src})
+        assert r.status_code == 200, f"{src}: {r.text}"
+    assert client.get("/api/v1/logs/summary", headers=editor).status_code == 200
+    assert client.get("/api/v1/logs/export", headers=editor,
+                      params={"source": "factor", "limit": 5}).status_code == 200
+
+
+def test_logs_layered_access_admin_unrestricted(client, admin):
+    """Admin keeps the full cross-layer view (every source, no narrowing)."""
+    for src in ("data", "factor", "backend", "frontend"):
+        assert client.get("/api/v1/logs", headers=admin,
+                          params={"source": src}).status_code == 200
+    # no source filter → all layers visible to admin
+    items = client.get("/api/v1/logs", headers=admin, params={"page_size": 500}).json()["items"]
+    assert {r["source"] for r in items} - {"data", "factor", "backend", "frontend"} == set()
+
+
+def test_log_source_scoping_helpers_unit():
+    """Pure-unit coverage of the source-narrowing logic (V3 §4.2), incl. the
+    no-access edge that the three demo roles can't exercise."""
+    from types import SimpleNamespace
+
+    from quant_web import deps
+    from quant_web.config import Settings
+    from quant_web.errors import ApiError
+    from quant_web.logging.routes import _scoped_source
+
+    cfg = Settings()
+    assert cfg.log_sources_by_role == {
+        "editor": {"data", "factor", "backend", "frontend"},
+        "viewer": {"frontend"},
+    }
+
+    admin = SimpleNamespace(role="admin")
+    editor = SimpleNamespace(role="editor")
+    viewer = SimpleNamespace(role="viewer")
+    nobody = SimpleNamespace(role="ghost")          # role absent from the map
+
+    assert deps.allowed_sources_for(admin) == deps.ALL_SOURCES
+    assert deps.allowed_sources_for(viewer) == {"frontend"}
+    assert deps.allowed_sources_for(nobody) == set()
+
+    # admin: pass through unchanged (None stays None = no filter, future-proof)
+    assert _scoped_source(None, admin) is None
+    assert _scoped_source("data", admin) == "data"
+    # viewer: None → only-allowed; forbidden request → 403; allowed request → kept
+    assert _scoped_source(None, viewer) == "frontend"
+    assert _scoped_source("frontend", viewer) == "frontend"
+    for forbidden in ("data", "factor", "backend"):
+        with pytest.raises(ApiError):
+            _scoped_source(forbidden, viewer)
+    # mixed request keeps only the allowed intersection
+    assert _scoped_source("data,frontend", viewer) == "frontend"
+    # editor intersection sorts deterministically
+    assert _scoped_source("factor,data", editor) == "data,factor"
 
 
 def test_logs_summary_shape(client, admin):

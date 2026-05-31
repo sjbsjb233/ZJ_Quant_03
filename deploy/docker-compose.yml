@@ -1,31 +1,36 @@
-# ZJ Quant — 容器化重构 V3 五容器拓扑 (单文档 §3.1 / §8.2)。
+# deploy/docker-compose.yml — 唯一权威编排 (容器化重构 V3 · 五容器拓扑 · 附录 A)。
 #
-#   web-frontend  唯一公网入口 (nginx: SPA 静态 + 反代 /api)
-#   web-backend   网关 / 鉴权 / 审计 / 日志中枢 / 读控制台 (/data:ro)
-#   data-keeper   唯一写者 (/data:rw): 写命令 API + 进程内 JobRunner + 进程内调度
-#   factor-api    因子查询 (/data:ro)
-#   factor-worker 因子计算 (/data:ro)
+# 远程服务器只维护这一份 + .env。所有持久化都在本目录的 bind 子目录里,
+# 备份/迁移 = 拷一个 deploy/ 目录 (见 README.md)。
 #
-# 读 = 库 (web/factor 挂 :ro 直读)；写 = 服务 (只有 data-keeper 挂 :rw)。
-# app_log / audit 只被 web-backend 写 (./state)；各服务日志写各自 ./logs/<svc>。
+#   web-frontend   唯一公网入口 (nginx: SPA 静态 + 反代 /api)
+#   web-backend    网关 / 鉴权 / 审计 / 日志中枢 / 读控制台 (/data:ro)
+#   data-keeper    唯一写者 (/data:rw): 写命令 API + 进程内 JobRunner + 进程内调度
+#   factor-api     因子查询 (/data:ro)
+#   factor-worker  因子计算 (/data:ro)
 #
-# 数据 / 状态分离 (V3 §3.3)：
-#   ./data        原始数据湖 (data-keeper :rw, 其余 :ro)
-#   ./state       web-backend 独占：audit / app_log SQLite + duckdb temp + 日志 JSONL
-#   ./logs/<svc>  各服务本地 JSONL 兜底
+# 读 = 库 (web/factor 挂 :ro 直读 parquet)；写 = 服务 (只有 data-keeper 挂 :rw)。
+# app_log / audit 只被 web-backend 写 (./state)；各服务本地 JSONL 写各自 ./logs/<svc>。
 #
-# 首次启动 (重建演示世界 + 演示用户)：
-#   docker compose run --rm data-keeper python -m keeper_service.seed_demo
-#   docker compose run --rm web-backend python -m quant_web.seed_users
-#   docker compose up --build
-#   open http://localhost:${WEB_PORT:-80}   (admin / admin123)
+# 存储统一 (V3 §2.2)：原命名卷 keeper_store / factor_store 已改为部署目录下的
+#   ./keeper-store / ./factor-store bind —— 全状态自包含,无隐藏命名卷。
+#
+# 镜像来源：默认拉 GHCR (CI publish-image.yml 按服务 matrix 推送 4 个镜像)。
+#   服务器无源码,只拉镜像。需本地构建时叠加 docker-compose.dev.yml (含 build:)。
+#
+# 首次启动 (重建演示世界 + 演示用户 + 拉起栈)：见 README.md / 附录 C。
+name: zj-quant                         # 固定项目名：卷/网络名恒为 zj-quant_*,不随目录变
+
+# ── 各服务共享的日志环境 (DRY: YAML 锚点, 附录 A) ─────────────────────────
+x-logging-env: &logging-env
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  LOG_INGEST_URL: http://web-backend:8000/api/v1/logs/ingest
+  LOG_INGEST_TOKEN: ${LOG_INGEST_TOKEN:-change-me-log-token}
+
 services:
   # ── 唯一公网入口 ─────────────────────────────────────────────
   web-frontend:
-    build:
-      context: ../../
-      dockerfile: apps/web/frontend/Dockerfile
-    image: ${WEB_FRONTEND_IMAGE:-zj-quant-web-frontend:local}
+    image: ${WEB_FRONTEND_IMAGE:-ghcr.io/OWNER/REPO/web-frontend:latest}
     container_name: zj-quant-web-frontend
     ports:
       - "${WEB_PORT:-80}:80"
@@ -37,10 +42,7 @@ services:
 
   # ── 网关 + 鉴权 + 审计 + 日志中枢 + 读控制台 ──────────────────
   web-backend:
-    build:
-      context: ../../
-      dockerfile: apps/web/backend/Dockerfile
-    image: ${WEB_BACKEND_IMAGE:-zj-quant-web-backend:local}
+    image: ${WEB_BACKEND_IMAGE:-ghcr.io/OWNER/REPO/web-backend:latest}
     container_name: zj-quant-web-backend
     restart: unless-stopped
     # Container-level OOM containment for the read console's big table scans.
@@ -50,6 +52,7 @@ services:
       - data-keeper
       - factor-api
     environment:
+      <<: *logging-env
       QUANT_DATA_ROOT: /data
       # 写转发目标；未设则回退本地写 (回滚开关, V3 §8.1)
       KEEPER_BASE: http://data-keeper:8300
@@ -61,13 +64,12 @@ services:
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost,http://localhost:80}
       JWT_SECRET: ${JWT_SECRET:-change-me-in-prod}
       SEED_DEFAULT_USERS: "true"
-      # 服务级日志上报令牌 (接收 data-keeper / factor 的 /logs/ingest)
-      LOG_INGEST_TOKEN: ${LOG_INGEST_TOKEN:-change-me-log-token}
-      LOG_LEVEL: INFO
       LOG_TO_DB: "true"
       LOG_TO_FILE: "true"
       LOG_FILE_DIR: /state/logs
-      LOG_DB_RETENTION_DAYS: "30"
+      LOG_DB_RETENTION_DAYS: ${LOG_DB_RETENTION_DAYS:-30}
+      # 分层日志可见性 (V3 §4.2)：role:source,source;role:source。admin 恒为全开。
+      LOG_VISIBLE_SOURCES: ${LOG_VISIBLE_SOURCES:-editor:data,factor,backend,frontend;viewer:frontend}
       NO_PROXY: "localhost,127.0.0.1"
       no_proxy: "localhost,127.0.0.1"
     volumes:
@@ -85,28 +87,23 @@ services:
 
   # ── 数据策管 (唯一写者, 单容器: 写命令 API + 进程内 JobRunner + 进程内调度) ──
   data-keeper:
-    build:
-      context: ../../
-      dockerfile: apps/data-keeper/Dockerfile
-    image: ${DATA_KEEPER_IMAGE:-zj-quant-data-keeper:local}
+    image: ${DATA_KEEPER_IMAGE:-ghcr.io/OWNER/REPO/data-keeper:latest}
     container_name: zj-quant-data-keeper
     restart: unless-stopped
     environment:
+      <<: *logging-env
       QUANT_DATA_ROOT: /data
       KEEPER_DB_URL: sqlite:////keeper-store/keeper.db
       ENABLE_SCHEDULER: "${ENABLE_SCHEDULER:-true}"   # 进程内调度线程; 设 false 即关 (回滚位)
       TZ: Asia/Shanghai                               # 调度按本地时区
       TRUST_PROXY_USER_HEADERS: "true"
       JWT_SECRET: ${JWT_SECRET:-change-me-in-prod}
-      LOG_LEVEL: INFO
       LOG_FILE_DIR: /logs
-      LOG_INGEST_URL: http://web-backend:8000/api/v1/logs/ingest
-      LOG_INGEST_TOKEN: ${LOG_INGEST_TOKEN:-change-me-log-token}
       # tushare 备源 token (akshare 主源无需 token)
       TUSHARE_TOKEN: ${TUSHARE_TOKEN:-}
     volumes:
-      - ./data:/data                     # 全系统唯一写者：读写
-      - keeper_store:/keeper-store       # keeper.db (Job/调度队列, WAL)
+      - ./data:/data                     # 全系统唯一 :rw
+      - ./keeper-store:/keeper-store     # keeper.db (Job/调度队列, WAL)
       - ./logs/keeper:/logs
     healthcheck:
       test: ["CMD", "python", "-c",
@@ -119,20 +116,16 @@ services:
       - "com.centurylinklabs.watchtower.enable=true"
     # 重型写 (compaction/migration/vacuum) 跑在进程内 ThreadPoolExecutor；
     # 定时任务由进程内调度线程投递。单写者=单实例,进程内 cron 不会重复触发。
-    # 将来若需把重型写拆成独立 worker 容器 (V3 §4.2.1),同一镜像加：
-    #   command: ["python", "-m", "keeper_service.jobs.dispatcher"]
 
   # ── 因子查询 (现状不变, 仅加日志上报) ────────────────────────
   factor-api:
-    build:
-      context: ../../
-      dockerfile: apps/factor/Dockerfile
-    image: ${FACTOR_IMAGE:-zj-quant-factor:local}
+    image: ${FACTOR_IMAGE:-ghcr.io/OWNER/REPO/factor:latest}
     container_name: zj-quant-factor-api
     restart: unless-stopped
     depends_on:
       - data-keeper
     environment:
+      <<: *logging-env
       QUANT_DATA_ROOT: /data
       FACTOR_STORE_ROOT: /factor-store
       FACTOR_DB_URL: sqlite:////factor-store/factor.db
@@ -140,29 +133,24 @@ services:
       TRUST_PROXY_USER_HEADERS: "true"
       JWT_SECRET: ${JWT_SECRET:-change-me-in-prod}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost,http://localhost:80}
-      LOG_LEVEL: INFO
       LOG_FILE_DIR: /logs
-      LOG_INGEST_URL: http://web-backend:8000/api/v1/logs/ingest
-      LOG_INGEST_TOKEN: ${LOG_INGEST_TOKEN:-change-me-log-token}
     volumes:
       - ./data:/data:ro
-      - factor_store:/factor-store
+      - ./factor-store:/factor-store
       - ./logs/factor:/logs
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
 
   # ── 因子计算 (worker) ────────────────────────────────────────
   factor-worker:
-    build:
-      context: ../../
-      dockerfile: apps/factor/Dockerfile
-    image: ${FACTOR_IMAGE:-zj-quant-factor:local}
+    image: ${FACTOR_IMAGE:-ghcr.io/OWNER/REPO/factor:latest}
     container_name: zj-quant-factor-worker
     command: ["python", "-m", "factor_service.queue.dispatcher"]
     restart: unless-stopped
     depends_on:
       - factor-api
     environment:
+      <<: *logging-env
       QUANT_DATA_ROOT: /data
       FACTOR_STORE_ROOT: /factor-store
       FACTOR_DB_URL: sqlite:////factor-store/factor.db
@@ -171,18 +159,15 @@ services:
       FACTOR_RESERVE_INTERACTIVE: ${FACTOR_RESERVE_INTERACTIVE:-1}
       FACTOR_POLL_INTERVAL_MS: ${FACTOR_POLL_INTERVAL_MS:-1000}
       JWT_SECRET: ${JWT_SECRET:-change-me-in-prod}
-      LOG_LEVEL: INFO
       LOG_FILE_DIR: /logs
-      LOG_INGEST_URL: http://web-backend:8000/api/v1/logs/ingest
-      LOG_INGEST_TOKEN: ${LOG_INGEST_TOKEN:-change-me-log-token}
     volumes:
       - ./data:/data:ro
-      - factor_store:/factor-store
+      - ./factor-store:/factor-store
       - ./logs/factor:/logs
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
 
-  # ── 生产自动更新 (profile) ───────────────────────────────────
+  # ── 生产自动更新 (profile: production) ────────────────────────
   watchtower:
     image: containrrr/watchtower:latest
     container_name: zj-quant-watchtower
@@ -198,6 +183,4 @@ services:
       WATCHTOWER_POLL_INTERVAL: "300"
       WATCHTOWER_ROLLING_RESTART: "true"
 
-volumes:
-  keeper_store:
-  factor_store:
+# 全 bind 后无需顶层 volumes: 段 —— 状态全部落在 deploy/ 子目录 (V3 §2.4)。

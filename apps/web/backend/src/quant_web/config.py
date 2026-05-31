@@ -74,6 +74,25 @@ class Settings(BaseSettings):
     log_alert_min_level: str = "ERROR"
     log_alert_rate_per_min: int = 20
 
+    # --- layered log visibility (容器化重构 V3 §4.2) -----------------------
+    # Which log `source`s each non-admin role may see, as a ";"-separated list of
+    # "role:source,source" segments. admin is always all sources (not listed here).
+    # The view+permission layers are how we make logs "feel" per-layer without
+    # splitting storage — the app_log table stays a single ledger so trace joins
+    # keep working (V3 §3.5/§3.6).
+    log_visible_sources: str = "editor:data,factor,backend,frontend;viewer:frontend"
+
+    @property
+    def log_sources_by_role(self) -> dict[str, set[str]]:
+        """Parse ``log_visible_sources`` into ``{role: {source, ...}}``."""
+        out: dict[str, set[str]] = {}
+        for seg in self.log_visible_sources.split(";"):
+            if ":" not in seg:
+                continue
+            role, srcs = seg.split(":", 1)
+            out[role.strip()] = {s.strip() for s in srcs.split(",") if s.strip()}
+        return out
+
     @property
     def origins(self) -> list[str]:
         return [o.strip() for o in self.allowed_origins.split(",") if o.strip()]

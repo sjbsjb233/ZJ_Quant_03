@@ -1,0 +1,52 @@
+# deploy/docker-compose.dev.yml — dev / 本地构建叠加层 (V3 §2.3 / §2.8)。
+#
+# 权威 compose (docker-compose.yml) 是纯镜像拉取 (服务器无源码)。本叠加层给
+# 开发机用：① 加 build: 上下文 = 仓库根 (../),不依赖 GHCR；② 暴露各服务端口
+# 直连调试 (web-backend:8000 / factor-api:8100 / data-keeper:8300)；③ 覆盖 image:
+# 为本地 tag,避免和 GHCR 占位名冲突。
+#
+# 用法:
+#   cd deploy
+#   # 本地构建并起全栈 (含端口直连)
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+#   # 仅起因子栈调试 (取代旧 apps/factor/docker-compose.factor.yml)
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build factor-api factor-worker
+#
+# 数据根与主栈一致 (deploy/data),不会再出现 V3 §1.3 的"双数据湖"分裂。
+
+services:
+  web-frontend:
+    image: zj-quant-web-frontend:local
+    build:
+      context: ../
+      dockerfile: apps/web/frontend/Dockerfile
+
+  web-backend:
+    image: zj-quant-web-backend:local
+    build:
+      context: ../
+      dockerfile: apps/web/backend/Dockerfile
+    ports:
+      - "${WEB_BACKEND_PORT:-8000}:8000"   # 直连后端 (绕过 nginx 反代) 调试
+
+  data-keeper:
+    image: zj-quant-data-keeper:local
+    build:
+      context: ../
+      dockerfile: apps/data-keeper/Dockerfile
+    ports:
+      - "${KEEPER_PORT:-8300}:8300"        # 直连写命令 API / 健康检查
+
+  factor-api:
+    image: zj-quant-factor:local
+    build:
+      context: ../
+      dockerfile: apps/factor/Dockerfile
+    ports:
+      - "${FACTOR_API_PORT:-8100}:8100"    # 直连因子查询 API
+
+  factor-worker:
+    image: zj-quant-factor:local           # 同镜像,worker 角色 (无端口)
+    build:
+      context: ../
+      dockerfile: apps/factor/Dockerfile

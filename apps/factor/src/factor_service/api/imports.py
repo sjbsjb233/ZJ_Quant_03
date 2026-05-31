@@ -11,6 +11,7 @@ from fastapi import APIRouter, Body, Depends, File, Form, UploadFile
 from sqlalchemy.orm import Session
 
 from quant_data import DataReader
+from quant_data import logging as qd_logging
 from quant_factor.validate import validate_factor
 
 from ..config import get_settings
@@ -20,6 +21,8 @@ from ..errors import ApiError
 
 
 router = APIRouter()
+
+_qlog = qd_logging.get_logger("factor.imports")
 
 
 def _safe_id(s: str) -> str:
@@ -84,8 +87,12 @@ async def upload(
     """Web upload — validate + register a new (disabled) version."""
     py_bytes = await factor_py.read()
     src = py_bytes.decode("utf-8", errors="replace")
+    _qlog.info("import.received", filename=factor_py.filename, n_bytes=len(py_bytes))
     rep = validate_factor(src, reader=reader)
+    _sm = rep.get("summary") or {}
     if not rep.get("ok"):
+        _qlog.warn("import.rejected", filename=factor_py.filename,
+                   class_name=rep.get("class_name"), n_bad=int(_sm.get("fail", 0)))
         raise ApiError(
             "PRECONDITION_FAILED",
             "校验失败,无法导入",
@@ -111,6 +118,8 @@ async def upload(
         )
         db.add(rec)
         db.commit()
+        _qlog.info("factor.create", factor_id=factor_id, via="upload",
+                   class_name=rep.get("class_name"))
 
     version = _next_version(db, factor_id)
     code_path = _store_source(factor_id, version, src)
@@ -135,6 +144,9 @@ async def upload(
     )
     db.add(ver)
     db.commit()
+    _qlog.info("import.parsed", filename=factor_py.filename, factor_id=factor_id,
+               version=version, class_name=rep.get("class_name"),
+               n_warn=int(_sm.get("warn", 0)))
     return {
         "factor_id": factor_id,
         "version": version,
@@ -168,10 +180,13 @@ def scan(
             continue
         with open(py, encoding="utf-8") as f:
             src = f.read()
+        rel = os.path.relpath(py, inbox)
+        _qlog.info("import.received", filename=rel, via="inbox")
         rep = validate_factor(src, reader=reader)
+        _sm = rep.get("summary") or {}
         items.append(
             {
-                "file": os.path.relpath(py, inbox),
+                "file": rel,
                 "class_name": rep.get("class_name"),
                 "ok": rep.get("ok"),
                 "summary": rep.get("summary"),
@@ -192,6 +207,8 @@ def scan(
                 )
                 db.add(rec)
                 db.commit()
+                _qlog.info("factor.create", factor_id=factor_id, via="inbox",
+                           class_name=rep.get("class_name"))
             version = _next_version(db, factor_id)
             code_path = _store_source(factor_id, version, src)
             ver = FactorVersion(
@@ -209,6 +226,13 @@ def scan(
             db.add(ver)
             db.commit()
             registered += 1
+            _qlog.info("import.parsed", filename=rel, factor_id=factor_id,
+                       version=version, class_name=rep.get("class_name"),
+                       n_warn=int(_sm.get("warn", 0)))
+        else:
+            _qlog.warn("import.rejected", filename=rel,
+                       class_name=rep.get("class_name"), n_bad=int(_sm.get("fail", 0)))
+    _qlog.info("import.scan.done", path=inbox, n_scanned=len(items), registered=registered)
     return {"items": items, "registered": registered, "path": inbox}
 
 

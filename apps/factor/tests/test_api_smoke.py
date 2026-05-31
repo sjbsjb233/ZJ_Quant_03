@@ -210,3 +210,57 @@ def test_factor_get_404(app_setup):
     assert r.status_code == 404
     assert r.json()["error"]["code"] == "FACTOR_NOT_FOUND"
     assert r.json()["error"]["trace_id"]
+
+
+def test_run_chain_emits_structured_events(app_setup):
+    """V3 §4.3 / §5.3 acceptance: submitting + executing a run emits the
+    run.submit → run.start → run.stage.*.done → (run.done | run.failed) chain,
+    with duration_ms on the timed stages, all joined by one trace_id."""
+    from quant_data import logging as qd_logging
+    from factor_service.services.run_executor import execute_task
+
+    captured: list[dict] = []
+    qd_logging.register_sink(lambda rec: captured.append(rec.as_dict()))
+    qd_logging.set_threshold("INFO")
+    try:
+        body = {
+            "factor_id": "mom",
+            "run_config": {
+                "universe_id": "preset:hs300",
+                "start": "2024-01-01", "end": "2024-03-31", "lane": "interactive",
+            },
+        }
+        r = app_setup.post("/runs", json=body, headers=_hdr(role="editor"))
+        assert r.status_code == 200, r.text
+        run_id, task_id = r.json()["run_id"], r.json()["task_id"]
+
+        # run.submit was emitted by the API (carrying the request trace_id)
+        submits = [e for e in captured if e["event"] == "run.submit"
+                   and (e.get("extra") or {}).get("run_id") == run_id]
+        assert submits, "run.submit not emitted"
+
+        # Drive the worker exactly as the dispatcher does: re-bind a trace_id then
+        # execute. There's no market data under ./data-test, so the compute stage
+        # is expected to fail — but the load stage and the terminal event must fire.
+        captured.clear()
+        tok = qd_logging.bind_context(trace_id="t_chain_test0001")
+        try:
+            try:
+                execute_task(task_id)
+            except Exception:  # noqa: BLE001 - no data → run.failed is fine
+                pass
+        finally:
+            qd_logging.reset_context(tok)
+
+        events = [e["event"] for e in captured]
+        assert "run.start" in events, events
+        load_done = [e for e in captured if e["event"] == "run.stage.load.done"]
+        assert load_done, events
+        assert load_done[0]["duration_ms"] is not None      # timed stage carries duration
+        assert ("run.done" in events) or ("run.failed" in events), events
+
+        # the whole chain shares the one re-bound trace_id (full-chain trace, §3.8)
+        chain = [e for e in captured if e["event"].startswith("run.")]
+        assert chain and all(e["trace_id"] == "t_chain_test0001" for e in chain)
+    finally:
+        qd_logging.unregister_all_sinks()

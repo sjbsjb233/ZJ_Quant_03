@@ -39,6 +39,9 @@ from .estimator import update_stats
 
 
 _log = logging.getLogger("factor.dispatcher")
+# Structured logger: task.claimed is bound to the task's own trace_id so the
+# "claimed" moment joins the same app_log chain as the run that enqueued it.
+_qlog = qd_logging.get_logger("factor.dispatcher")
 _stop = threading.Event()
 
 
@@ -168,6 +171,13 @@ def main() -> None:
                     t.task_type,
                     t.lane,
                 )
+                # structured twin, joined to the task's trace_id (V3 §4.3 / §6.4)
+                _tok = qd_logging.bind_context(trace_id=t.trace_id)
+                try:
+                    _qlog.info("task.claimed", task_id=t.task_id, type=t.task_type,
+                               lane=t.lane, trace_id=t.trace_id)
+                finally:
+                    qd_logging.reset_context(_tok)
 
             time.sleep(poll_ms / 1000.0)
     finally:

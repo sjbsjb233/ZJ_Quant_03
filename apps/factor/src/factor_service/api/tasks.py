@@ -75,7 +75,11 @@ def list_tasks(
     if initiated_by:
         q = q.filter(Task.initiated_by == initiated_by)
     rows = (
-        q.order_by(Task.status.desc(), Task.priority.desc(), Task.created_at.desc())
+        # Recency first: a "recent tasks" view must surface live running/queued and
+        # the latest completions. Ordering by status.desc() first (the old behavior)
+        # let a large `success` history bury all running/queued/failed rows past the
+        # limit, blanking the queue dashboard's sections once enough runs accumulated.
+        q.order_by(Task.created_at.desc())
         .limit(limit)
         .all()
     )
