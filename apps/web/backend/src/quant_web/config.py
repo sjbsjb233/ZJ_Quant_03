@@ -12,6 +12,11 @@ class Settings(BaseSettings):
     # data layer
     quant_data_root: str = "./data"
 
+    # deployment identity (修复 A1/A2 · 五容器拓扑). Surfaced by /health (顶栏环境徽标)
+    # and /health/deps (状态栏右侧 cluster·env 标签). compose injects ENVIRONMENT/CLUSTER.
+    environment: str = "DEV"     # DEV | STAGING | PROD
+    cluster: str = "local"       # free-form deploy/host tag, e.g. prod-east-1
+
     # audit / app db
     audit_db_url: str = "sqlite:///./quant_web_audit.db"
 

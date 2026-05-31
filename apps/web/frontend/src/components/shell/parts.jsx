@@ -4,6 +4,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../lib/auth';
 import { useTheme } from '../../lib/theme';
 import { getLastTraceId } from '../../lib/logger';
+import { useSystemHealth } from '../../lib/health';
 import { DATA_NAV, FACTOR_NAV, MODULES, NavGlyph, VIZ_NAV } from './nav';
 
 export function ModuleStrip({ current, env = 'PROD' }) {
@@ -207,17 +208,59 @@ function TraceChip() {
   );
 }
 
-export function StatusBar({ middle, right }) {
+// A single health point. state ∈ 'ok' | 'warn' | 'error' | undefined(加载/未知).
+// data-testid / data-state are e2e hooks so assertions don't depend on copy.
+function CompDot({ label, state, title }) {
+  const cls = state === 'ok' ? 'ok' : state === 'warn' ? 'warn'
+            : state === 'error' ? 'err' : 'running';
+  const txt = state === 'ok' ? 'ok' : state === 'warn' ? 'degraded'
+            : state === 'error' ? 'down' : '…';
   return (
-    <footer style={{
+    <span data-testid={`status-${label}`} data-state={state || 'loading'} title={title}>
+      <span className={`dot ${cls}`} /> {label}: {txt}
+    </span>
+  );
+}
+
+export function StatusBar({ middle, right }) {
+  // 状态栏数据源：聚合下游健康 (修复 A1 · 五容器拓扑)。
+  const { data, isError, isLoading } = useSystemHealth();
+  const c = data?.components || {};
+  // 整个 /health/deps 失败 ⇒ 各点按 down 渲染 (红),不停在绿色或加载态。
+  const fail = (s) => (isError ? 'error' : s);
+
+  // factor 三态：api 不通=error;api 通但 worker stale/down=warn;都好=ok。
+  const factorState = (() => {
+    if (isError || c.factor?.state === 'error') return 'error';
+    if (!c.factor) return undefined;
+    const w = c.factor.worker;
+    return (w === 'stale' || w === 'down') ? 'warn' : 'ok';
+  })();
+
+  // 右侧标签：cluster · env。加载中显 …,下游探测失败仍能拿到 (来自缓存/上次)。
+  const label = isLoading ? '…'
+    : `${data?.cluster || '—'}${data?.environment ? ' · ' + data.environment : ''}`;
+
+  return (
+    <footer data-testid="status-bar" style={{
       height: 22, background: 'var(--surface-2)', borderTop: '1px solid var(--border)',
       padding: '0 14px', display: 'flex', alignItems: 'center', gap: 14,
       fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-3)', flexShrink: 0,
     }}>
-      <span><span className="dot ok" /> db: ok</span>
-      <span><span className="dot ok" /> warehouse: ok</span>
+      <CompDot label="db" state={fail(c.db?.state)} title="web-backend 元数据库 (审计 + app_log)" />
+      <CompDot label="warehouse" state={fail(c.warehouse?.state)} title="parquet 数据湖 /data (所有数据读取)" />
+      {/* keeper 在回滚态 (KEEPER_BASE 未设) 后端不返回该键 ⇒ 自动不显示这个点;
+          但 /health/deps 整体失败 (isError) 时仍要把它按 down 渲染 (红),不能让它消失。 */}
+      {(isError || c.keeper) && (
+        <CompDot label="keeper" state={fail(c.keeper?.state)}
+          title={c.keeper?.scheduler === false
+            ? '唯一写者 · 调度已关闭 (ENABLE_SCHEDULER=false)'
+            : '唯一写者 (所有写操作 + 定时调度)'} />
+      )}
+      <CompDot label="factor" state={factorState}
+        title={`因子模块 — api: ${c.factor?.state || '—'} · worker: ${c.factor?.worker || '—'}`} />
       <span style={{ color: 'var(--fg-mute)' }}>│</span>
-      <span>cluster: prod-east-1</span>
+      <span data-testid="status-cluster">{label}</span>
       {middle && (<><span style={{ color: 'var(--fg-mute)' }}>│</span>{middle}</>)}
       <div style={{ flex: 1 }} />
       <TraceChip />

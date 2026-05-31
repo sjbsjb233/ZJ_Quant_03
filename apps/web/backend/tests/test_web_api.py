@@ -60,6 +60,33 @@ def test_health(client):
     assert client.get("/api/v1/health").json()["status"] == "ok"
 
 
+def test_health_liveness_fields(client):
+    """Lightweight /health stays a pure liveness probe + carries env/cluster
+    for the status bar / topbar (修复 A1 §3.2)."""
+    h = client.get("/api/v1/health").json()
+    assert h["service"] == "web-backend"
+    # defaults when ENVIRONMENT/CLUSTER are unset in the test env
+    assert h["environment"] == "DEV"
+    assert h["cluster"] == "local"
+
+
+def test_health_deps_requires_auth(client):
+    # the aggregate view is login-gated (修复 A1 §3.3)
+    assert client.get("/api/v1/health/deps").status_code == 401
+
+
+def test_health_deps_shape(client, admin):
+    """Aggregate view: local db/warehouse ok; keeper absent when KEEPER_BASE is
+    unset (rollback/test); env+cluster echoed back (修复 A1 §3.3)."""
+    body = client.get("/api/v1/health/deps", headers=admin).json()
+    comp = body["components"]
+    assert comp["db"]["state"] == "ok"
+    assert comp["warehouse"]["state"] == "ok"      # tmp QUANT_DATA_ROOT exists + readable
+    assert "keeper" not in comp                     # KEEPER_BASE unset → not probed/shown
+    assert body["environment"] == "DEV" and body["cluster"] == "local"
+    assert body["status"] in ("ok", "error")        # db+warehouse critical (keeper absent)
+
+
 def test_login_bad_password(client):
     r = client.post("/api/v1/auth/login", json={"username": "admin", "password": "nope"})
     assert r.status_code == 401

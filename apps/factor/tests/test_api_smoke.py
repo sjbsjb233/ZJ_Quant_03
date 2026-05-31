@@ -58,6 +58,20 @@ def test_health(app_setup):
     assert r.json()["service"] == "factor"
 
 
+def test_health_worker_status(app_setup):
+    """worker liveness beacon (修复 A1 §3.4 方案A): down → ok via heartbeat."""
+    from factor_service.db import base as _db_base
+    from factor_service.queue import store
+
+    # No dispatcher has checked in yet → worker reported as down.
+    assert app_setup.get("/health").json()["worker"] == "down"
+
+    # Simulate one dispatcher poll cycle writing its heartbeat.
+    with _db_base.SessionLocal() as db:
+        store.record_worker_heartbeat(db, "worker#test")
+    assert app_setup.get("/health").json()["worker"] == "ok"
+
+
 def test_list_factors_seeded(app_setup):
     r = app_setup.get("/factors", headers=_hdr())
     assert r.status_code == 200, r.text

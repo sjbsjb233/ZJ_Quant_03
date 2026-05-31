@@ -179,6 +179,13 @@ def main() -> None:
                 finally:
                     qd_logging.reset_context(_tok)
 
+            # liveness beacon (修复 A1 §3.4): mark this dispatcher alive every cycle —
+            # even idle — so factor-api /health can tell live-but-idle from crashed.
+            try:
+                store.record_worker_heartbeat(db, worker_id)
+            except Exception:  # noqa: BLE001 - heartbeat must never crash the loop
+                _log.debug("worker heartbeat write failed", exc_info=True)
+
             time.sleep(poll_ms / 1000.0)
     finally:
         _log.info("dispatcher shutting down; %d in-flight", len(inflight))

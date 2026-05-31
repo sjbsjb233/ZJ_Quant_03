@@ -13,16 +13,42 @@ import datetime as dt
 import uuid
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
 from ..db import base as _db_base
-from ..db.models import Task
+from ..db.models import Task, WorkerHeartbeat
 from .estimator import estimate_duration
 
 
 def _now() -> dt.datetime:
     return dt.datetime.utcnow()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Worker liveness (修复 A1 §3.4 · 方案A) — independent of any running task.
+def record_worker_heartbeat(db: Session, worker_id: str) -> None:
+    """Upsert the dispatcher's ``last_seen`` (called once per poll cycle)."""
+    wh = db.get(WorkerHeartbeat, worker_id)
+    if wh is None:
+        db.add(WorkerHeartbeat(worker_id=worker_id, last_seen=_now()))
+    else:
+        wh.last_seen = _now()
+    db.commit()
+
+
+def worker_status(db: Session, stale_window_sec: float) -> str:
+    """Liveness verdict from the freshest heartbeat across all workers.
+
+    'ok'    — newest heartbeat within ``stale_window_sec``
+    'stale' — a worker checked in once but has gone quiet (likely hung/killed)
+    'down'  — no dispatcher has ever checked in (table empty)
+    """
+    latest = db.query(func.max(WorkerHeartbeat.last_seen)).scalar()
+    if latest is None:
+        return "down"
+    age = (_now() - latest).total_seconds()
+    return "ok" if age <= stale_window_sec else "stale"
 
 
 # ─────────────────────────────────────────────────────────────────────────────

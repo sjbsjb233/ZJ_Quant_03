@@ -163,6 +163,21 @@ class Task(Base):
     )
 
 
+class WorkerHeartbeat(Base):
+    """Dispatcher liveness beacon (修复 A1 §3.4 · 方案A).
+
+    ``tasks.heartbeat_at`` only advances while a task is *running*, so an idle
+    worker is indistinguishable from a crashed one. The dispatcher upserts its
+    row here once per poll cycle, letting factor-api's ``/health`` report
+    worker ``ok`` / ``stale`` / ``down`` even when the queue is empty.
+    """
+
+    __tablename__ = "worker_heartbeat"
+
+    worker_id: Mapped[str] = mapped_column(String, primary_key=True)
+    last_seen: Mapped[dt.datetime] = mapped_column(DateTime, default=_utcnow)
+
+
 class TaskDurationStat(Base):
     __tablename__ = "task_duration_stat"
 

@@ -81,6 +81,10 @@ export const endpoints = {
   me: () => get('/auth/me'),
   logout: () => post('/auth/logout'),
 
+  // meta / health (修复 A1 · 五容器拓扑)
+  health: () => get('/health'),             // 轻量 liveness (如别处需要)
+  healthDeps: () => get('/health/deps'),    // 状态栏聚合：db/warehouse/keeper/factor
+
   // dashboard
   dashboardSummary: () => get('/data/dashboard/summary'),
 

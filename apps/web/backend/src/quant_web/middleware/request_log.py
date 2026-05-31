@@ -16,6 +16,7 @@ from ..logging import app_logger
 
 _SKIP_EXACT = {
     "/api/v1/health",
+    "/api/v1/health/deps",   # 状态栏每 30s/用户轮询的健康聚合 (修复 A1) — 同属 plumbing
     "/api/openapi.json",
     "/api/v1/logs/stream",
     "/api/v1/logs/client",
