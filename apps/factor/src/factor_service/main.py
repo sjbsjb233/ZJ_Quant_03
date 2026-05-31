@@ -14,6 +14,7 @@ from .errors import install_error_handlers
 from .logging_ctx import configure_logging
 from .middleware import TraceIdMiddleware
 from .obs import install_obs, stop_obs
+from .queue import store
 
 
 _log = logging.getLogger(__name__)
@@ -60,12 +61,22 @@ def create_app() -> FastAPI:
     @app.get("/api/v1/health")
     @app.get("/health")
     def _health() -> dict:
+        # Infer factor-worker liveness from its heartbeat beacon (修复 A1 §3.4 方案A).
+        # Stale window = 3× poll, floored at 10s so loop/DB jitter never flaps yellow.
+        poll_sec = s.factor_poll_interval_ms / 1000.0
+        stale_window = max(3.0 * poll_sec, 10.0)
+        try:
+            with _db_base.SessionLocal() as db:
+                worker = store.worker_status(db, stale_window)
+        except Exception:  # noqa: BLE001 - health must never 500 on the worker probe
+            worker = "unknown"
         return {
             "status": "ok",
             "service": "factor",
             "version": "0.1.0",
             "store_root": s.factor_store_root,
             "data_root": s.quant_data_root,
+            "worker": worker,
         }
 
     @app.on_event("startup")

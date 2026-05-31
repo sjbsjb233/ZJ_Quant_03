@@ -16,6 +16,7 @@ from .config import get_settings
 from .data import router as data_router
 from .db.base import SessionLocal, init_db
 from .errors import install_error_handlers
+from .health import router as health_router
 from .jobs.runner import JobRunner
 from .logging import app_logger, configure as configure_logging, init_store, install_sinks
 from .logging.routes import router as logs_router
@@ -73,10 +74,23 @@ def create_app() -> FastAPI:
     app.include_router(factors_proxy_router, prefix=API)
     app.include_router(strategies_router, prefix=API)
     app.include_router(monitor_router, prefix=API)
+    # Aggregated dependency health (状态栏数据源). Lives on a separate path from the
+    # lightweight /health below so docker's liveness probe never depends on keeper/
+    # factor being up (修复 A1 §3.1).
+    app.include_router(health_router, prefix=API)
 
     @app.get(f"{API}/health", tags=["meta"])
     def health():
-        return {"status": "ok", "version": "0.2.0", "quant_data_root": settings.quant_data_root}
+        # 纯 liveness：进程能响应即 ok。docker healthcheck 继续打它,绝不聚合下游
+        # (否则 keeper/factor 一挂会拖垮 web-backend 的 healthcheck → 误重启)。
+        return {
+            "status": "ok",
+            "service": "web-backend",
+            "version": "0.2.0",
+            "environment": settings.environment,
+            "cluster": settings.cluster,
+            "quant_data_root": settings.quant_data_root,
+        }
 
     # --- bootstrap app state (ready before the first request, no lifespan dance) ---
     init_db()

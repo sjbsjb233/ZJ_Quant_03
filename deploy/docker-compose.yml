@@ -54,6 +54,9 @@ services:
     environment:
       <<: *logging-env
       QUANT_DATA_ROOT: /data
+      # 部署标识 (修复 A1/A2)：顶栏环境徽标 + 状态栏右侧 cluster·env 标签。
+      ENVIRONMENT: ${ENVIRONMENT:-PROD}
+      CLUSTER: ${CLUSTER:-prod-east-1}
       # 写转发目标；未设则回退本地写 (回滚开关, V3 §8.1)
       KEEPER_BASE: http://data-keeper:8300
       FACTOR_API_BASE: http://factor-api:8100
