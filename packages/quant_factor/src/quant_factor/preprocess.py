@@ -114,7 +114,13 @@ def apply_pipeline(
     """
     out = df
     s = out[col]
-    pre = s.to_numpy().astype(float) if capture is not None else None
+    # `pre` (pre-winsorize snapshot) is only needed for the clip counts, which
+    # only apply under mad/quantile — skip the copy entirely otherwise (Copilot).
+    pre = (
+        s.to_numpy().astype(float)
+        if (capture is not None and winsorize in ("mad", "quantile"))
+        else None
+    )
     if winsorize == "mad":
         s = winsorize_mad(s, winsorize_n, ledger=ledger, day=day)
     elif winsorize == "quantile":
