@@ -71,11 +71,13 @@ _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
 }
 
 
-def _migrate_added_columns() -> None:
+def _migrate_added_columns() -> bool:
     """ALTER TABLE ADD COLUMN for any post-launch column not yet present.
 
     SQLite only (the whole store is SQLite); a no-op on a brand-new DB because
     create_all already produced the full schema, but essential for upgrades.
+    Returns True on success, False if the migration was skipped (non-SQLite
+    backend / locked db).
     """
     insp_ok = True
     try:

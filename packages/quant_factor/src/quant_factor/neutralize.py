@@ -177,18 +177,20 @@ def neutralize_cross_section(
         size_arr = df["ln_mktcap"].to_numpy().astype(float)
         cols.append(size_arr)
         # Stocks that HAVE a value but are missing size → will be masked out.
+        # Record once per run (de-duped like DG_PRICE_FALLBACK/DG_PREP_NOOP) so a
+        # long window can't explode the ledger; the mask still drops them daily.
         size_dropped = int(np.sum(finite_val & ~np.isfinite(size_arr)))
-        if size_dropped > 0 and ledger is not None:
+        if size_dropped > 0 and ledger is not None and not ledger.has_code("DG_SIZE_DROPPED"):
             ledger.record(
                 make_event(
                     "DG_SIZE_DROPPED",
                     stage="prep",
-                    reason=f"{size_dropped} 个标的缺市值(ln_mktcap),本截面回归将剔除",
-                    impact="缺市值标的被剔除,该截面覆盖度缩水,市值中性化口径对其失效",
+                    reason=f"{size_dropped} 个标的缺市值(ln_mktcap),回归将剔除(首个命中截面)",
+                    impact="缺市值标的被剔除,覆盖度缩水,市值中性化口径对其失效(可能跨多个调仓日)",
                     suggested_action="补齐 raw.bars_daily 的市值字段后重跑",
                     evidence={
                         "affected_symbols": size_dropped,
-                        "date": str(day) if day is not None else None,
+                        "first_date": str(day) if day is not None else None,
                         "cross_section_size": int(finite_val.sum()),
                     },
                 )
@@ -225,20 +227,21 @@ def neutralize_cross_section(
             for c in cats[1:]:
                 cols.append((ind == c).astype(float))
             # Unknown-industry stocks must NOT be silently lumped into the base
-            # category — set their value NaN so the mask drops them, and report.
+            # category — set their value NaN so the mask drops them (every day),
+            # and report once per run (de-duped to keep the ledger/DB bounded).
             if n_unknown_with_val > 0:
                 y = np.where(unknown_mask, np.nan, y)
-                if ledger is not None:
+                if ledger is not None and not ledger.has_code("DG_IND_PARTIAL"):
                     ledger.record(
                         make_event(
                             "DG_IND_PARTIAL",
                             stage="prep",
-                            reason=f"{n_unknown_with_val} 个标的行业未知,本截面已剔除",
-                            impact="部分标的因行业未知被剔除,覆盖度缩水",
+                            reason=f"{n_unknown_with_val} 个标的行业未知,已剔除(首个命中截面)",
+                            impact="部分标的因行业未知被剔除,覆盖度缩水(可能跨多个调仓日)",
                             suggested_action="补全这些标的的 sector_code / 行业分类后重跑",
                             evidence={
                                 "affected_symbols": n_unknown_with_val,
-                                "date": str(day) if day is not None else None,
+                                "first_date": str(day) if day is not None else None,
                                 "usable_categories": len(cats),
                             },
                         )

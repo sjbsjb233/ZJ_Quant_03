@@ -75,6 +75,7 @@ PERMISSIVE_PROFILE: dict[str, str] = {
 
 _VALID_WINSORIZE = {"none", "mad", "quantile"}
 _VALID_STANDARDIZE = {"none", "zscore"}
+_VALID_POLICIES = {"block", "degrade", "ignore"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -519,6 +520,11 @@ def evaluate_checks(
         if res.status == "pass":
             continue
         eff = policy.get(check.id, check.default_policy)
+        # Clamp to a known policy — an invalid override (e.g. a typo in
+        # run_config.degradation_policy) must NOT make a non-pass result vanish
+        # from would_block/would_degrade; fall back to the check's default.
+        if eff not in _VALID_POLICIES:
+            eff = check.default_policy
         if res.event is not None:
             res.event.policy = eff
         res.status = eff  # "block" | "degrade" | "ignore"
@@ -577,11 +583,13 @@ def check_result_to_json(res: CheckResult) -> dict:
                 "severity": ev.severity,
                 "category": ev.category,
                 "config_key": ev.config_key,
+                "stage": ev.stage,
                 "title": ev.title,
                 "reason": ev.reason,
                 "impact": ev.impact,
                 "suggested_action": ev.suggested_action,
                 "evidence": ev.evidence,
+                "policy": ev.policy,
             }
         )
     return base
