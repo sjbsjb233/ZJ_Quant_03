@@ -15,11 +15,18 @@ from quant_data import logging as qd_logging
 from quant_factor.config import EvalConfig
 
 from ..config import get_settings
-from ..db.models import FactorRecord, FactorRun, FactorVersion, Task
+from ..db.models import (
+    FactorRecord,
+    FactorRun,
+    FactorRunDegradation,
+    FactorVersion,
+    Task,
+)
 from ..deps import current_user, get_db, require_editor
 from ..errors import ApiError
 from ..logging_ctx import trace_id_var
 from ..queue import store
+from ..services.preflight_service import dry_run_preflight
 
 
 router = APIRouter()
@@ -89,6 +96,37 @@ def submit_run(
         raise ApiError("INVALID_PARAMETER", "start 必须早于 end")
 
     params = body.get("params") or {}
+
+    # ── preflight gate at the source (设计 §10.3) ────────────────────────────
+    # Refuse to create a run that would be blocked — return 422 with the
+    # structured would_block so the UI can guide a fix. Preflight failures (e.g.
+    # data-layer hiccup) must NOT block submission: the worker's preflight stage
+    # is the authoritative backstop, so we proceed on error.
+    s = get_settings()
+    if s.preflight_enabled:
+        try:
+            pf = dry_run_preflight(
+                db, factor_id=factor_id, version=version, run_config=run_config
+            )
+        except ValueError:
+            pf = None
+        except Exception as e:  # noqa: BLE001
+            _qlog.warn("run.preflight.dryrun_error", factor_id=factor_id, err=str(e))
+            pf = None
+        if pf and pf.get("would_block"):
+            _qlog.warn(
+                "run.submit.blocked", factor_id=factor_id,
+                checks=[b["check_id"] for b in pf["would_block"]],
+            )
+            raise ApiError(
+                "PREFLIGHT_BLOCKED",
+                "运行前置校验未通过,已阻断:请补齐数据或调整配置后重试",
+                details={
+                    "would_block": pf["would_block"],
+                    "would_degrade": pf.get("would_degrade", []),
+                },
+                status_code=422,
+            )
 
     run_id = f"frun_{uuid.uuid4().hex[:16]}"
     run = FactorRun(
@@ -166,6 +204,32 @@ def preview_eta(
     }
 
 
+@router.post("/runs/preflight")
+def preflight_dry_run(
+    body: dict[str, Any],
+    db: Session = Depends(get_db),
+    user=Depends(current_user),
+) -> dict[str, Any]:
+    """Dry-run the preflight gate BEFORE submitting (设计 §10.2).
+
+    Body: {factor_id, version?, run_config}. Returns
+    {would_block, would_degrade, runnable} so the UI can disable the run button
+    (block) or pop a confirm (degrade) without ever queuing a doomed task.
+    """
+    factor_id = body.get("factor_id")
+    if not factor_id:
+        raise ApiError("INVALID_PARAMETER", "factor_id 是必填项")
+    try:
+        return dry_run_preflight(
+            db,
+            factor_id=factor_id,
+            version=body.get("version"),
+            run_config=body.get("run_config") or {},
+        )
+    except ValueError as e:
+        raise ApiError("INVALID_PARAMETER", str(e))
+
+
 @router.get("/runs")
 def list_runs(
     factor_id: str | None = None,
@@ -192,6 +256,7 @@ def get_run(
     if r is None:
         raise ApiError("RUN_NOT_FOUND", f"运行 {run_id} 不存在")
     payload = _serialize_run(r)
+    payload["degradation"] = _degradation_payload(db, r)
     # Live progress from the task row
     if r.task_id:
         t = db.get(Task, r.task_id)
@@ -225,10 +290,48 @@ def _serialize_run(r: FactorRun) -> dict[str, Any]:
         "trace_id": r.trace_id,
         "error": r.error,
         "summary": dict(r.summary or {}),
+        # ── degradation derived fields (设计 §3 / §10.1) ──────────────────
+        "degradation_level": getattr(r, "degradation_level", "none") or "none",
+        "degradation_count": getattr(r, "degradation_count", 0) or 0,
+        "has_critical": bool(getattr(r, "has_critical", False)),
+        "preflight": getattr(r, "preflight", None),
         "created_at": r.created_at.isoformat() + "Z" if r.created_at else None,
         "started_at": r.started_at.isoformat() + "Z" if r.started_at else None,
         "finished_at": r.finished_at.isoformat() + "Z" if r.finished_at else None,
         "duration_sec": r.duration_sec,
+    }
+
+
+def _degradation_payload(db: Session, r: FactorRun) -> dict[str, Any]:
+    """Assemble the run's degradation block (设计 §10.1) from the DB rows."""
+    rows = (
+        db.query(FactorRunDegradation)
+        .filter(FactorRunDegradation.run_id == r.run_id)
+        .all()
+    )
+    events = [
+        {
+            "code": d.code,
+            "category": d.category,
+            "severity": d.severity,
+            "stage": d.stage,
+            "config_key": d.config_key,
+            "title": d.title,
+            "reason": d.reason,
+            "impact": d.impact,
+            "suggested_action": d.suggested_action,
+            "policy": d.policy,
+            "evidence": dict(d.evidence_json or {}),
+            "occurred_at": d.occurred_at,
+        }
+        for d in rows
+        if d.policy != "block"  # block rows surface via `preflight`, not events
+    ]
+    return {
+        "level": getattr(r, "degradation_level", "none") or "none",
+        "count": getattr(r, "degradation_count", 0) or 0,
+        "has_critical": bool(getattr(r, "has_critical", False)),
+        "events": events,
     }
 
 

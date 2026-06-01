@@ -54,6 +54,43 @@ def _json_default(x):
     raise TypeError(f"can't serialize {type(x).__name__}")
 
 
+def write_degradations(
+    run_id: str,
+    *,
+    status: str,
+    level: str,
+    blocked: list[dict] | None = None,
+    events: list[dict] | None = None,
+) -> str:
+    """Persist the degradation台账 artifact (设计 §8.3): {run_id}.degradations.json.
+
+    Lives next to the run log under runs_dir so the detail view can render the
+    full structured report (and the failed-by-preflight 阻断详情).
+    """
+    s = get_settings()
+    os.makedirs(s.runs_dir, exist_ok=True)
+    path = os.path.join(s.runs_dir, f"{run_id}.degradations.json")
+    payload = {
+        "run_id": run_id,
+        "status": status,
+        "level": level,
+        "blocked": blocked or [],
+        "events": events or [],
+    }
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, default=_json_default, ensure_ascii=False)
+    return path
+
+
+def read_degradations(run_id: str) -> dict[str, Any] | None:
+    s = get_settings()
+    path = os.path.join(s.runs_dir, f"{run_id}.degradations.json")
+    if not os.path.exists(path):
+        return None
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
 def write_correlation_cache(task_id: str, result: dict[str, Any]) -> None:
     s = get_settings()
     os.makedirs(s.correlations_dir, exist_ok=True)

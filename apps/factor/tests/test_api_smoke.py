@@ -20,6 +20,11 @@ def app_setup(tmp_path_factory):
     os.environ["QUANT_DATA_ROOT"] = "./data-test"
     os.environ["FACTOR_ROLE"] = "api"
     os.environ["TRUST_PROXY_USER_HEADERS"] = "true"
+    # These smoke tests predate the preflight gate and exercise queue/logging
+    # mechanics against an empty data root (where the gate would correctly block
+    # every run). Disable the gate here via its灰度 switch (设计 §12.3); the
+    # preflight behaviour itself is covered by test_preflight_api.py.
+    os.environ["PREFLIGHT_ENABLED"] = "false"
 
     # Force settings + db engine to be re-created from these vars.
     from factor_service.config import reset_settings_cache

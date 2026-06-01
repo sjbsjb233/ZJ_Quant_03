@@ -9,6 +9,7 @@ import { Empty } from '../../components/ui';
 import { DrawerHeader } from './RunConfigDrawer';
 import RunConfigDrawer from './RunConfigDrawer';
 import LogPanel from '../logs/LogPanel';
+import { RunStatusBadge } from './shared';
 
 export default function FactorTasks() {
   const nav = useNavigate();
@@ -120,7 +121,7 @@ export default function FactorTasks() {
                         <td style={{ padding: '0 12px', color: 'var(--fg-3)' }}>{t.started_at?.replace('T', ' ').slice(0, 19)}</td>
                         <td style={{ padding: '0 12px', color: 'var(--fg-2)' }}>{t.runtime_sec ? `${t.runtime_sec}s` : t.started_at && t.finished_at ? `${Math.round((new Date(t.finished_at) - new Date(t.started_at)) / 1000)}s` : '—'}</td>
                         <td style={{ padding: '0 12px' }}>
-                          {statusBadge(t.status)}
+                          {taskOutcomeBadge(t)}
                         </td>
                         <td style={{ padding: '0 12px', color: 'var(--fg-3)' }}>{t.initiated_by}</td>
                         <td style={{ padding: '0 12px', textAlign: 'right', fontSize: 10, color: 'var(--fg-3)' }}>
@@ -167,6 +168,23 @@ function statusBadge(s) {
   const map = { success: ['ok', '● ok'], failed: ['err', '✕ failed'], canceled: ['neutral', '⊘ canceled'] };
   const [tone, label] = map[s] || ['neutral', s];
   return <span style={{ color: `var(--${tone})` }}>{label}</span>;
+}
+
+// Reflect the *run* outcome (degraded / preflight-blocked) on the completed
+// task row — the task may be "success" while the run is degraded (设计 §11.1).
+function taskOutcomeBadge(t) {
+  if (t.run_id && (t.run_status || t.degradation_count)) {
+    return (
+      <RunStatusBadge run={{
+        status: t.run_status || t.status,
+        error: t.run_error,
+        degradation_level: t.degradation_level,
+        degradation_count: t.degradation_count,
+        has_critical: t.has_critical,
+      }} />
+    );
+  }
+  return statusBadge(t.status);
 }
 
 function Section({ title, count, meta, accent, children }) {

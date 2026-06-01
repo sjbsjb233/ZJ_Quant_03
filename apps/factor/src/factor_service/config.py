@@ -29,6 +29,13 @@ class Settings(BaseSettings):
     factor_poll_interval_ms: int = 1000
     factor_stale_seconds: int = 120
 
+    # ── 运行前置全查 + 受控降级 (设计 §12.3) ────────────────────────────
+    # preflight_enabled: master switch for the gate (worker + submit-time guard).
+    # degradation_policy_profile: "strict" (finance default — block on missing
+    #   neutralization/return/flag data) | "permissive" (灰度: record & run on).
+    preflight_enabled: bool = True
+    degradation_policy_profile: str = "strict"
+
     # ── CORS (in case factor service is exposed directly) ──────────────
     allowed_origins: str = (
         "http://localhost:5173,http://localhost:3000,http://localhost:8000,http://localhost:8100"

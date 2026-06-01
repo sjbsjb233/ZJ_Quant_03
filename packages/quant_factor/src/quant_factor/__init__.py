@@ -20,7 +20,14 @@ from __future__ import annotations
 __version__ = "0.1.0"
 
 from .base import Factor, FactorContext, RunCancelled
+from .cache import data_fingerprint
 from .config import EvalConfig
+from .degradation import (
+    DEGRADATION_CODES,
+    DegradationEvent,
+    DegradationLedger,
+    make_event,
+)
 from .preprocess import winsorize_mad, winsorize_quantile, zscore
 from .neutralize import (
     industry_at_level,
@@ -34,6 +41,12 @@ from .universe import (
     UniverseDef,
     resolve_universe,
 )
+from .preflight import (
+    PreflightBlocked,
+    check_result_to_json,
+    evaluate_checks,
+    run_preflight,
+)
 from .evaluate import FactorEvaluator
 from .correlation import correlation_matrix
 from . import builtin, registry  # noqa: F401  (side-effect import for registry)
@@ -43,6 +56,11 @@ __all__ = [
     "FactorContext",
     "RunCancelled",
     "EvalConfig",
+    "DegradationEvent",
+    "DegradationLedger",
+    "DEGRADATION_CODES",
+    "make_event",
+    "data_fingerprint",
     "winsorize_mad",
     "winsorize_quantile",
     "zscore",
@@ -54,6 +72,10 @@ __all__ = [
     "PRESET_UNIVERSES",
     "UniverseDef",
     "resolve_universe",
+    "PreflightBlocked",
+    "run_preflight",
+    "evaluate_checks",
+    "check_result_to_json",
     "FactorEvaluator",
     "correlation_matrix",
     "builtin",

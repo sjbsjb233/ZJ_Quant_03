@@ -196,6 +196,14 @@ export default function FactorLibrary() {
                       {f.tags?.includes('核心') && <span className="chip ok" style={{ height: 14, fontSize: 9, padding: '0 4px' }}>核心</span>}
                       {f.never_eval && <span className="chip warn" style={{ height: 14, fontSize: 9, padding: '0 4px' }}>未评估</span>}
                       {f.decaying && <span className="chip warn" style={{ height: 14, fontSize: 9, padding: '0 4px' }}>衰减</span>}
+                      {f.degradation_level === 'severe' && (
+                        <span className="chip" data-testid="factor-lib-degraded" title="最近评估含严重降级,结果可能不可用于决策"
+                          style={{ height: 14, fontSize: 9, padding: '0 4px', color: 'var(--err)', background: 'var(--err-bg)' }}>降级(严重)</span>
+                      )}
+                      {f.degradation_level === 'partial' && (
+                        <span className="chip warn" data-testid="factor-lib-degraded" title="最近评估存在降级项"
+                          style={{ height: 14, fontSize: 9, padding: '0 4px' }}>降级</span>
+                      )}
                     </div>
                   </td>
                   <td style={{ padding: '0 10px', fontFamily: 'var(--font-mono)', color: 'var(--fg-2)', fontSize: 10.5 }}>{catLabel(f.category)}</td>

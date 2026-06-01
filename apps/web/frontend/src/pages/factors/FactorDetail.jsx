@@ -7,7 +7,7 @@ import { TerminalShell, TPanel } from '../../components/shell';
 import { Empty, Loading } from '../../components/ui';
 import RunConfigDrawer from './RunConfigDrawer';
 import { BarChart, ICChart, LineChart } from './charts';
-import { catLabel, fmtNum, fmtPct, tone } from './shared';
+import { catLabel, fmtNum, fmtPct, tone, DegradationReport, RunStatusBadge, runStatusInfo } from './shared';
 
 const TABS = [
   { id: 'overview', l: '概览' },
@@ -119,7 +119,7 @@ export default function FactorDetail() {
               {runs.length === 0 && <option value="">尚无评估运行</option>}
               {runs.map((r) => (
                 <option key={r.run_id} value={r.run_id}>
-                  {r.run_id} · {r.created_at?.slice(0, 16)?.replace('T', ' ')} · {r.status}
+                  {r.run_id} · {r.created_at?.slice(0, 16)?.replace('T', ' ')} · {runStatusInfo(r).label}
                   {r.summary?.icir_annual != null ? ` · ICIR ${fmtNum(r.summary.icir_annual, 2)}` : ''}
                 </option>
               ))}
@@ -148,6 +148,7 @@ export default function FactorDetail() {
           </div>
 
           <div className="scroll" style={{ flex: 1, minHeight: 0 }}>
+            <SelectedRunDegradation runId={selectedRunId} />
             {tab === 'overview' && <OverviewTab factor={factor} runId={selectedRunId} />}
             {tab === 'ic' && <ICTab runId={selectedRunId} />}
             {tab === 'decay' && <DecayTab factorId={factorId} runId={selectedRunId} />}
@@ -169,6 +170,21 @@ export default function FactorDetail() {
       )}
     </TerminalShell>
   );
+}
+
+// ─── Degradation banner + report (shown across all tabs, 设计 §11.2) ───────
+function SelectedRunDegradation({ runId }) {
+  const runQ = useQuery({
+    queryKey: ['run', runId],
+    queryFn: () => endpoints.run(runId),
+    enabled: !!runId,
+  });
+  const r = runQ.data;
+  if (!r) return null;
+  const showReport =
+    r.status === 'degraded' || (r.status === 'failed' && r.error === 'preflight_blocked');
+  if (!showReport) return null;
+  return <DegradationReport run={r} />;
 }
 
 // ─── Overview ────────────────────────────────────────────────────────────
@@ -521,9 +537,7 @@ function HistoryTab({ runs, onSelect }) {
               <td style={{ padding: '0 12px', color: 'var(--fg-2)' }}>{r.duration_sec ? `${Math.round(r.duration_sec)}s` : '—'}</td>
               <td style={{ padding: '0 12px', color: 'var(--fg-2)' }}>{r.run_config?.universe_id || '—'}</td>
               <td style={{ padding: '0 12px' }}>
-                <span style={{ color: r.status === 'success' ? 'var(--ok)' : r.status === 'failed' ? 'var(--err)' : 'var(--info)' }}>
-                  {r.status === 'success' ? '● ok' : r.status === 'failed' ? '✕ failed' : r.status}
-                </span>
+                <RunStatusBadge run={r} />
               </td>
               <td style={{ padding: '0 12px', textAlign: 'right', color: 'var(--ok)' }}>{fmtNum(r.summary?.icir_annual, 2)}</td>
               <td style={{ padding: '0 12px', textAlign: 'right', color: 'var(--ok)' }}>{fmtPct(r.summary?.ls_annual_return, 1)}</td>

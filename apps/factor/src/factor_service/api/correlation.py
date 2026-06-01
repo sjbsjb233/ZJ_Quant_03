@@ -8,10 +8,12 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from quant_data import logging as qd_logging
+from quant_data import DataReader, logging as qd_logging
+from quant_factor.cache import data_fingerprint
 from quant_factor.config import EvalConfig, config_signature
 
-from ..db.models import FactorRecord, Task
+from ..config import get_settings
+from ..db.models import EvalSummary, FactorRecord, Task
 from ..deps import current_user, get_db, require_editor
 from ..errors import ApiError
 from ..logging_ctx import trace_id_var
@@ -24,6 +26,24 @@ router = APIRouter()
 # The matching compute chain (correlation.compute.done) is in run_executor; same
 # trace_id stitches submit → compute in app_log (V3 §4.3).
 _qlog = qd_logging.get_logger("factor.correlation")
+
+
+def _severe_factors(db: Session, fids: list[str]) -> list[str]:
+    """Factor ids whose *latest* evaluation was severe-degraded (设计 §9.2)."""
+    out: list[str] = []
+    for fid in fids:
+        latest = (
+            db.query(EvalSummary)
+            .filter(EvalSummary.factor_id == fid)
+            .order_by(EvalSummary.id.desc())
+            .first()
+        )
+        if latest is not None and (
+            bool(getattr(latest, "has_critical", False))
+            or getattr(latest, "degradation_level", "none") == "severe"
+        ):
+            out.append(fid)
+    return out
 
 
 @router.post("/factors/correlation")
@@ -41,11 +61,35 @@ def submit_correlation(
         if db.get(FactorRecord, fid) is None:
             raise ApiError("FACTOR_NOT_FOUND", f"因子 {fid} 不存在")
 
+    # severe-degraded results must not silently feed a downstream analysis
+    # (设计 §9.2 / §11): a factor whose latest evaluation carried a critical
+    # degradation is refused unless the caller explicitly acknowledges the risk.
+    if not body.get("acknowledge_degraded"):
+        severe = _severe_factors(db, fids)
+        if severe:
+            _qlog.warn("correlation.severe_blocked", factor_ids=severe)
+            raise ApiError(
+                "DEGRADED_INPUT_BLOCKED",
+                "存在严重降级(severe)的因子,默认不参与相关性分析;"
+                "确认风险后可携带 acknowledge_degraded=true 重试",
+                details={"severe_factors": severe},
+                status_code=422,
+            )
+
     cfg = EvalConfig.from_dict(body.get("run_config") or {})
     method = body.get("method") or "ic_series"
     threshold = float(body.get("threshold") or 0.7)
 
-    sig = config_signature(cfg, extra=(method, str(threshold), ",".join(sorted(fids))))
+    # Fold a data-availability fingerprint into the signature (设计 §9.1) so that
+    # backfilling sectors / circ_mv / vwap changes the key — a degraded result is
+    # never reused once the missing data is补齐.
+    try:
+        fp = data_fingerprint(DataReader(root=get_settings().quant_data_root), cfg)
+    except Exception:  # noqa: BLE001
+        fp = "fp:err"
+    sig = config_signature(
+        cfg, extra=(method, str(threshold), ",".join(sorted(fids)), fp)
+    )
 
     task = store.enqueue(
         db,

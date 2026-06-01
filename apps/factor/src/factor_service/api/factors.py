@@ -246,6 +246,10 @@ def _serialize_factor(f: FactorRecord, latest: EvalSummary | None) -> dict[str, 
                 "last_eval_at": latest.as_of.isoformat() if latest.as_of else None,
                 "last_universe_id": latest.universe_id,
                 "ic_spark": list(latest.ic_spark or []),
+                # latest eval's degradation snapshot for the library badge (设计 §8.1/§11.1)
+                "degradation_level": getattr(latest, "degradation_level", "none") or "none",
+                "degradation_count": getattr(latest, "degradation_count", 0) or 0,
+                "has_critical": bool(getattr(latest, "has_critical", False)),
             }
         )
     else:

@@ -47,11 +47,16 @@ class FactorContext:
         symbols: list[str],
         start: dt.date,
         end: dt.date,
+        ledger=None,
     ):
         self._reader = reader
         self.symbols = list(symbols)
         self.start = start
         self.end = end
+        # Optional DegradationLedger (设计 §6) so factor code can record a
+        # controlled degradation (e.g. a field fallback) rather than silently
+        # changing semantics. None during validation / standalone use.
+        self.ledger = ledger
 
     # ── raw / reference reads ────────────────────────────────────────────
     def bars(self, adjust: str = "post") -> pl.DataFrame:

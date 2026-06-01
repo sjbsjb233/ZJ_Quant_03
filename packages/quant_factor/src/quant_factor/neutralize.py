@@ -21,6 +21,8 @@ import datetime as dt
 import numpy as np
 import polars as pl
 
+from .degradation import make_event
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Size (market cap)
@@ -138,6 +140,8 @@ def neutralize_cross_section(
     *,
     use_size: bool = True,
     use_industry: bool = True,
+    ledger=None,
+    day=None,
 ) -> pl.DataFrame:
     """One-day OLS: value ~ ln_mktcap + industry_dummies -> residual.
 
@@ -146,6 +150,16 @@ def neutralize_cross_section(
 
     Returns the same DataFrame with `value` replaced by residuals; rows
     that can't fit (missing covariates) become NaN.
+
+    No-silent-degradation (设计 §6): instead of quietly building a zero-dummy
+    regression (which pretends to neutralize but only de-means) or lumping
+    unknown-industry stocks into the base group, this records structured
+    :class:`DegradationEvent`s on the optional ``ledger``:
+      - DG_IND_NEUTRAL_SKIPPED (critical): < 2 usable industry categories.
+      - DG_IND_PARTIAL (high):  some stocks have a value but no known industry;
+        they are set NaN (dropped) rather than polluting the base category.
+      - DG_SIZE_DROPPED (high): stocks with a value but missing ln_mktcap are
+        excluded from the fit.
     """
     if not (use_size or use_industry):
         return df
@@ -155,16 +169,80 @@ def neutralize_cross_section(
         return df
 
     y = df["value"].to_numpy().astype(float)
+    finite_val = np.isfinite(y)
 
     cols = [np.ones(n)]  # intercept
+
     if use_size and "ln_mktcap" in df.columns:
-        cols.append(df["ln_mktcap"].to_numpy().astype(float))
+        size_arr = df["ln_mktcap"].to_numpy().astype(float)
+        cols.append(size_arr)
+        # Stocks that HAVE a value but are missing size → will be masked out.
+        size_dropped = int(np.sum(finite_val & ~np.isfinite(size_arr)))
+        if size_dropped > 0 and ledger is not None:
+            ledger.record(
+                make_event(
+                    "DG_SIZE_DROPPED",
+                    stage="prep",
+                    reason=f"{size_dropped} 个标的缺市值(ln_mktcap),本截面回归将剔除",
+                    impact="缺市值标的被剔除,该截面覆盖度缩水,市值中性化口径对其失效",
+                    suggested_action="补齐 raw.bars_daily 的市值字段后重跑",
+                    evidence={
+                        "affected_symbols": size_dropped,
+                        "date": str(day) if day is not None else None,
+                        "cross_section_size": int(finite_val.sum()),
+                    },
+                )
+            )
+
     if use_industry and "industry" in df.columns:
         ind = df["industry"].to_numpy()
         cats = sorted({c for c in ind if c is not None and c == c})  # drop NaN
-        # Drop the first dummy to avoid perfect collinearity.
-        for c in cats[1:]:
-            cols.append((ind == c).astype(float))
+        unknown_mask = np.array([(c is None or c != c) for c in ind])
+        n_unknown_with_val = int(np.sum(finite_val & unknown_mask))
+        if len(cats) < 2:
+            # Not enough categories to form even one dummy: industry term is
+            # impossible. Record critical — do NOT fake-neutralize.
+            if ledger is not None and not ledger.has_code("DG_IND_NEUTRAL_SKIPPED"):
+                ledger.record(
+                    make_event(
+                        "DG_IND_NEUTRAL_SKIPPED",
+                        stage="prep",
+                        reason=(
+                            f"可用行业类别仅 {len(cats)} 个(<2),无法构造行业哑变量"
+                            + (f"(date={day})" if day is not None else "")
+                        ),
+                        impact="行业中性化未生效,残差等价于仅去均值/去市值,因子可能仍是行业押注",
+                        suggested_action="导入对应行业分类数据(reference.sectors)后重跑",
+                        evidence={
+                            "usable_categories": len(cats),
+                            "date": str(day) if day is not None else None,
+                            "cross_section_size": int(finite_val.sum()),
+                        },
+                    )
+                )
+        else:
+            # Drop the first dummy to avoid perfect collinearity.
+            for c in cats[1:]:
+                cols.append((ind == c).astype(float))
+            # Unknown-industry stocks must NOT be silently lumped into the base
+            # category — set their value NaN so the mask drops them, and report.
+            if n_unknown_with_val > 0:
+                y = np.where(unknown_mask, np.nan, y)
+                if ledger is not None:
+                    ledger.record(
+                        make_event(
+                            "DG_IND_PARTIAL",
+                            stage="prep",
+                            reason=f"{n_unknown_with_val} 个标的行业未知,本截面已剔除",
+                            impact="部分标的因行业未知被剔除,覆盖度缩水",
+                            suggested_action="补全这些标的的 sector_code / 行业分类后重跑",
+                            evidence={
+                                "affected_symbols": n_unknown_with_val,
+                                "date": str(day) if day is not None else None,
+                                "usable_categories": len(cats),
+                            },
+                        )
+                    )
 
     X = np.column_stack(cols)
     mask = np.isfinite(y) & np.all(np.isfinite(X), axis=1)

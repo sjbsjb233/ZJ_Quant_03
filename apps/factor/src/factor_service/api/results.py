@@ -67,3 +67,24 @@ def turnover(
         "factor_id": fid,
         "data": results_writer.read_turnover(fid, run_id),
     }
+
+
+@router.get("/runs/{run_id}/degradations")
+def degradations(
+    run_id: str, db: Session = Depends(get_db), user=Depends(current_user)
+) -> dict:
+    """Full structured degradation台账 + 阻断详情 (设计 §8.3 artifact)."""
+    r = db.get(FactorRun, run_id)
+    if r is None:
+        raise ApiError("RUN_NOT_FOUND", f"运行 {run_id} 不存在")
+    art = results_writer.read_degradations(run_id)
+    if art is not None:
+        return art
+    # Fallback (artifact missing): synthesize from the persisted columns.
+    return {
+        "run_id": run_id,
+        "status": r.status,
+        "level": getattr(r, "degradation_level", "none") or "none",
+        "blocked": getattr(r, "preflight", None) or [],
+        "events": [],
+    }
