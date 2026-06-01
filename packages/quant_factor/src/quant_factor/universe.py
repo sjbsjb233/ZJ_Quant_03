@@ -227,6 +227,10 @@ def resolve_universe(
     kind = d.get("kind", "preset_index")
     if kind == "preset_index":
         flag = _resolve_flag(d.get("preset_flag"))
+        # 漏斗一致性 (Copilot): a preset index whose backing flag column(s) are
+        # absent is a no-op — the index filter was requested but couldn't apply,
+        # so flag the step ineffective just like the ST/suspend/list-days steps.
+        flag_ineffective = False
         if flag is None:
             pass  # all market — no flag filter
         elif isinstance(flag, tuple):
@@ -236,10 +240,14 @@ def resolve_universe(
                 for c in existing[1:]:
                     expr = expr | (pl.col(c) == True)  # noqa: E712
                 uni = uni.filter(expr)
+            else:
+                flag_ineffective = True
         else:
             if flag in uni.columns:
                 uni = uni.filter(pl.col(flag) == True)  # noqa: E712
-        _snap("after_flag", requested=flag is not None)
+            else:
+                flag_ineffective = True
+        _snap("after_flag", requested=flag is not None, ineffective=flag_ineffective)
     else:  # custom
         syms = list(custom_symbols or [])
         if not syms:
