@@ -10,10 +10,9 @@ from __future__ import annotations
 import os
 import time
 
-import duckdb
 import pyarrow.parquet as pq
 
-from . import ids, storage
+from . import config, ids, storage
 from .logging import get_logger
 from .metadata import batches, field_registry
 from .schemas import ARROW_TYPE_BY_NAME, get_spec
@@ -39,7 +38,7 @@ def dry_run_promote(table: str, field: str, dtype: str | None = None,
 
     files = storage.list_data_files(spec, root=root)
     f_lit = lambda s: "'" + str(s).replace("'", "''") + "'"  # noqa: E731
-    con = duckdb.connect()
+    con = config.connect_duckdb()
     total_rows, total_bytes, cast_failures = 0, 0, []
     for f in files:
         total_bytes += os.path.getsize(f)
@@ -101,7 +100,7 @@ def promote_field_to_core(table: str, field: str, dtype: str | None = None,
     start = time.perf_counter()
 
     try:
-        con = duckdb.connect()
+        con = config.connect_duckdb()
         total = 0
         f_lit = lambda s: "'" + str(s).replace("'", "''") + "'"  # noqa: E731
         ident = lambda s: '"' + str(s).replace('"', '""') + '"'  # noqa: E731
