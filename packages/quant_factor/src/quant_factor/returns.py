@@ -11,6 +11,8 @@ import datetime as dt
 
 import polars as pl
 
+from .degradation import make_event
+
 
 def forward_returns(
     reader,
@@ -19,6 +21,7 @@ def forward_returns(
     end: dt.date,
     horizon: int,
     price: str = "close",
+    ledger=None,
 ) -> pl.DataFrame:
     """Compute (date, symbol, fwd_ret) for horizon h.
 
@@ -38,8 +41,29 @@ def forward_returns(
             schema={"date": pl.Date, "symbol": pl.Utf8, "fwd_ret": pl.Float64},
         )
     bars = bars.sort(["symbol", "date"])
-    if price == "vwap" and "vwap" in bars.columns:
-        col = "vwap"
+    if price == "vwap":
+        # vwap口径要求 vwap 列存在且不是全空;否则静默回退会让"按 VWAP 计算"
+        # 的配置悄悄变成 CLOSE。记录 DG_PRICE_FALLBACK(去重:多 horizon 只记一次)。
+        vwap_ok = "vwap" in bars.columns and bars["vwap"].drop_nulls().len() > 0
+        if vwap_ok:
+            col = "vwap"
+        else:
+            col = "close"
+            if ledger is not None and not ledger.has_code("DG_PRICE_FALLBACK"):
+                ledger.record(
+                    make_event(
+                        "DG_PRICE_FALLBACK",
+                        stage="compute",
+                        reason="vwap 列缺失或全空,前向收益回退使用 close",
+                        impact="收益口径实际为 CLOSE 而非配置的 VWAP,IC/分层结果口径不符",
+                        suggested_action="补齐 raw.bars_daily.vwap 后重跑;或显式改用 close 口径",
+                        evidence={
+                            "requested": "vwap",
+                            "used": "close",
+                            "vwap_present": "vwap" in bars.columns,
+                        },
+                    )
+                )
     else:
         col = "close"
 

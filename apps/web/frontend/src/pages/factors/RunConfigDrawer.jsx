@@ -42,6 +42,9 @@ export default function RunConfigDrawer({ factorId, onClose, onSubmitted, initia
   const [cfg, setCfg] = React.useState(() => ({ ...DEFAULT_CFG, universe_id: initialUniverseId || DEFAULT_CFG.universe_id }));
   const [params, setParams] = React.useState(initialParams || {});
   const [eta, setEta] = React.useState(null);
+  const [pf, setPf] = React.useState(null);          // preflight dry-run result
+  const [pfLoading, setPfLoading] = React.useState(false);
+  const [degradeAck, setDegradeAck] = React.useState(false);
   const universes = useUniverses();
   const factor = useQuery({
     queryKey: ['factor', factorId],
@@ -60,6 +63,22 @@ export default function RunConfigDrawer({ factorId, onClose, onSubmitted, initia
     return () => { cancelled = true; };
   }, [cfg.universe_id, cfg.start, cfg.end, cfg.rebalance, cfg.industry_level, cfg.neutralize_industry, cfg.quantiles, cfg.lane]);
 
+  // 提交前预检 (设计 §11.3): dry-run the preflight gate whenever a relevant
+  // knob changes so the user sees would_block / would_degrade BEFORE submitting.
+  React.useEffect(() => {
+    if (!factorId) return undefined;
+    let cancelled = false;
+    setPfLoading(true);
+    setDegradeAck(false);
+    endpoints.preflightRun({ factor_id: factorId, run_config: cfg })
+      .then((r) => { if (!cancelled) { setPf(r); setPfLoading(false); } })
+      .catch(() => { if (!cancelled) { setPf(null); setPfLoading(false); } });
+    return () => { cancelled = true; };
+  }, [factorId, cfg.universe_id, cfg.start, cfg.end, cfg.rebalance,
+      cfg.neutralize_industry, cfg.neutralize_size, cfg.size_field,
+      cfg.industry_level, cfg.classification_system, cfg.return_price,
+      cfg.winsorize, cfg.standardize]);
+
   const submit = useMutation({
     mutationFn: () => endpoints.submitRun({
       factor_id: factorId,
@@ -71,6 +90,11 @@ export default function RunConfigDrawer({ factorId, onClose, onSubmitted, initia
       onClose?.();
     },
   });
+
+  const wouldBlock = pf?.would_block || [];
+  const wouldDegrade = pf?.would_degrade || [];
+  const needAck = !!pf && pf.runnable && wouldDegrade.length > 0;
+  const blockedSubmit = (!!pf && !pf.runnable) || (needAck && !degradeAck);
 
   const isLoading = !factor.data || universes.isLoading;
   const paramSchema = factor.data?.versions?.[0]?.param_schema || factor.data?.versions?.find?.((v) => v.enabled)?.param_schema || {};
@@ -198,9 +222,20 @@ export default function RunConfigDrawer({ factorId, onClose, onSubmitted, initia
               </Field>
             </FormGroup>
 
+            <PreflightNotice
+              pf={pf} loading={pfLoading}
+              wouldBlock={wouldBlock} wouldDegrade={wouldDegrade}
+              needAck={needAck} degradeAck={degradeAck} onAck={setDegradeAck}
+              onFix={(checkId) => applyPreflightFix(checkId, cfg, setCfg)} />
+
             {submit.isError && (
-              <div className="chip err" style={{ height: 'auto', padding: '6px 10px' }}>
+              <div className="chip err" style={{ height: 'auto', padding: '6px 10px' }} data-testid="newrun-submit-error">
                 {submit.error?.apiError?.message || '提交失败'}
+                {submit.error?.apiError?.details?.would_block?.length > 0 && (
+                  <div style={{ marginTop: 4, fontSize: 10 }}>
+                    {submit.error.apiError.details.would_block.map((b) => b.title).join('; ')}
+                  </div>
+                )}
               </div>
             )}
           </>
@@ -218,9 +253,19 @@ export default function RunConfigDrawer({ factorId, onClose, onSubmitted, initia
         </span>
         <div style={{ flex: 1 }} />
         <button className="btn ghost sm" onClick={onClose}>取消</button>
-        <button className="btn sm" data-testid="newrun-submit" disabled={submit.isLoading} onClick={() => submit.mutate()}
-          style={{ background: 'var(--fg)', color: 'var(--bg)', borderColor: 'var(--fg)' }}>
-          {submit.isLoading ? '提交中…' : '提交 → 进队列'}
+        <button className="btn sm" data-testid="newrun-submit"
+          disabled={submit.isLoading || blockedSubmit}
+          title={pf && !pf.runnable ? '前置校验未通过,无法提交' : (needAck && !degradeAck ? '请先确认降级运行' : '')}
+          onClick={() => submit.mutate()}
+          style={{
+            background: blockedSubmit ? 'var(--surface-3)' : 'var(--fg)',
+            color: blockedSubmit ? 'var(--fg-3)' : 'var(--bg)',
+            borderColor: blockedSubmit ? 'var(--border)' : 'var(--fg)',
+            cursor: blockedSubmit ? 'not-allowed' : 'pointer',
+          }}>
+          {submit.isLoading ? '提交中…'
+            : (pf && !pf.runnable) ? '已阻断'
+            : needAck ? '确认降级运行' : '提交 → 进队列'}
         </button>
       </footer>
     </aside>
@@ -232,6 +277,80 @@ function coerce(v, type) {
   if (type === 'float') return parseFloat(v) || 0;
   if (type === 'bool') return v === true || v === 'true' || v === 1 || v === '1';
   return v;
+}
+
+// 提交前预检提示 (设计 §11.3): block → red, disable run + offer a quick fix;
+// degrade-only → amber, require an explicit acknowledge before submitting.
+function PreflightNotice({ pf, loading, wouldBlock, wouldDegrade, needAck, degradeAck, onAck, onFix }) {
+  if (loading && !pf) {
+    return (
+      <div data-testid="newrun-preflight" style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-3)' }}>
+        <span className="dot running" /> 前置校验中…
+      </div>
+    );
+  }
+  if (!pf || pf.enabled === false) return null;
+  if (wouldBlock.length === 0 && wouldDegrade.length === 0) {
+    return (
+      <div data-testid="newrun-preflight" style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--ok)' }}>
+        ✓ 前置校验通过 · 数据齐备
+      </div>
+    );
+  }
+  return (
+    <div data-testid="newrun-preflight" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {wouldBlock.length > 0 && (
+        <div data-testid="newrun-preflight-block" style={{ border: '1px solid var(--err)', borderRadius: 4, overflow: 'hidden' }}>
+          <div style={{ padding: '5px 10px', background: 'var(--err-bg)', color: 'var(--err)', fontSize: 11, fontWeight: 600 }}>
+            ⊘ 以下前提缺失,运行已阻断 ({wouldBlock.length})
+          </div>
+          {wouldBlock.map((b) => (
+            <div key={b.check_id} style={{ padding: '6px 10px', borderTop: '1px solid var(--border-faint)', fontSize: 10.5 }}>
+              <div style={{ color: 'var(--fg)' }}>{b.title} <span style={{ color: 'var(--fg-4)', fontFamily: 'var(--font-mono)', fontSize: 9.5 }}>{b.check_id}</span></div>
+              <div style={{ color: 'var(--fg-3)', marginTop: 2 }}>{b.reason}</div>
+              <div style={{ color: 'var(--info)', marginTop: 2 }}>建议: {b.suggested_action}</div>
+              {QUICK_FIX[b.check_id] && (
+                <button className="btn ghost sm" style={{ marginTop: 4, fontSize: 9.5 }}
+                  onClick={() => onFix(b.check_id)}>{QUICK_FIX[b.check_id].label}</button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      {wouldDegrade.length > 0 && (
+        <div data-testid="newrun-preflight-degrade" style={{ border: '1px solid var(--warn)', borderRadius: 4, overflow: 'hidden' }}>
+          <div style={{ padding: '5px 10px', background: 'var(--warn-bg)', color: 'var(--warn)', fontSize: 11, fontWeight: 600 }}>
+            ▲ 以下功能将降级运行 ({wouldDegrade.length})
+          </div>
+          {wouldDegrade.map((b) => (
+            <div key={b.check_id} style={{ padding: '6px 10px', borderTop: '1px solid var(--border-faint)', fontSize: 10.5 }}>
+              <div style={{ color: 'var(--fg)' }}>{b.title}</div>
+              <div style={{ color: 'var(--fg-3)', marginTop: 2 }}>{b.reason}</div>
+            </div>
+          ))}
+          {needAck && (
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', borderTop: '1px solid var(--border-faint)', fontSize: 10.5, color: 'var(--fg-2)', cursor: 'pointer' }}>
+              <input type="checkbox" data-testid="newrun-degrade-ack" checked={degradeAck} onChange={(e) => onAck(e.target.checked)} />
+              我已知悉,结果将被标记为「降级」,确认继续
+            </label>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Quick-fix shortcuts for common blocks — flip off the offending feature so the
+// user can run "仅按可用配置" (设计 §11.3).
+const QUICK_FIX = {
+  PF_NEU_IND: { label: '关闭行业中性化后运行', patch: { neutralize_industry: false } },
+  PF_NEU_SIZE: { label: '关闭市值中性化后运行', patch: { neutralize_size: false } },
+  PF_RET_PRICE: { label: '改用 CLOSE 收益口径', patch: { return_price: 'close' } },
+};
+
+function applyPreflightFix(checkId, cfg, setCfg) {
+  const fix = QUICK_FIX[checkId];
+  if (fix) setCfg({ ...cfg, ...fix.patch });
 }
 
 export function DrawerHeader({ title, subtitle, onClose }) {

@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from ..db.models import Task
+from ..db.models import FactorRun, Task
 from ..deps import current_user, get_db, require_editor
 from ..errors import ApiError
 from ..queue import estimator, store
@@ -16,7 +16,26 @@ from ..queue import estimator, store
 router = APIRouter()
 
 
-def _serialize_task(t: Task, *, with_eta: bool = False, db: Session | None = None):
+def _run_info_map(db: Session, run_ids: list[str]) -> dict[str, dict]:
+    """Batch-load run status + degradation for tasks (设计 §11.1 queue badges)."""
+    ids = [r for r in run_ids if r]
+    if not ids:
+        return {}
+    rows = db.query(FactorRun).filter(FactorRun.run_id.in_(ids)).all()
+    return {
+        r.run_id: {
+            "run_status": r.status,
+            "run_error": r.error,
+            "degradation_level": getattr(r, "degradation_level", "none") or "none",
+            "degradation_count": getattr(r, "degradation_count", 0) or 0,
+            "has_critical": bool(getattr(r, "has_critical", False)),
+        }
+        for r in rows
+    }
+
+
+def _serialize_task(t: Task, *, with_eta: bool = False, db: Session | None = None,
+                    run_info: dict | None = None):
     d = {
         "task_id": t.task_id,
         "task_type": t.task_type,
@@ -39,6 +58,11 @@ def _serialize_task(t: Task, *, with_eta: bool = False, db: Session | None = Non
         "error": t.error,
         "initiated_by": t.initiated_by,
     }
+    # Attach the linked run's degradation snapshot so the queue list can badge a
+    # degraded / preflight-blocked outcome even when the *task* completed fine.
+    info = (run_info or {}).get(t.run_id) if t.run_id else None
+    if info:
+        d.update(info)
     if with_eta and db is not None and t.status == "queued":
         d["eta"] = estimator.estimate_wait(db, t)
     # Running runtime / remaining
@@ -83,7 +107,8 @@ def list_tasks(
         .limit(limit)
         .all()
     )
-    items = [_serialize_task(t, with_eta=True, db=db) for t in rows]
+    run_info = _run_info_map(db, [t.run_id for t in rows])
+    items = [_serialize_task(t, with_eta=True, db=db, run_info=run_info) for t in rows]
     return {"items": items, "total": len(items)}
 
 
@@ -94,7 +119,9 @@ def get_task(
     t = db.get(Task, task_id)
     if t is None:
         raise ApiError("TASK_NOT_FOUND", f"任务 {task_id} 不存在")
-    return _serialize_task(t, with_eta=True, db=db)
+    return _serialize_task(
+        t, with_eta=True, db=db, run_info=_run_info_map(db, [t.run_id])
+    )
 
 
 @router.get("/tasks/{task_id}/eta")

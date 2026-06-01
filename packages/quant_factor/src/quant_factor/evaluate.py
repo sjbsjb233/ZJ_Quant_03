@@ -24,6 +24,7 @@ import polars as pl
 
 from .base import Factor, FactorContext, RunCancelled, _ensure_columns
 from .config import EvalConfig
+from .degradation import DegradationLedger, make_event
 from .neutralize import (
     industry_at_level,
     ln_size,
@@ -53,11 +54,17 @@ class FactorEvaluator:
     def __init__(
         self,
         reader,
+        *,
+        ledger: DegradationLedger | None = None,
         progress_cb: Callable[[int, int], None] | None = None,
         log_cb: Callable[[str], None] | None = None,
         cancel_cb: Callable[[], bool] | None = None,
     ):
         self.reader = reader
+        # Degradation台账 (设计 §6). Defaults to a fresh empty ledger so legacy
+        # callers that don't pass one still get every runtime degradation
+        # recorded (equivalent to "全降级放行" during the migration window §12.2).
+        self.ledger = ledger if ledger is not None else DegradationLedger()
         self._progress = progress_cb or (lambda c, t: None)
         self._log = log_cb or (lambda m: None)
         self._cancelled = cancel_cb or (lambda: False)
@@ -74,7 +81,7 @@ class FactorEvaluator:
             f"starting evaluation factor={factor.name} universe={uni_def.get('universe_id') if isinstance(uni_def, dict) else uni_def.universe_id}"
         )
         uni = resolve_universe(
-            self.reader, uni_def, custom_symbols, cfg.start, cfg.end
+            self.reader, uni_def, custom_symbols, cfg.start, cfg.end, ledger=self.ledger
         )
         if uni.height == 0:
             raise ValueError("Universe resolved to zero rows — check pool definition")
@@ -88,7 +95,7 @@ class FactorEvaluator:
             f"({rebal[0]} → {rebal[-1]})"
         )
 
-        ctx = FactorContext(self.reader, symbols, cfg.start, cfg.end)
+        ctx = FactorContext(self.reader, symbols, cfg.start, cfg.end, ledger=self.ledger)
 
         # ── step 1: compute raw factor values ─────────────────────────────
         fvals = self._compute_factor(factor, ctx, rebal)
@@ -108,7 +115,8 @@ class FactorEvaluator:
                 raise RunCancelled()
             self._progress(i, total + 2)
             fr = forward_returns(
-                self.reader, symbols, cfg.start, cfg.end, h, cfg.return_price
+                self.reader, symbols, cfg.start, cfg.end, h, cfg.return_price,
+                ledger=self.ledger,
             )
             ser = self._ic_series(clean, fr, rebal, cfg.ic_type, factor.direction)
             ic_by_h[int(h)] = self._ic_stats(ser, factor.direction, cfg.rebalance)
@@ -119,7 +127,8 @@ class FactorEvaluator:
             # fall back to the first horizon if primary wasn't in the list
             h0 = int(cfg.horizons[0])
             fr0 = forward_returns(
-                self.reader, symbols, cfg.start, cfg.end, h0, cfg.return_price
+                self.reader, symbols, cfg.start, cfg.end, h0, cfg.return_price,
+                ledger=self.ledger,
             )
             ic_series = self._ic_series(clean, fr0, rebal, cfg.ic_type, factor.direction)
 
@@ -134,6 +143,7 @@ class FactorEvaluator:
             cfg.end,
             cfg.primary_horizon,
             cfg.return_price,
+            ledger=self.ledger,
         )
         layers = self._layered(
             clean, fr_p, rebal, cfg.quantiles, factor.direction, cfg.layer_weight
@@ -226,6 +236,31 @@ class FactorEvaluator:
                 cfg.classification_system,
                 cfg.industry_level,
             )
+            # Runtime backstop (设计 §6): even though preflight PF_NEU_IND should
+            # have blocked a zero-coverage industry map under strict policy, in
+            # permissive/override modes we re-confirm here and record critical.
+            if ind_map is not None:
+                cov = (
+                    ind_map.filter(pl.col("industry").is_not_null()).height
+                    / max(1, ind_map.height)
+                )
+                if cov == 0.0:
+                    self.ledger.record(
+                        make_event(
+                            "DG_IND_NEUTRAL_SKIPPED",
+                            stage="prep",
+                            reason=(
+                                f"{cfg.classification_system} 行业分类可解析覆盖率为 0"
+                            ),
+                            impact="残差等价于仅去均值,因子未做任何行业中性化",
+                            suggested_action="导入对应行业分类数据(reference.sectors)后重跑",
+                            evidence={
+                                "coverage": 0.0,
+                                "threshold": 0.95,
+                                "affected_symbols": ind_map.height,
+                            },
+                        )
+                    )
 
         chunks: list[pl.DataFrame] = []
         date_set = set(rebal)
@@ -244,6 +279,8 @@ class FactorEvaluator:
                 winsorize=cfg.winsorize,
                 winsorize_n=cfg.winsorize_n,
                 standardize=cfg.standardize,
+                ledger=self.ledger,
+                day=day,
             )
 
             if cfg.neutralize_size or cfg.neutralize_industry:
@@ -261,9 +298,13 @@ class FactorEvaluator:
                     cs,
                     use_size=cfg.neutralize_size,
                     use_industry=cfg.neutralize_industry,
+                    ledger=self.ledger,
+                    day=day,
                 ).drop_nulls("value")
                 if cfg.standardize == "zscore":
-                    cs = cs.with_columns(zscore(cs["value"]).alias("value"))
+                    cs = cs.with_columns(
+                        zscore(cs["value"], ledger=self.ledger, day=day).alias("value")
+                    )
 
             chunks.append(cs.select(["date", "symbol", "value"]))
 

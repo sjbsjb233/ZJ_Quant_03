@@ -176,6 +176,7 @@ export const endpoints = {
 
   // runs
   submitRun: (body) => post('/runs', body),
+  preflightRun: (body) => post('/runs/preflight', body),   // 提交前预检 (设计 §10.2)
   previewEta: (body) => post('/runs/preview-eta', body),
   runs: (params) => get('/runs', params),
   run: (runId) => get(`/runs/${runId}`),
@@ -184,6 +185,7 @@ export const endpoints = {
   runIcSeries: (runId) => get(`/runs/${runId}/ic-series`),
   runLayers: (runId) => get(`/runs/${runId}/layers`),
   runTurnover: (runId) => get(`/runs/${runId}/turnover`),
+  runDegradations: (runId) => get(`/runs/${runId}/degradations`),  // 降级台账 (设计 §8.3)
 
   // tasks
   tasks: (params) => get('/tasks', params),

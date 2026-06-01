@@ -21,6 +21,12 @@ from quant_factor import (
     correlation_matrix,
 )
 from quant_factor.base import RunCancelled
+from quant_factor.preflight import (
+    PreflightBlocked,
+    check_result_to_json,
+    run_preflight,
+)
+from quant_factor.universe import resolve_universe
 from quant_factor.registry import all_registered, instantiate, instantiate_from_code
 
 from ..config import get_settings
@@ -29,12 +35,17 @@ from ..db.models import (
     EvalSummary,
     FactorRecord,
     FactorRun,
+    FactorRunDegradation,
     FactorVersion,
     Task,
     Universe,
 )
 from ..queue import store
-from .results_writer import write_correlation_cache, write_run_results
+from .results_writer import (
+    write_correlation_cache,
+    write_degradations,
+    write_run_results,
+)
 
 
 _log = logging.getLogger("factor.executor")
@@ -163,14 +174,55 @@ def _run_evaluation(db, t: Task) -> dict[str, Any]:
                 log_write(msg)
 
             reader = DataReader(root=get_settings().quant_data_root)
-            evaluator = FactorEvaluator(
-                reader,
-                progress_cb=progress,
-                log_cb=log_cb,
-                cancel_cb=cancelled,
-            )
             m["universe_id"] = uni_row.universe_id
             m["n_symbols"] = len(custom_syms) if custom_syms is not None else None
+
+        # ── stage: preflight (NEW · 设计 §5/§7) ──────────────────────────────
+        # The authoritative gate. A block here marks the run failed and it NEVER
+        # computes — the core 红线 (设计 §13): industry/size data missing can
+        # never produce status=success. A degrade seeds the run's台账.
+        stage = "preflight"
+        settings = get_settings()
+        ledger = None
+        with qd_logging.timed(_qlog, "run.stage.preflight", run_id=run_id) as m:
+            if settings.preflight_enabled:
+                symbols = _resolve_symbols_for_preflight(
+                    reader, uni_def, custom_syms, cfg
+                )
+                policy_overrides = (run.run_config or {}).get("degradation_policy")
+                try:
+                    _blocked, ledger = run_preflight(
+                        reader, cfg, uni_def, symbols, cfg.start, cfg.end,
+                        profile=settings.degradation_policy_profile,
+                        policy_overrides=policy_overrides,
+                    )
+                except PreflightBlocked as pb:
+                    return _finish_preflight_blocked(
+                        db, run, run_id, t, pb, log_write, t0
+                    )
+                m["degrade_count"] = ledger.count
+                m["n_checked_symbols"] = len(symbols)
+                if ledger.count:
+                    log_write(
+                        f"preflight: {ledger.count} 项降级 "
+                        f"({[e.code for e in ledger.events]})"
+                    )
+            else:
+                m["skipped"] = True
+
+        # The evaluator carries the (preflight-seeded) ledger so runtime
+        # degradations append to the same台账.
+        from quant_factor.degradation import DegradationLedger
+
+        if ledger is None:
+            ledger = DegradationLedger()
+        evaluator = FactorEvaluator(
+            reader,
+            ledger=ledger,
+            progress_cb=progress,
+            log_cb=log_cb,
+            cancel_cb=cancelled,
+        )
 
         # ── stage: compute (run the factor + evaluation engine) ──────────────
         stage = "compute"
@@ -190,18 +242,42 @@ def _run_evaluation(db, t: Task) -> dict[str, Any]:
         # ── stage: eval (roll the metrics summary into eval_summary) ─────────
         stage = "eval"
         with qd_logging.timed(_qlog, "run.stage.eval", run_id=run_id) as m:
-            _persist_eval_summary(db, run, cfg, uni_row.universe_id, result)
+            _persist_eval_summary(db, run, cfg, uni_row.universe_id, result, ledger)
             m["metrics_n"] = len(result.get("summary") or {})
 
-        run.status = "success"
+        # ── status decision (设计 §7): degraded iff the台账 has ≥1 event ─────
+        final_status = "degraded" if ledger.count > 0 else "success"
+        run.status = final_status
+        run.degradation_level = ledger.level()
+        run.degradation_count = ledger.count
+        run.has_critical = ledger.has_critical
         run.finished_at = dt.datetime.utcnow()
         run.duration_sec = (run.finished_at - run.started_at).total_seconds()
         run.summary = dict(result.get("summary") or {})
+        _persist_degradation(db, run_id, ledger)
         db.commit()
-        log_write(f"DONE in {run.duration_sec:.1f}s")
-        _qlog.info("run.done", run_id=run_id, status="success",
+        write_degradations(
+            run_id, status=final_status, level=ledger.level(),
+            events=ledger.to_jsonable(),
+        )
+        log_write(
+            f"DONE ({final_status}; {ledger.count} 降级 · {ledger.level()}) "
+            f"in {run.duration_sec:.1f}s"
+        )
+        _qlog.info("run.done", run_id=run_id, status=final_status,
+                   degrade_count=ledger.count, degrade_level=ledger.level(),
+                   has_critical=ledger.has_critical,
                    total_ms=int((time.perf_counter() - t0) * 1000))
-        return {"task_id": t.task_id, "status": "success", "summary": run.summary}
+        return {
+            "task_id": t.task_id,
+            "status": final_status,
+            "summary": run.summary,
+            "degradation": {
+                "level": ledger.level(),
+                "count": ledger.count,
+                "has_critical": ledger.has_critical,
+            },
+        }
 
     except RunCancelled:
         run.status = "canceled"
@@ -225,8 +301,94 @@ def _run_evaluation(db, t: Task) -> dict[str, Any]:
             log_file.close()
 
 
+def _resolve_symbols_for_preflight(reader, uni_def, custom_syms, cfg) -> list[str]:
+    """Resolve the window's symbol set for data-coverage checks (设计 §7).
+
+    Reuses ``resolve_universe`` (no ledger — the engine re-resolves with the
+    ledger so filter no-ops are recorded once, at runtime). Best-effort: on any
+    resolution error we fall back to the custom list so structural checks
+    (window / preprocess / flag) still run.
+    """
+    try:
+        uni = resolve_universe(reader, uni_def, custom_syms, cfg.start, cfg.end)
+        if uni.height == 0:
+            return list(custom_syms or [])
+        return sorted(uni["symbol"].unique().to_list())
+    except Exception:  # noqa: BLE001
+        return list(custom_syms or [])
+
+
+def _persist_degradation(db, run_id: str, ledger) -> None:
+    """Insert one factor_run_degradation row per台账 event (设计 §8.2)."""
+    for ev in ledger.events:
+        db.add(
+            FactorRunDegradation(
+                run_id=run_id,
+                code=ev.code,
+                category=ev.category,
+                severity=ev.severity,
+                stage=ev.stage,
+                config_key=ev.config_key,
+                title=ev.title,
+                reason=ev.reason,
+                impact=ev.impact,
+                suggested_action=ev.suggested_action,
+                policy=ev.policy,
+                evidence_json=ev.evidence,
+                occurred_at=ev.occurred_at,
+            )
+        )
+
+
+def _finish_preflight_blocked(db, run, run_id, t, pb, log_write, t0) -> dict[str, Any]:
+    """Terminal handling of a preflight block (设计 §7): status=failed, structured
+    阻断详情 persisted, artifact written, NO compute, NO retry."""
+    blocked_json = [check_result_to_json(r) for r in pb.results]
+    has_critical = any(b.get("severity") == "critical" for b in blocked_json)
+    run.status = "failed"
+    run.error = "preflight_blocked"
+    run.preflight = blocked_json
+    run.degradation_level = "severe" if has_critical else "partial"
+    run.degradation_count = len(blocked_json)
+    run.has_critical = has_critical
+    run.finished_at = dt.datetime.utcnow()
+    if run.started_at:
+        run.duration_sec = (run.finished_at - run.started_at).total_seconds()
+    # Persist the blocked checks as degradation rows (policy=block) for stats.
+    for r in pb.results:
+        ev = r.event
+        if ev is None:
+            continue
+        db.add(
+            FactorRunDegradation(
+                run_id=run_id, code=ev.code, category=ev.category,
+                severity=ev.severity, stage=ev.stage, config_key=ev.config_key,
+                title=ev.title, reason=ev.reason, impact=ev.impact,
+                suggested_action=ev.suggested_action, policy="block",
+                evidence_json=ev.evidence, occurred_at=ev.occurred_at,
+            )
+        )
+    db.commit()
+    write_degradations(
+        run_id, status="failed", level=run.degradation_level,
+        blocked=blocked_json, events=[],
+    )
+    log_write(f"PREFLIGHT BLOCKED · {[r.check_id for r in pb.results]}")
+    _qlog.warn(
+        "run.preflight.blocked", run_id=run_id,
+        checks=[r.check_id for r in pb.results],
+        total_ms=int((time.perf_counter() - t0) * 1000),
+    )
+    return {
+        "task_id": t.task_id,
+        "status": "failed",
+        "reason": "preflight_blocked",
+        "blocked": [r.check_id for r in pb.results],
+    }
+
+
 def _persist_eval_summary(
-    db, run: FactorRun, cfg: EvalConfig, uni_id: str, result: dict
+    db, run: FactorRun, cfg: EvalConfig, uni_id: str, result: dict, ledger=None
 ) -> None:
     s = result.get("summary") or {}
     # Compute a small IC spark (last 20 rank_ic values) for the library table.
@@ -266,6 +428,10 @@ def _persist_eval_summary(
         coverage=float(s.get("coverage", 0.0)),
         monotonic=bool(s.get("monotonic", False)),
         ic_spark=spark,
+        # Denormalised degradation snapshot for the list pages (设计 §8.1).
+        degradation_level=ledger.level() if ledger is not None else "none",
+        degradation_count=ledger.count if ledger is not None else 0,
+        has_critical=ledger.has_critical if ledger is not None else False,
     )
     db.add(es)
     db.commit()

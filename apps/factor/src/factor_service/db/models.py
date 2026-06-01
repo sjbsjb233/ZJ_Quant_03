@@ -88,12 +88,19 @@ class FactorRun(Base):
     version: Mapped[str] = mapped_column(String)
     params: Mapped[dict] = mapped_column(JSON, default=dict)
     run_config: Mapped[dict] = mapped_column(JSON, default=dict)
+    # status ∈ queued|running|success|degraded|failed|canceled (设计 §3)
     status: Mapped[str] = mapped_column(String, default="queued")
     task_id: Mapped[str | None] = mapped_column(String, nullable=True)
     initiated_by: Mapped[str] = mapped_column(String, default="")
     trace_id: Mapped[str | None] = mapped_column(String, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     summary: Mapped[dict] = mapped_column(JSON, default=dict)
+    # ── degradation台账 derived fields (设计 §3 / §8.1) ───────────────────
+    degradation_level: Mapped[str] = mapped_column(String, default="none")  # none|partial|severe
+    degradation_count: Mapped[int] = mapped_column(Integer, default=0)
+    has_critical: Mapped[bool] = mapped_column(Boolean, default=False)
+    # On failed-by-preflight: the structured block 详情 (list of CheckResult json)
+    preflight: Mapped[list | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_utcnow)
     started_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
     finished_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
@@ -127,6 +134,43 @@ class EvalSummary(Base):
     coverage: Mapped[float] = mapped_column(Float, default=0.0)
     monotonic: Mapped[bool] = mapped_column(Boolean, default=False)
     ic_spark: Mapped[list] = mapped_column(JSON, default=list)
+    # ── degradation snapshot (设计 §8.1) — denormalised onto eval_summary so the
+    # library/tracking list pages can render the badge without reading artifacts.
+    degradation_level: Mapped[str] = mapped_column(String, default="none")
+    degradation_count: Mapped[int] = mapped_column(Integer, default=0)
+    has_critical: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+class FactorRunDegradation(Base):
+    """One row per :class:`DegradationEvent` of a run (设计 §8.2).
+
+    Queryable/aggregatable (e.g. "which codes hit most this week" during the
+    permissive 灰度 §12.3) — the full structured台账 also lives in the
+    ``{run_id}.degradations.json`` artifact for the detail view.
+    """
+
+    __tablename__ = "factor_run_degradation"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(String, index=True)
+    code: Mapped[str] = mapped_column(String)              # DG_*/PF_*
+    category: Mapped[str] = mapped_column(String)
+    severity: Mapped[str] = mapped_column(String, index=True)
+    stage: Mapped[str | None] = mapped_column(String, nullable=True)
+    config_key: Mapped[str | None] = mapped_column(String, nullable=True)
+    title: Mapped[str] = mapped_column(String)
+    reason: Mapped[str] = mapped_column(Text)
+    impact: Mapped[str | None] = mapped_column(Text, nullable=True)
+    suggested_action: Mapped[str | None] = mapped_column(Text, nullable=True)
+    policy: Mapped[str | None] = mapped_column(String, nullable=True)  # degrade|ignore|block
+    evidence_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    occurred_at: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    __table_args__ = (
+        Index("ix_frd_run", "run_id"),
+        Index("ix_frd_sev", "severity"),
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -28,12 +28,28 @@ class LogMktCap(Factor):
             field = "circ_mv"
         bars = ctx.bars(adjust="none")
         if field not in bars.columns:
-            # safe fallback to total_mv if circ_mv missing
+            # safe fallback to total_mv if circ_mv missing — but record the口径
+            # change (设计 §6) instead of silently swapping market-cap meaning.
             alt = "total_mv" if field == "circ_mv" else "circ_mv"
             if alt not in bars.columns:
                 # cannot compute — return empty
                 return pl.DataFrame(
                     schema={"date": pl.Date, "symbol": pl.Utf8, "value": pl.Float64}
+                )
+            ledger = getattr(ctx, "ledger", None)
+            if ledger is not None and not ledger.has_code("DG_FIELD_FALLBACK"):
+                from ..degradation import make_event
+
+                ledger.record(
+                    make_event(
+                        "DG_FIELD_FALLBACK",
+                        stage="compute",
+                        reason=f"市值字段 {field} 缺失,LogMktCap 回退使用 {alt}",
+                        impact=f"因子口径由 {field} 变为 {alt},与配置不一致",
+                        suggested_action=f"补齐 raw.bars_daily.{field} 后重跑",
+                        config_key="field",
+                        evidence={"requested": field, "used": alt},
+                    )
                 )
             field = alt
         return (

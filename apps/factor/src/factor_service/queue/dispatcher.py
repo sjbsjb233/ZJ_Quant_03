@@ -83,7 +83,17 @@ def _finalize_future(db: Session, task_id: str, fut: Future) -> None:
         _log.error("task %s failed: %s", task_id, msg)
     else:
         res = fut.result() or {}
-        t.status = "success"
+        # The worker returns the *run* outcome in res["status"]; a preflight
+        # block or cancel returns normally (no exception) but the run did NOT
+        # succeed, so reflect that on the task rather than marking it success.
+        run_status = res.get("status")
+        if run_status == "failed":
+            t.status = "failed"
+            t.error = res.get("reason") or t.error or "run_failed"
+        elif run_status == "canceled":
+            t.status = "canceled"
+        else:
+            t.status = "success"  # success or degraded (the run completed)
         t.finished_at = t.finished_at or _now_utc()
         t.result_summary = res.get("summary") or t.result_summary or {}
         db.commit()
