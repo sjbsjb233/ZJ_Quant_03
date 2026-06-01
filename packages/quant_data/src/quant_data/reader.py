@@ -12,10 +12,8 @@ that:
 from __future__ import annotations
 
 import datetime as dt
-import os
 import time
 
-import duckdb
 import pyarrow as pa
 import pyarrow.parquet as pq
 
@@ -95,20 +93,9 @@ def _union_columns(files: list[str]) -> set[str]:
 class DataReader:
     def __init__(self, root=None):
         self.root = root
-        self._con = duckdb.connect()
-        # Memory guardrails. DuckDB's default is "80% of RAM" -- in a container
-        # without mem_limit that turns one runaway full-table scan into a host
-        # OOM (the bug behind the 2026-05-23 incident). With a finite cap, the
-        # engine spills to disk if temp_directory is set and raises a clean
-        # error otherwise -- both far better than getting OOM-killed.
-        # Env values go through _str_lit so a stray quote in the env var can't
-        # break out of the PRAGMA literal or silently set the wrong value.
-        mem = os.environ.get("QUANT_DUCKDB_MEMORY_LIMIT", "2GB")
-        self._con.execute(f"PRAGMA memory_limit={_str_lit(mem)}")
-        tmp = os.environ.get("QUANT_DUCKDB_TEMP_DIR")
-        if tmp:
-            os.makedirs(tmp, exist_ok=True)  # DuckDB won't create the dir itself
-            self._con.execute(f"PRAGMA temp_directory={_str_lit(tmp)}")
+        # Memory guardrails (memory_limit / temp_directory) live in
+        # config.connect_duckdb so every DuckDB engine shares them -- see there.
+        self._con = config.connect_duckdb()
 
     # -- core current-view engine (doc §6.1) ---------------------------------
     # default dedup ranking: source priority, then newest batch.

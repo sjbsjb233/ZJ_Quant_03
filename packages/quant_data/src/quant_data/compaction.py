@@ -13,7 +13,6 @@ import shutil
 from collections import defaultdict
 from pathlib import Path
 
-import duckdb
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
@@ -110,7 +109,7 @@ def compact(table: str, confirm: bool = False, root=None) -> dict:
             "note": "dry run -- pass confirm=True to merge (doc §9.4: manual only)",
         }
 
-    con = duckdb.connect()
+    con = config.connect_duckdb()
     lit = lambda s: "'" + str(s).replace("'", "''") + "'"  # noqa: E731
     merged = 0
     for d, fs in targets.items():

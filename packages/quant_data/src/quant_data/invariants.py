@@ -16,9 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-import duckdb
-
-from . import storage
+from . import config, storage
 from .metadata import batches as batches_mod
 from .metadata import field_registry as fr_mod
 from .metadata import sources as sources_mod
@@ -54,7 +52,7 @@ class _Ctx:
 
     def __init__(self, root=None):
         self.root = root
-        self.con = duckdb.connect()
+        self.con = config.connect_duckdb()
         rd = DataReader(root=root)
         self._reg("bd", rd.read_bars_daily())
         self._reg("fd", rd.current_view("raw.fundamentals"))

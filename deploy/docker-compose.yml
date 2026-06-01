@@ -93,9 +93,17 @@ services:
     image: ${DATA_KEEPER_IMAGE:-ghcr.io/OWNER/REPO/data-keeper:latest}
     container_name: zj-quant-data-keeper
     restart: unless-stopped
+    # Container-level OOM containment for heavy writes (compaction/migration).
+    # memswap_limit == mem_limit disables swap so a runaway gets killed promptly
+    # instead of thrashing. Tunable via env (see .env.example).
+    mem_limit: ${DATA_KEEPER_MEM_LIMIT:-8g}
+    memswap_limit: ${DATA_KEEPER_MEM_LIMIT:-8g}
     environment:
       <<: *logging-env
       QUANT_DATA_ROOT: /data
+      # DuckDB 内存护栏：超限 spill 到 sdb(/keeper-store 在 10TB 盘)而非 OOM。
+      QUANT_DUCKDB_MEMORY_LIMIT: ${KEEPER_DUCKDB_MEMORY_LIMIT:-2GB}
+      QUANT_DUCKDB_TEMP_DIR: /keeper-store/duck_tmp
       KEEPER_DB_URL: sqlite:////keeper-store/keeper.db
       ENABLE_SCHEDULER: "${ENABLE_SCHEDULER:-true}"   # 进程内调度线程; 设 false 即关 (回滚位)
       TZ: Asia/Shanghai                               # 调度按本地时区
@@ -125,11 +133,19 @@ services:
     image: ${FACTOR_IMAGE:-ghcr.io/OWNER/REPO/factor:latest}
     container_name: zj-quant-factor-api
     restart: unless-stopped
+    # OOM containment for interactive factor compute/preview. Without this a
+    # single runaway compute() grew to ~20GB and segfaulted in DuckDB, dumping
+    # an 8GB core into the unmapped /app layer (2026-06-01 disk-full incident).
+    mem_limit: ${FACTOR_API_MEM_LIMIT:-6g}
+    memswap_limit: ${FACTOR_API_MEM_LIMIT:-6g}
     depends_on:
       - data-keeper
     environment:
       <<: *logging-env
       QUANT_DATA_ROOT: /data
+      # DuckDB 内存护栏：超限 spill 到 sdb(/factor-store 在 10TB 盘)而非 OOM。
+      QUANT_DUCKDB_MEMORY_LIMIT: ${FACTOR_DUCKDB_MEMORY_LIMIT:-2GB}
+      QUANT_DUCKDB_TEMP_DIR: /factor-store/duck_tmp
       FACTOR_STORE_ROOT: /factor-store
       FACTOR_DB_URL: sqlite:////factor-store/factor.db
       FACTOR_ROLE: api
@@ -150,11 +166,19 @@ services:
     container_name: zj-quant-factor-worker
     command: ["python", "-m", "factor_service.queue.dispatcher"]
     restart: unless-stopped
+    # Heaviest service: runs FACTOR_CONCURRENCY compute tasks in one cgroup.
+    # This ceiling is shared across all concurrent tasks -- size it together
+    # with FACTOR_CONCURRENCY. Was unbounded → 2026-06-01 core-dumps on "/".
+    mem_limit: ${FACTOR_WORKER_MEM_LIMIT:-12g}
+    memswap_limit: ${FACTOR_WORKER_MEM_LIMIT:-12g}
     depends_on:
       - factor-api
     environment:
       <<: *logging-env
       QUANT_DATA_ROOT: /data
+      # DuckDB 内存护栏：超限 spill 到 sdb(/factor-store 在 10TB 盘)而非 OOM。
+      QUANT_DUCKDB_MEMORY_LIMIT: ${FACTOR_DUCKDB_MEMORY_LIMIT:-2GB}
+      QUANT_DUCKDB_TEMP_DIR: /factor-store/duck_tmp
       FACTOR_STORE_ROOT: /factor-store
       FACTOR_DB_URL: sqlite:////factor-store/factor.db
       FACTOR_ROLE: worker

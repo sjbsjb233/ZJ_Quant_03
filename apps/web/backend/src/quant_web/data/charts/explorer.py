@@ -3,10 +3,10 @@ from __future__ import annotations
 
 import datetime as dt
 
-import duckdb
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
+from quant_data.config import connect_duckdb
 from quant_data.schemas import RAW_TABLES, REFERENCE_TABLES, get_spec
 
 from ...db.base import get_db
@@ -44,7 +44,7 @@ def preview(body: ExplorerRequest, reader=Depends(get_reader), user=Depends(get_
             raise ApiError("INVALID_PARAMETER", f"列 {col} 不在表 {body.table} 中")
 
     cv = reader.current_view(body.table)
-    con = duckdb.connect()
+    con = connect_duckdb()
     con.register("t", cv)
 
     where = []
