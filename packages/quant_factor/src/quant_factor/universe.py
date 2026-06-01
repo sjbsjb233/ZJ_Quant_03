@@ -13,6 +13,7 @@ filters applied per-day.
 from __future__ import annotations
 
 import datetime as dt
+import time
 from dataclasses import dataclass
 from typing import Iterable
 
@@ -167,24 +168,61 @@ def resolve_universe(
     start: dt.date,
     end: dt.date,
     ledger=None,
+    trace=None,
 ) -> pl.DataFrame:
     """Return per-day [date, symbol] for the evaluation cross-section pool.
 
     Preset universes are inherently time-varying (the data layer's `universe`
     table carries daily flags), so the result is PIT-correct out of the box.
     Custom universes overlay (ST / suspended / min_list_days) filters per-day.
+
+    ``trace`` (运行透视 §2.3d): when a :class:`~quant_factor.trace.RunTrace` is
+    supplied, the股票池漏斗 is recorded step-by-step (原始 → 指数成分 → 剔ST →
+    剔停牌 → 次新 → 最终), with each requested-but-no-op filter flagged
+    ``ineffective``. Purely a side-record — the returned frame is identical
+    whether ``trace`` is passed or not.
     """
     if isinstance(uni_def, UniverseDef):
         d = uni_def.__dict__
     else:
         d = uni_def
 
+    funnel: list[dict] = []
+    _t0 = time.perf_counter() if trace is not None else 0.0
+
+    def _snap(step: str, *, requested: bool | None = None, ineffective: bool = False) -> None:
+        if trace is None:
+            return
+        funnel.append({
+            "step": step,
+            "rows": int(uni.height),
+            "symbols": int(uni["symbol"].n_unique()) if uni.height else 0,
+            "requested": requested,
+            "ineffective": ineffective,
+        })
+
+    def _finish_funnel() -> None:
+        if trace is None:
+            return
+        st = trace.stage("universe_resolve")
+        result_syms = int(uni["symbol"].n_unique()) if uni.height else 0
+        st.detail.update({
+            "funnel": funnel,
+            "final_rows": int(uni.height),
+            "final_symbols": result_syms,
+        })
+        trace.finish_stage(st, status="ok", duration_ms=(time.perf_counter() - _t0) * 1000)
+
     uni = pl.from_arrow(reader.read_universe(start=start, end=end))
     if uni.height == 0:
+        _snap("raw")
+        _finish_funnel()
         return pl.DataFrame(
             {"date": [], "symbol": []},
             schema={"date": pl.Date, "symbol": pl.Utf8},
         )
+
+    _snap("raw")
 
     kind = d.get("kind", "preset_index")
     if kind == "preset_index":
@@ -201,11 +239,16 @@ def resolve_universe(
         else:
             if flag in uni.columns:
                 uni = uni.filter(pl.col(flag) == True)  # noqa: E712
+        _snap("after_flag", requested=flag is not None)
     else:  # custom
         syms = list(custom_symbols or [])
         if not syms:
-            return uni.head(0).select(["date", "symbol"])
+            uni = uni.head(0)
+            _snap("after_flag", requested=True)
+            _finish_funnel()
+            return uni.select(["date", "symbol"])
         uni = uni.filter(pl.col("symbol").is_in(syms))
+        _snap("after_flag", requested=True)
 
     # Universal overlay filters (apply to both preset + custom).
     # No-silent-degradation (设计 §6): a filter that was *requested* but whose
@@ -226,15 +269,22 @@ def resolve_universe(
             )
         )
 
-    if d.get("exclude_st", True):
+    st_requested = bool(d.get("exclude_st", True))
+    st_ineffective = False
+    if st_requested:
         if "st_status" in uni.columns and uni["st_status"].drop_nulls().len() > 0:
             uni = uni.filter(
                 (pl.col("st_status").is_null()) | (pl.col("st_status") == "normal")
             )
         else:
+            st_ineffective = True
             _noop("剔除 ST", ["st_status"],
                   "ST 股未被剔除,可能污染回测", "补齐 raw.universe.st_status 后重跑")
-    if d.get("exclude_suspended", True):
+    _snap("after_exclude_st", requested=st_requested, ineffective=st_ineffective)
+
+    sus_requested = bool(d.get("exclude_suspended", True))
+    sus_ineffective = False
+    if sus_requested:
         has_susp = "is_suspended" in uni.columns and uni["is_suspended"].drop_nulls().len() > 0
         has_trad = "is_tradable" in uni.columns and uni["is_tradable"].drop_nulls().len() > 0
         if has_susp:
@@ -242,19 +292,44 @@ def resolve_universe(
         if has_trad:
             uni = uni.filter(pl.col("is_tradable") == True)  # noqa: E712
         if not (has_susp or has_trad):
+            sus_ineffective = True
             _noop("剔除停牌", ["is_suspended", "is_tradable"],
                   "停牌股未被剔除,换手/收益可能失真", "补齐停牌状态列后重跑")
+    _snap("after_exclude_suspended", requested=sus_requested, ineffective=sus_ineffective)
+
     mn = int(d.get("min_list_days") or 0)
-    if mn > 0:
+    ld_requested = mn > 0
+    ld_ineffective = False
+    if ld_requested:
         if "listed_days" in uni.columns and uni["listed_days"].drop_nulls().len() > 0:
             uni = uni.filter(
                 pl.col("listed_days").is_not_null() & (pl.col("listed_days") >= mn)
             )
         else:
+            ld_ineffective = True
             _noop("次新过滤", ["listed_days"],
                   "次新股未被剔除,可能纳入上市不足天数的标的", "补齐 raw.universe.listed_days 后重跑")
+    _snap("after_min_list_days", requested=ld_requested, ineffective=ld_ineffective)
 
-    return uni.select(["date", "symbol"]).unique().sort(["date", "symbol"])
+    result = uni.select(["date", "symbol"]).unique().sort(["date", "symbol"])
+    # final-pool snapshot reflects the de-duplicated [date, symbol] result.
+    if trace is not None:
+        funnel.append({
+            "step": "final",
+            "rows": int(result.height),
+            "symbols": int(result["symbol"].n_unique()) if result.height else 0,
+            "requested": None,
+            "ineffective": False,
+            "terminal": True,
+        })
+        st = trace.stage("universe_resolve")
+        st.detail.update({
+            "funnel": funnel,
+            "final_rows": int(result.height),
+            "final_symbols": int(result["symbol"].n_unique()) if result.height else 0,
+        })
+        trace.finish_stage(st, status="ok", duration_ms=(time.perf_counter() - _t0) * 1000)
+    return result
 
 
 def rebalance_dates(uni: pl.DataFrame, rebalance: str) -> list[dt.date]:

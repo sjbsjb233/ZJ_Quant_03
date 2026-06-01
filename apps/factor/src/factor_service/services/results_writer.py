@@ -91,6 +91,29 @@ def read_degradations(run_id: str) -> dict[str, Any] | None:
         return json.load(f)
 
 
+def write_run_trace(run_id: str, payload: dict) -> str:
+    """Persist the 运行透视 artifact (设计 §2.4): ``{run_id}.trace.json``.
+
+    Lives next to ``{run_id}.degradations.json`` / ``{run_id}.log`` under
+    runs_dir. Carries the阶段流水线 + 前置检查全量 + 股票池漏斗 + 逐调仓日过程.
+    """
+    s = get_settings()
+    os.makedirs(s.runs_dir, exist_ok=True)
+    path = os.path.join(s.runs_dir, f"{run_id}.trace.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, default=_json_default, ensure_ascii=False)
+    return path
+
+
+def read_run_trace(run_id: str) -> dict[str, Any] | None:
+    s = get_settings()
+    path = os.path.join(s.runs_dir, f"{run_id}.trace.json")
+    if not os.path.exists(path):
+        return None
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
 def write_correlation_cache(task_id: str, result: dict[str, Any]) -> None:
     s = get_settings()
     os.makedirs(s.correlations_dir, exist_ok=True)

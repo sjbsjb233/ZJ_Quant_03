@@ -6,6 +6,7 @@ import { endpoints } from '../../lib/api';
 import { TerminalShell, TPanel } from '../../components/shell';
 import { Empty, Loading } from '../../components/ui';
 import RunConfigDrawer from './RunConfigDrawer';
+import RunScopeTab from './RunScopeTab';
 import { BarChart, ICChart, LineChart } from './charts';
 import { catLabel, fmtNum, fmtPct, tone, DegradationReport, RunStatusBadge, runStatusInfo } from './shared';
 
@@ -15,6 +16,7 @@ const TABS = [
   { id: 'decay', l: 'IC 衰减' },
   { id: 'layered', l: '分层回测' },
   { id: 'turnover', l: '换手率' },
+  { id: 'runscope', l: '运行透视' },
   { id: 'tracking', l: '持续跟踪' },
   { id: 'version', l: '版本与代码' },
   { id: 'history', l: '历史运行' },
@@ -154,6 +156,7 @@ export default function FactorDetail() {
             {tab === 'decay' && <DecayTab factorId={factorId} runId={selectedRunId} />}
             {tab === 'layered' && <LayeredTab runId={selectedRunId} />}
             {tab === 'turnover' && <TurnoverTab runId={selectedRunId} />}
+            {tab === 'runscope' && <RunScopeTab runId={selectedRunId} />}
             {tab === 'tracking' && <TrackingTab factor={factor} onCloseTracking={() => patch.mutate({ tracking_enabled: false })} onRetest={() => setShowRun(true)} />}
             {tab === 'version' && <VersionTab factor={factor} />}
             {tab === 'history' && <HistoryTab runs={runs} onSelect={(rid) => { setRunId(rid); setTab('overview'); }} />}

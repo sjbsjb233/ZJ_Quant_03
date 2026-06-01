@@ -32,11 +32,23 @@ from .neutralize import (
 )
 from .preprocess import apply_pipeline, zscore
 from .returns import forward_returns
+from .trace import MAX_SAMPLE_NAMES, describe as _trace_describe
 from .universe import UniverseDef, rebalance_dates, resolve_universe
 
 
 # ── annualization factors (rough trading-period counts) ─────────────────
 _ANN_PERIODS = {"D": 244, "W": 48, "M": 12}
+
+
+def _jf(x) -> float | None:
+    """JSON-safe float for trace records (NaN/Inf/None → None)."""
+    if x is None:
+        return None
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return None
+    return v if math.isfinite(v) else None
 
 
 def _ann_periods(rebalance: str) -> int:
@@ -56,6 +68,7 @@ class FactorEvaluator:
         reader,
         *,
         ledger: DegradationLedger | None = None,
+        trace=None,
         progress_cb: Callable[[int, int], None] | None = None,
         log_cb: Callable[[str], None] | None = None,
         cancel_cb: Callable[[], bool] | None = None,
@@ -65,6 +78,9 @@ class FactorEvaluator:
         # callers that don't pass one still get every runtime degradation
         # recorded (equivalent to "全降级放行" during the migration window §12.2).
         self.ledger = ledger if ledger is not None else DegradationLedger()
+        # 运行透视 旁路采集器 (RunTrace | None). When None every埋点 is a no-op
+        # guarded by `if self.trace is not None:` — zero cost, byte-identical result.
+        self.trace = trace
         self._progress = progress_cb or (lambda c, t: None)
         self._log = log_cb or (lambda m: None)
         self._cancelled = cancel_cb or (lambda: False)
@@ -81,7 +97,8 @@ class FactorEvaluator:
             f"starting evaluation factor={factor.name} universe={uni_def.get('universe_id') if isinstance(uni_def, dict) else uni_def.universe_id}"
         )
         uni = resolve_universe(
-            self.reader, uni_def, custom_symbols, cfg.start, cfg.end, ledger=self.ledger
+            self.reader, uni_def, custom_symbols, cfg.start, cfg.end,
+            ledger=self.ledger, trace=self.trace,
         )
         if uni.height == 0:
             raise ValueError("Universe resolved to zero rows — check pool definition")
@@ -95,6 +112,28 @@ class FactorEvaluator:
             f"({rebal[0]} → {rebal[-1]})"
         )
 
+        # 运行透视 ①: 全景元信息 (设计 §2.2a). Pure side-record.
+        if self.trace is not None:
+            uid = (
+                uni_def.get("universe_id")
+                if isinstance(uni_def, dict)
+                else uni_def.universe_id
+            )
+            self.trace.meta.update({
+                "factor": factor.name,
+                "direction": factor.direction,
+                "requires_pit": factor.requires_pit,
+                "universe_id": uid,
+                "n_symbols": len(symbols),
+                "n_rebalance": len(rebal),
+                "rebalance_first": str(rebal[0]) if rebal else None,
+                "rebalance_last": str(rebal[-1]) if rebal else None,
+                "rebalance_freq": cfg.rebalance,
+                "horizons": list(cfg.horizons),
+                "primary_horizon": int(cfg.primary_horizon),
+                "quantiles": int(cfg.quantiles),
+            })
+
         ctx = FactorContext(self.reader, symbols, cfg.start, cfg.end, ledger=self.ledger)
 
         # ── step 1: compute raw factor values ─────────────────────────────
@@ -102,6 +141,13 @@ class FactorEvaluator:
         if fvals.height == 0:
             raise ValueError("Factor returned no values — check compute() output")
         _ensure_columns(fvals, ["date", "symbol", "value"], "factor output")
+
+        # 运行透视 ①(b): 因子原始值产出 (设计 §2.2b).
+        if self.trace is not None:
+            self.trace.meta["factor_mode"] = (
+                "pit" if factor.requires_pit else "vectorized"
+            )
+            self.trace.meta["raw_value_rows"] = int(fvals.height)
 
         # ── step 2: per-day preprocess + neutralize ───────────────────────
         clean = self._prep_all(factor, ctx, fvals, rebal, cfg)
@@ -132,6 +178,14 @@ class FactorEvaluator:
             )
             ic_series = self._ic_series(clean, fr0, rebal, cfg.ic_type, factor.direction)
 
+        # 运行透视 ④(d): per-rebalance-day IC merge (primary horizon only).
+        if self.trace is not None and ic_series is not None and ic_series.height:
+            for row in ic_series.iter_rows(named=True):
+                rec = self.trace.day(row["date"])
+                rec["ic"] = _jf(row.get("ic"))
+                rec["rank_ic"] = _jf(row.get("rank_ic"))
+                rec["fwd_ret_coverage"] = int(row.get("coverage") or 0)
+
         # ── step 4: layered + turnover on primary horizon ────────────────
         if self._cancelled():
             raise RunCancelled()
@@ -146,14 +200,27 @@ class FactorEvaluator:
             ledger=self.ledger,
         )
         layers = self._layered(
-            clean, fr_p, rebal, cfg.quantiles, factor.direction, cfg.layer_weight
+            clean, fr_p, rebal, cfg.quantiles, factor.direction, cfg.layer_weight,
+            trace=self.trace,
         )
         turnover = (
-            self._turnover(clean, rebal, cfg.quantiles, factor.direction, cfg)
+            self._turnover(
+                clean, rebal, cfg.quantiles, factor.direction, cfg, trace=self.trace
+            )
             if cfg.compute_turnover
             else {"mean": 0.0, "series": [], "mean_after_cost_ann": 0.0}
         )
         self._progress(total + 2, total + 2)
+
+        # 运行透视: per-day degradation attribution (设计 §2.2g). Cross-run
+        # de-duped events (e.g. DG_SIZE_DROPPED with first_date) are stamped on
+        # their first-hit day only — the UI notes this波及后续调仓日.
+        if self.trace is not None:
+            for ev in self.ledger.events:
+                evid = ev.evidence or {}
+                d = evid.get("date") or evid.get("first_date")
+                if d:
+                    self.trace.note_day_degradation(d, ev.code)
 
         # ── summary ──────────────────────────────────────────────────────
         primary_stats = dict(ic_by_h.get(int(cfg.primary_horizon), {}))
@@ -186,6 +253,7 @@ class FactorEvaluator:
             "clean_values": clean,
             "rebalance_dates": rebal,
             "symbol_count": len(symbols),
+            "trace": self.trace,   # 运行透视 §2.2h; None when采集 disabled
         }
 
     # ── step 1: dispatch to vectorized vs PIT compute ────────────────────
@@ -273,6 +341,18 @@ class FactorEvaluator:
             if self._cancelled():
                 raise RunCancelled()
 
+            # 运行透视 ③(c): per-rebalance-day distribution snapshots. `cap` lets
+            # apply_pipeline回填 ②③ snapshots in its single code path; describe is
+            # only invoked on rebalance days当采集开启, so cost stays bounded.
+            tracing = self.trace is not None
+            hist = self.trace.histogram_enabled if tracing else True
+            cap: dict | None = {} if tracing else None
+            raw_stats = (
+                _trace_describe(sub["value"].to_numpy(), histogram=hist)
+                if tracing
+                else None
+            )
+
             cs = apply_pipeline(
                 sub,
                 col="value",
@@ -281,8 +361,11 @@ class FactorEvaluator:
                 standardize=cfg.standardize,
                 ledger=self.ledger,
                 day=day,
+                capture=cap,
+                capture_histogram=hist,
             )
 
+            n_before_neu = cs.height
             if cfg.neutralize_size or cfg.neutralize_industry:
                 if cfg.neutralize_size:
                     ln = ln_size(
@@ -306,7 +389,25 @@ class FactorEvaluator:
                         zscore(cs["value"], ledger=self.ledger, day=day).alias("value")
                     )
 
-            chunks.append(cs.select(["date", "symbol", "value"]))
+            clean_chunk = cs.select(["date", "symbol", "value"])
+            chunks.append(clean_chunk)
+
+            # ④ 中性化后(残差)分布 + 单日记录落入 trace。
+            if tracing:
+                rec = self.trace.day(day)
+                rec.update({
+                    "n_in_universe": int(sub.height),
+                    "n_raw_values": int(raw_stats["n"]) if raw_stats else None,
+                    "dist_raw": raw_stats,
+                    "dist_after_winsorize": cap.get("after_winsorize"),
+                    "dist_after_standardize": cap.get("after_standardize"),
+                    "winsorize_clipped": cap.get("winsorize_clipped"),
+                    "n_before_neutralize": int(n_before_neu),
+                    "dist_after_neutralize": _trace_describe(
+                        clean_chunk["value"].to_numpy(), histogram=hist
+                    ),
+                    "n_clean": int(clean_chunk.drop_nulls("value").height),
+                })
 
         return (
             pl.concat(chunks, how="vertical")
@@ -432,6 +533,7 @@ class FactorEvaluator:
         quantiles: int,
         direction: int,
         weight: str,
+        trace=None,
     ) -> dict[str, Any]:
         if clean.height == 0 or fwd.height == 0:
             return {"layers": [], "monotonic": False}
@@ -462,6 +564,22 @@ class FactorEvaluator:
                 layer_rows.append(
                     {"date": day, "quantile": int(k + 1), "ret": ret}
                 )
+
+            # 运行透视 ⑤(e): per-day分层收益 + 多/空头抽样名单 (Q1..QQ).
+            if trace is not None:
+                rec = trace.day(day)
+                per_q = []
+                for k in range(quantiles):
+                    m = q == k
+                    per_q.append(_jf(np.mean(r[m])) if m.any() else None)
+                rec["layer_returns"] = per_q
+                syms = sub["symbol"].to_numpy()
+                top_mask = q == (quantiles - 1)
+                bot_mask = q == 0
+                rec["top_names"] = syms[top_mask][:MAX_SAMPLE_NAMES].tolist()
+                rec["bottom_names"] = syms[bot_mask][:MAX_SAMPLE_NAMES].tolist()
+                rec["n_top"] = int(top_mask.sum())
+                rec["n_bottom"] = int(bot_mask.sum())
 
         if not layer_rows:
             return {"layers": [], "monotonic": False}
@@ -547,6 +665,7 @@ class FactorEvaluator:
         quantiles: int,
         direction: int,
         cfg: EvalConfig,
+        trace=None,
     ) -> dict[str, Any]:
         # Top group = direction * factor highest.
         if clean.height == 0:
@@ -572,6 +691,9 @@ class FactorEvaluator:
                 tot = max(1, len(prev) + len(top_syms))
                 t = changed / tot
                 series.append({"date": day, "turnover": float(t)})
+                # 运行透视 ④(f): per-day换手.
+                if trace is not None:
+                    trace.day(day)["turnover"] = _jf(t)
             prev = top_syms
 
         if not series:

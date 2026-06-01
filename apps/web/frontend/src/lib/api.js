@@ -186,6 +186,7 @@ export const endpoints = {
   runLayers: (runId) => get(`/runs/${runId}/layers`),
   runTurnover: (runId) => get(`/runs/${runId}/turnover`),
   runDegradations: (runId) => get(`/runs/${runId}/degradations`),  // 降级台账 (设计 §8.3)
+  runTrace: (runId) => get(`/runs/${runId}/trace`),                // 运行透视 (设计 §2.5)
 
   // tasks
   tasks: (params) => get('/tasks', params),

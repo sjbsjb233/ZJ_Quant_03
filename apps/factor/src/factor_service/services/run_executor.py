@@ -26,6 +26,7 @@ from quant_factor.preflight import (
     check_result_to_json,
     run_preflight,
 )
+from quant_factor.trace import RunTrace
 from quant_factor.universe import resolve_universe
 from quant_factor.registry import all_registered, instantiate, instantiate_from_code
 
@@ -45,6 +46,7 @@ from .results_writer import (
     write_correlation_cache,
     write_degradations,
     write_run_results,
+    write_run_trace,
 )
 
 
@@ -107,9 +109,19 @@ def _run_evaluation(db, t: Task) -> dict[str, Any]:
     stage = "load"
     _qlog.info("run.start", run_id=run_id, factor_id=run.factor_id, version=run.version)
 
+    settings = get_settings()
+    # 运行透视 旁路采集器 (设计 §2.3). None ⇒ no埋点 / no artifact / endpoint空态.
+    trace = (
+        RunTrace(run_id=run_id, histogram_enabled=settings.trace_histogram_enabled)
+        if settings.trace_enabled
+        else None
+    )
+
     log_file, log_write = _open_run_log(run_id)
     try:
         # ── stage: load (resolve factor/version/universe + build the engine) ──
+        st_load = trace.stage("load") if trace else None
+        t_load = time.perf_counter()
         with qd_logging.timed(_qlog, "run.stage.load", run_id=run_id) as m:
             # Resolve factor + version + config
             factor_id = run.factor_id
@@ -177,13 +189,39 @@ def _run_evaluation(db, t: Task) -> dict[str, Any]:
             m["universe_id"] = uni_row.universe_id
             m["n_symbols"] = len(custom_syms) if custom_syms is not None else None
 
+        if trace:
+            # Seed基础 meta so even a blocked/failed run shows a summary row.
+            trace.meta.setdefault("factor", factor_id)
+            trace.meta.update({
+                "universe_id": uni_row.universe_id,
+                "rebalance_freq": cfg.rebalance,
+                "horizons": list(cfg.horizons),
+                "primary_horizon": int(cfg.primary_horizon),
+                "start": cfg.start.isoformat() if cfg.start else None,
+                "end": cfg.end.isoformat() if cfg.end else None,
+            })
+            trace.finish_stage(
+                st_load, status="ok",
+                duration_ms=(time.perf_counter() - t_load) * 1000,
+                factor_id=factor_id, version=version, class_name=ver.class_name,
+                code_source=(
+                    "code_path"
+                    if (ver.code_path and os.path.exists(ver.code_path))
+                    else "builtin"
+                ),
+                universe_id=uni_row.universe_id, universe_kind=uni_row.kind,
+                member_count=(len(custom_syms) if custom_syms is not None else None),
+                config_resolved=cfg.to_jsonable(),
+            )
+
         # ── stage: preflight (NEW · 设计 §5/§7) ──────────────────────────────
         # The authoritative gate. A block here marks the run failed and it NEVER
         # computes — the core 红线 (设计 §13): industry/size data missing can
         # never produce status=success. A degrade seeds the run's台账.
         stage = "preflight"
-        settings = get_settings()
         ledger = None
+        st_pf = trace.stage("preflight") if trace else None
+        t_pf = time.perf_counter()
         with qd_logging.timed(_qlog, "run.stage.preflight", run_id=run_id) as m:
             if settings.preflight_enabled:
                 symbols = _resolve_symbols_for_preflight(
@@ -191,12 +229,22 @@ def _run_evaluation(db, t: Task) -> dict[str, Any]:
                 )
                 policy_overrides = (run.run_config or {}).get("degradation_policy")
                 try:
+                    # `trace` lets run_preflight record the *full* checklist (含
+                    # 通过/跳过) into st_pf.detail["checks"] before the gate decision.
                     _blocked, ledger = run_preflight(
                         reader, cfg, uni_def, symbols, cfg.start, cfg.end,
                         profile=settings.degradation_policy_profile,
                         policy_overrides=policy_overrides,
+                        trace=trace,
                     )
                 except PreflightBlocked as pb:
+                    if trace:
+                        trace.finish_stage(
+                            st_pf, status="blocked",
+                            duration_ms=(time.perf_counter() - t_pf) * 1000,
+                            blocked=[r.check_id for r in pb.results],
+                        )
+                        _write_trace_safe(run_id, trace)   # 阻断也落盘(关键!)
                     return _finish_preflight_blocked(
                         db, run, run_id, t, pb, log_write, t0
                     )
@@ -210,15 +258,30 @@ def _run_evaluation(db, t: Task) -> dict[str, Any]:
             else:
                 m["skipped"] = True
 
+        if trace:
+            if not settings.preflight_enabled:
+                pf_status = "skipped"
+            elif ledger and ledger.count:
+                pf_status = "degrade"
+            else:
+                pf_status = "ok"
+            trace.finish_stage(
+                st_pf, status=pf_status,
+                duration_ms=(time.perf_counter() - t_pf) * 1000,
+            )
+
         # The evaluator carries the (preflight-seeded) ledger so runtime
         # degradations append to the same台账.
         from quant_factor.degradation import DegradationLedger
 
         if ledger is None:
             ledger = DegradationLedger()
+        # Evaluator + orchestration share ONE RunTrace instance, so the逐日数据
+        # (§2.2) and阶段/漏斗 (§2.3) land in the same object — no post-merge.
         evaluator = FactorEvaluator(
             reader,
             ledger=ledger,
+            trace=trace,
             progress_cb=progress,
             log_cb=log_cb,
             cancel_cb=cancelled,
@@ -226,24 +289,50 @@ def _run_evaluation(db, t: Task) -> dict[str, Any]:
 
         # ── stage: compute (run the factor + evaluation engine) ──────────────
         stage = "compute"
+        st_compute = trace.stage("compute") if trace else None
+        t_compute = time.perf_counter()
         with qd_logging.timed(_qlog, "run.stage.compute", run_id=run_id) as m:
             result = evaluator.evaluate(factor, cfg, uni_def, custom_syms)
             _ic = result.get("ic_series")
             ic_rows = int(_ic.height) if isinstance(_ic, pl.DataFrame) else 0
             m["ic_rows"] = ic_rows
+        if trace:
+            trace.finish_stage(
+                st_compute,
+                status="degrade" if ledger.count > 0 else "ok",
+                duration_ms=(time.perf_counter() - t_compute) * 1000,
+                ic_rows=ic_rows,
+            )
 
         # ── stage: write (persist IC / layer / decay / turnover artifacts) ───
         stage = "write"
+        st_write = trace.stage("write") if trace else None
+        t_write = time.perf_counter()
         with qd_logging.timed(_qlog, "run.results.write", run_id=run_id) as m:
             write_run_results(run_id, factor_id, result)
             m["rows_written"] = ic_rows
             m["path"] = os.path.join(get_settings().evaluations_dir, factor_id)
+        if trace:
+            trace.finish_stage(
+                st_write, status="ok",
+                duration_ms=(time.perf_counter() - t_write) * 1000,
+                rows_written=ic_rows,
+                path=os.path.join(get_settings().evaluations_dir, factor_id),
+            )
 
         # ── stage: eval (roll the metrics summary into eval_summary) ─────────
         stage = "eval"
+        st_eval = trace.stage("eval") if trace else None
+        t_eval = time.perf_counter()
         with qd_logging.timed(_qlog, "run.stage.eval", run_id=run_id) as m:
             _persist_eval_summary(db, run, cfg, uni_row.universe_id, result, ledger)
             m["metrics_n"] = len(result.get("summary") or {})
+        if trace:
+            trace.finish_stage(
+                st_eval, status="ok",
+                duration_ms=(time.perf_counter() - t_eval) * 1000,
+                metrics_n=len(result.get("summary") or {}),
+            )
 
         # ── status decision (设计 §7): degraded iff the台账 has ≥1 event ─────
         final_status = "degraded" if ledger.count > 0 else "success"
@@ -260,6 +349,8 @@ def _run_evaluation(db, t: Task) -> dict[str, Any]:
             run_id, status=final_status, level=ledger.level(),
             events=ledger.to_jsonable(),
         )
+        # 运行透视 落盘 — success / degraded terminal path.
+        _write_trace_safe(run_id, trace)
         log_write(
             f"DONE ({final_status}; {ledger.count} 降级 · {ledger.level()}) "
             f"in {run.duration_sec:.1f}s"
@@ -283,6 +374,13 @@ def _run_evaluation(db, t: Task) -> dict[str, Any]:
         run.status = "canceled"
         run.finished_at = dt.datetime.utcnow()
         db.commit()
+        # 运行透视 落盘 — cancelled path: mark the in-flight stage skipped so the
+        # pipeline shows where the run stopped (④⑤逐日表 absent — compute halted).
+        if trace:
+            rec = trace.stage_record(stage) or trace.stage(stage)
+            if rec.status not in ("blocked", "error"):
+                trace.finish_stage(rec, status="skipped")
+            _write_trace_safe(run_id, trace)
         log_write("CANCELLED")
         _qlog.warn("run.canceled", run_id=run_id, stage=stage,
                    total_ms=int((time.perf_counter() - t0) * 1000))
@@ -292,6 +390,12 @@ def _run_evaluation(db, t: Task) -> dict[str, Any]:
         run.error = f"{type(e).__name__}: {e}"
         run.finished_at = dt.datetime.utcnow()
         db.commit()
+        # 运行透视 落盘 — failed path: stamp the failing stage with the error so the
+        # pipeline highlights it (设计 §2.3f: all terminal paths落盘).
+        if trace:
+            rec = trace.stage_record(stage) or trace.stage(stage)
+            trace.finish_stage(rec, status="error", error=f"{type(e).__name__}: {e}")
+            _write_trace_safe(run_id, trace)
         log_write(f"FAILED · {run.error}")
         # ERROR auto-attaches the stack; `stage` pinpoints which phase blew up.
         _qlog.error("run.failed", exc=e, run_id=run_id, stage=stage)
@@ -299,6 +403,20 @@ def _run_evaluation(db, t: Task) -> dict[str, Any]:
     finally:
         if log_file:
             log_file.close()
+
+
+def _write_trace_safe(run_id: str, trace) -> None:
+    """Persist the 运行透视 artifact — never let a trace-write failure sink a run.
+
+    设计 §2.3f / §5: writing the trace is best-effort. Any error is logged at
+    WARNING and swallowed; the run's own status is决定 elsewhere.
+    """
+    if trace is None:
+        return
+    try:
+        write_run_trace(run_id, trace.to_jsonable())
+    except Exception:  # noqa: BLE001
+        _log.warning("write run trace failed (non-fatal)", exc_info=True)
 
 
 def _resolve_symbols_for_preflight(reader, uni_def, custom_syms, cfg) -> list[str]:

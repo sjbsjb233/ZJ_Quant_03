@@ -199,6 +199,93 @@ export function MiniBars({ data, width = 80, height = 16 }) {
   );
 }
 
+// ─── 运行透视 (Run Trace) primitives ─────────────────────────────────────────
+// `Distribution` — a horizontal box-and-whisker built from a `describe()` summary
+// ({min,p25,p50,p75,max,mean,std,n}). Used for ⑤'s 预处理四步分布. Each instance
+// auto-scales to its own [min,max] (raw vs standardized have wildly different
+// scales), drawing a dashed zero gridline only when 0 falls inside the range.
+export function Distribution({ stats, width = 176, height = 30, tone = 'info' }) {
+  if (!stats || !stats.n) {
+    return (
+      <div style={{ width, height, display: 'flex', alignItems: 'center', color: 'var(--fg-mute)', fontFamily: 'var(--font-mono)', fontSize: 10 }}>
+        无有效数据
+      </div>
+    );
+  }
+  const lo = stats.min, hi = stats.max;
+  const span = (hi - lo) || 1;
+  const pad = span * 0.08;
+  const d0 = lo - pad, d1 = hi + pad;
+  const x = (v) => 4 + ((v - d0) / (d1 - d0)) * (width - 8);
+  const cy = height / 2;
+  const col = `var(--${tone})`;
+  const showZero = d0 < 0 && d1 > 0;
+  return (
+    <svg width={width} height={height} style={{ display: 'block' }} className="tnum">
+      {showZero && (
+        <line x1={x(0)} y1={2} x2={x(0)} y2={height - 2} stroke="var(--border-strong)" strokeWidth="0.75" strokeDasharray="2 2" />
+      )}
+      {/* whisker min–max */}
+      <line x1={x(stats.min)} y1={cy} x2={x(stats.max)} y2={cy} stroke={col} strokeWidth="1" opacity="0.5" />
+      <line x1={x(stats.min)} y1={cy - 4} x2={x(stats.min)} y2={cy + 4} stroke={col} strokeWidth="1" opacity="0.6" />
+      <line x1={x(stats.max)} y1={cy - 4} x2={x(stats.max)} y2={cy + 4} stroke={col} strokeWidth="1" opacity="0.6" />
+      {/* box p25–p75 */}
+      <rect x={x(stats.p25)} y={cy - 6} width={Math.max(1, x(stats.p75) - x(stats.p25))} height={12} fill={col} opacity="0.16" stroke={col} strokeWidth="0.9" />
+      {/* median p50 */}
+      <line x1={x(stats.p50)} y1={cy - 6} x2={x(stats.p50)} y2={cy + 6} stroke={col} strokeWidth="1.5" />
+      {/* mean dot */}
+      {stats.mean != null && (
+        <circle cx={x(stats.mean)} cy={cy} r="2.1" fill="var(--surface)" stroke={col} strokeWidth="1.2" />
+      )}
+    </svg>
+  );
+}
+
+// `FunnelBar` — the股票池漏斗 (block ③): per-step bars scaled by symbol count,
+// each annotated with the剔除数 (delta vs previous) and a noop badge when the
+// filter was requested but ineffective (字段缺失/全空).
+export function FunnelBar({ steps, labelOf }) {
+  if (!steps || !steps.length) return <Empty mini label="无漏斗数据" />;
+  const max = Math.max(...steps.map((s) => s.symbols || 0), 1);
+  return (
+    <div style={{ padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+      {steps.map((f, i) => {
+        const w = Math.max(4, ((f.symbols || 0) / max) * 100);
+        const prev = i > 0 ? (steps[i - 1].symbols || 0) : null;
+        const delta = prev != null ? (f.symbols || 0) - prev : null;
+        const terminal = f.terminal || f.step === 'final';
+        const ineffective = !!f.ineffective;
+        return (
+          <div key={i} title={f.note} style={{ display: 'grid', gridTemplateColumns: '118px 1fr 150px', alignItems: 'center', gap: 12 }}>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: terminal ? 'var(--fg)' : 'var(--fg-2)', fontWeight: terminal ? 500 : 400, textAlign: 'right' }}>
+              {labelOf ? labelOf(f.step) : f.step}
+            </div>
+            <div style={{ position: 'relative', height: 22, display: 'flex', alignItems: 'center' }}>
+              <div style={{
+                width: `${w}%`, height: '100%', borderRadius: 3,
+                background: ineffective ? 'var(--warn-bg)' : terminal ? 'var(--info-bg)' : 'var(--surface-3)',
+                border: `1px solid ${ineffective ? 'var(--warn)' : terminal ? 'var(--info)' : 'var(--border)'}`,
+                display: 'flex', alignItems: 'center', paddingLeft: 8,
+              }}>
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg)', fontVariantNumeric: 'tabular-nums', fontWeight: 500 }}>{f.symbols}</span>
+              </div>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              {delta != null && delta < 0 && (
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--err)', fontVariantNumeric: 'tabular-nums' }}>−{Math.abs(delta)}</span>
+              )}
+              {delta === 0 && !ineffective && <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--fg-mute)' }}>−0</span>}
+              {ineffective && (
+                <span className="chip warn" style={{ fontSize: 10 }} title={f.note}>⚠ 未生效 · 字段全空</span>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function Empty({ label, mini }) {
   return (
     <div style={{

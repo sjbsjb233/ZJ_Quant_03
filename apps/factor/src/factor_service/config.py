@@ -36,6 +36,15 @@ class Settings(BaseSettings):
     preflight_enabled: bool = True
     degradation_policy_profile: str = "strict"
 
+    # ── 运行透视 / Run Trace 采集 (设计 §2.6) ───────────────────────────
+    # trace_enabled: master switch — off ⇒ evaluator builds no trace, no埋点,
+    #   no artifact, and the endpoint returns available:false (behaviour exactly
+    #   equivalent to before this feature). A one-click降级回原行为.
+    # trace_histogram_enabled: 单日分布 16-bucket直方图 — drop when体量 sensitive
+    #   (box-and-whisker stats min/p25/p50/p75/max/mean/std are always kept).
+    trace_enabled: bool = True
+    trace_histogram_enabled: bool = True
+
     # ── CORS (in case factor service is exposed directly) ──────────────
     allowed_origins: str = (
         "http://localhost:5173,http://localhost:3000,http://localhost:8000,http://localhost:8100"
