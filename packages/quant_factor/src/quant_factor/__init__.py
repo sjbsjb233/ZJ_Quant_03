@@ -49,6 +49,7 @@ from .preflight import (
 )
 from .evaluate import FactorEvaluator
 from .correlation import correlation_matrix
+from .trace import RunTrace, describe as trace_describe
 from . import builtin, registry  # noqa: F401  (side-effect import for registry)
 
 __all__ = [
@@ -78,6 +79,8 @@ __all__ = [
     "check_result_to_json",
     "FactorEvaluator",
     "correlation_matrix",
+    "RunTrace",
+    "trace_describe",
     "builtin",
     "registry",
 ]

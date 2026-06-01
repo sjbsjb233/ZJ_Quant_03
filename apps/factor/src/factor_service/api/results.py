@@ -88,3 +88,35 @@ def degradations(
         "blocked": getattr(r, "preflight", None) or [],
         "events": [],
     }
+
+
+@router.get("/runs/{run_id}/trace")
+def run_trace(
+    run_id: str, db: Session = Depends(get_db), user=Depends(current_user)
+) -> dict:
+    """运行透视数据 (设计 §2.5): 阶段流水线 + 前置检查全量 + 股票池漏斗 + 逐调仓日过程.
+
+    web-backend's ``factors_proxy`` already wildcards ``/runs{path:path}``, so this
+    new endpoint透传 to the frontend with zero proxy changes.
+    """
+    r = db.get(FactorRun, run_id)
+    if r is None:
+        raise ApiError("RUN_NOT_FOUND", f"运行 {run_id} 不存在")
+    art = results_writer.read_run_trace(run_id)
+    if art is None:
+        # Pre-feature runs, or采集 disabled: return an empty-state, NOT a 404, so
+        # the UI shows a friendly空态 instead of an error.
+        return {
+            "run_id": run_id,
+            "available": False,
+            "status": r.status,
+            "reason": "此运行无过程追踪数据(可能在透视功能上线前执行,或采集已关闭)。重跑一次即可获得。",
+        }
+    art["available"] = True
+    # Stamp the run's current status/degradation snapshot so the frontend can
+    # derive every page-state from a single query.
+    art["status"] = r.status
+    art["degradation_level"] = getattr(r, "degradation_level", "none") or "none"
+    art["degradation_count"] = getattr(r, "degradation_count", 0) or 0
+    art["has_critical"] = bool(getattr(r, "has_critical", False))
+    return art

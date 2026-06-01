@@ -102,14 +102,46 @@ def apply_pipeline(
     standardize: str = "zscore",
     ledger=None,
     day=None,
+    capture: dict | None = None,
+    capture_histogram: bool = True,
 ) -> pl.DataFrame:
-    """Apply ①winsorize + ②standardize to one column. Used by the engine."""
+    """Apply ①winsorize + ②standardize to one column. Used by the engine.
+
+    ``capture`` (运行透视 §2.2): when a dict is supplied, this single code path
+    *additionally* records the post-winsorize / post-standardize distributions and
+    the削尾计数 into it — a pure side-record that never alters the returned frame.
+    Passing ``capture=None`` (the default) keeps the original behaviour byte-for-byte.
+    """
     out = df
     s = out[col]
+    # `pre` (pre-winsorize snapshot) is only needed for the clip counts, which
+    # only apply under mad/quantile — skip the copy entirely otherwise (Copilot).
+    pre = (
+        s.to_numpy().astype(float)
+        if (capture is not None and winsorize in ("mad", "quantile"))
+        else None
+    )
     if winsorize == "mad":
         s = winsorize_mad(s, winsorize_n, ledger=ledger, day=day)
     elif winsorize == "quantile":
         s = winsorize_quantile(s, winsorize_n, ledger=ledger, day=day)
+    if capture is not None and winsorize in ("mad", "quantile"):
+        from .trace import describe
+
+        post_w = s.to_numpy().astype(float)
+        # 削尾计数：与原值相比被压低/抬高的个数（NaN 安全）。
+        eps = 1e-12
+        valid = np.isfinite(pre) & np.isfinite(post_w)
+        low = int(np.sum(valid & (post_w < pre - eps)))
+        high = int(np.sum(valid & (post_w > pre + eps)))
+        capture["winsorize_clipped"] = {"low": low, "high": high}
+        capture["after_winsorize"] = describe(post_w, histogram=capture_histogram)
     if standardize == "zscore":
         s = zscore(s, ledger=ledger, day=day)
+    if capture is not None and standardize == "zscore":
+        from .trace import describe
+
+        capture["after_standardize"] = describe(
+            s.to_numpy().astype(float), histogram=capture_histogram
+        )
     return out.with_columns(s.alias(col))

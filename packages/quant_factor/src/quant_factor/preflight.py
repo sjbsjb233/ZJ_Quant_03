@@ -26,12 +26,12 @@ table at most once.
 from __future__ import annotations
 
 import datetime as dt
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 import polars as pl
 
-from .degradation import DegradationLedger, make_event
+from .degradation import DEGRADATION_CODES, DegradationLedger, make_event
 from .neutralize import industry_at_level
 from .universe import UniverseDef, _resolve_flag, rebalance_dates
 
@@ -82,8 +82,11 @@ _VALID_POLICIES = {"block", "degrade", "ignore"}
 @dataclass
 class CheckResult:
     check_id: str
-    status: str                       # "pass" | "degrade" | "block"
+    status: str                       # "pass" | "degrade" | "block" | "skipped"
     event: Any | None = None          # DegradationEvent when not pass
+    # Display-only side data for the 运行透视 checklist (coverage/threshold on a
+    # *pass*, applies flag on a *skip*, human cov_text). Never used by the gate.
+    info: dict = field(default_factory=dict)
 
 
 class PreflightBlocked(Exception):
@@ -188,7 +191,10 @@ class _IndustryCoverageCheck:
         n_have = len(usable)
         cov = (n_have / n) if n else 0.0
         if cov >= thr:
-            return CheckResult(self.id, "pass")
+            return CheckResult(self.id, "pass", info={
+                "coverage": round(cov, 4), "threshold": thr,
+                "cov_text": f"{cov:.1%} ≥ {thr:.0%}",
+            })
         missing = ind.filter(pl.col("industry").is_null())["symbol"].to_list()
         ev = make_event(
             self.id,
@@ -227,7 +233,10 @@ class _SizeCoverageCheck:
             ctx.bars(), ctx.symbols, field, positive=True
         )
         if cov >= thr:
-            return CheckResult(self.id, "pass")
+            return CheckResult(self.id, "pass", info={
+                "coverage": round(cov, 4), "threshold": thr,
+                "cov_text": f"{cov:.1%} ≥ {thr:.0%}",
+            })
         ev = make_event(
             self.id,
             stage="preflight",
@@ -260,7 +269,10 @@ class _VwapCoverageCheck:
             ctx.bars(), ctx.symbols, "vwap", positive=True
         )
         if cov >= thr:
-            return CheckResult(self.id, "pass")
+            return CheckResult(self.id, "pass", info={
+                "coverage": round(cov, 4), "threshold": thr,
+                "cov_text": f"{cov:.1%} ≥ {thr:.0%}",
+            })
         ev = make_event(
             self.id,
             stage="preflight",
@@ -301,7 +313,9 @@ class _UniverseFlagCheck:
                 expr = expr | (pl.col(c) == True)  # noqa: E712
             n_true = uni.filter(expr).height
         if present and n_true > 0:
-            return CheckResult(self.id, "pass")
+            return CheckResult(self.id, "pass", info={
+                "cov_text": f"成分 flag 命中 {n_true} 行",
+            })
         ev = make_event(
             self.id,
             stage="preflight",
@@ -344,7 +358,9 @@ class _UniverseColumnCheck:
                 have = c
                 break
         if have is not None:
-            return CheckResult(self.id, "pass")
+            return CheckResult(self.id, "pass", info={
+                "cov_text": f"{self.label}状态列存在且非空",
+            })
         ev = make_event(
             self.id,
             stage="preflight",
@@ -401,7 +417,9 @@ class _PreprocMethodCheck:
         if s not in _VALID_STANDARDIZE:
             bad.append(f"standardize={s!r}")
         if not bad:
-            return CheckResult(self.id, "pass")
+            return CheckResult(self.id, "pass", info={
+                "cov_text": f"winsorize={w} · standardize={s}",
+            })
         ev = make_event(
             self.id,
             stage="preflight",
@@ -443,7 +461,9 @@ class _WindowCheck:
         if n_days <= max_h:
             problems.append(f"窗口交易日 {n_days} ≤ 最大 horizon {max_h},前向收益全缺")
         if not problems:
-            return CheckResult(self.id, "pass")
+            return CheckResult(self.id, "pass", info={
+                "cov_text": f"{n_rebal} 调仓日 ≥ {min_rebal}",
+            })
         ev = make_event(
             self.id,
             stage="preflight",
@@ -486,12 +506,22 @@ def evaluate_checks(
     *,
     profile: str = "strict",
     policy_overrides: dict[str, str] | None = None,
+    include_pass: bool = False,
 ) -> tuple[list[CheckResult], dict[str, str]]:
-    """Run every applicable check and return (non-pass results, effective policy).
+    """Run every applicable check and return (results, effective policy).
 
     This is the shared core used by both :func:`run_preflight` (the gate) and the
     dry-run ``POST /runs/preflight`` endpoint. It does *not* raise — it classifies
     each non-pass result by the resolved policy and stamps the event's ``policy``.
+
+    ``include_pass=False`` (default · gate/dry-run behaviour): only the *non-pass*
+    results are returned, unchanged.
+
+    ``include_pass=True`` (运行透视 §2.3c): the *full* checklist is returned —
+    every check in :data:`REGISTRY`, including ``pass`` items (with their
+    coverage/threshold ``info``) and not-applicable items as ``status="skipped"``.
+    The gate logic still only acts on ``status == "block"`` and seeds the ledger
+    from events, so passing this flag does not change what blocks/degrades.
     """
     base = PERMISSIVE_PROFILE if profile == "permissive" else STRICT_PROFILE
     policy = {**base, **(policy_overrides or {})}
@@ -500,7 +530,10 @@ def evaluate_checks(
     out: list[CheckResult] = []
     for check in REGISTRY:
         try:
-            if not check.applies(ctx):
+            applies = check.applies(ctx)
+            if not applies:
+                if include_pass:
+                    out.append(CheckResult(check.id, "skipped", info={"applies": False}))
                 continue
             res = check.run(ctx)
         except Exception as e:  # noqa: BLE001 — a check crashing must not crash the run
@@ -518,6 +551,8 @@ def evaluate_checks(
             out.append(CheckResult(getattr(check, "id", "PF_UNKNOWN"), "degrade", ev))
             continue
         if res.status == "pass":
+            if include_pass:
+                out.append(res)
             continue
         eff = policy.get(check.id, check.default_policy)
         # Clamp to a known policy — an invalid override (e.g. a typo in
@@ -542,6 +577,7 @@ def run_preflight(
     *,
     profile: str = "strict",
     policy_overrides: dict[str, str] | None = None,
+    trace=None,
 ) -> tuple[list[CheckResult], DegradationLedger]:
     """The gate (设计 §5.2).
 
@@ -550,16 +586,31 @@ def run_preflight(
 
     Raises :class:`PreflightBlocked` (carrying every block-hit result) the moment
     any check resolves to ``block`` — so a blocked run **never computes**.
+
+    ``trace`` (运行透视 §2.3c): when supplied, the *full* checklist (含通过/跳过项)
+    is recorded into the trace's ``preflight`` stage detail *before* the gate
+    decision — so even a blocked run shows its complete体检清单. The full-list
+    capture never changes the block/degrade outcome.
     """
-    results, _policy = evaluate_checks(
+    include_pass = trace is not None
+    results, policy = evaluate_checks(
         reader, cfg, uni_def, symbols, start, end,
         profile=profile, policy_overrides=policy_overrides,
+        include_pass=include_pass,
     )
+    if trace is not None:
+        rec = trace.stage_record("preflight") or trace.stage("preflight")
+        rec.detail["checks"] = [_check_to_trace(r, policy) for r in results]
+        trace.meta["preflight_profile"] = profile
+        trace.meta["preflight_n_symbols"] = len(symbols or [])
     ledger = DegradationLedger()
     blocked: list[CheckResult] = []
     for res in results:
         if res.status == "block":
             blocked.append(res)
+        elif res.status in ("pass", "skipped"):
+            # full-list extras carry no event — they never touch the ledger.
+            continue
         else:
             # "degrade" and "ignore" both seed the ledger; ignore keeps its
             # policy stamp so the audit shows it was deliberately let through.
@@ -568,6 +619,48 @@ def run_preflight(
     if blocked:
         raise PreflightBlocked(blocked)
     return [], ledger
+
+
+def _check_to_trace(res: CheckResult, policy_map: dict[str, str]) -> dict:
+    """Flatten a CheckResult for the 运行透视 checklist (含通过/跳过项展示字段).
+
+    Extends :func:`check_result_to_json` with the pass/skip display fields the
+    block-detail view never needed: ``applies`` / ``coverage`` / ``threshold`` /
+    ``cov_text`` / resolved ``policy`` / catalogue ``severity``.
+    """
+    info = res.info or {}
+    ev = res.event
+    meta = DEGRADATION_CODES.get(res.check_id, {})
+    applies = bool(info.get("applies", res.status != "skipped"))
+    coverage = info.get("coverage")
+    threshold = info.get("threshold")
+    if ev is not None:
+        e = ev.evidence or {}
+        if coverage is None:
+            coverage = e.get("coverage")
+        if threshold is None:
+            threshold = e.get("threshold")
+    out = {
+        "check_id": res.check_id,
+        "status": res.status,                       # pass|degrade|block|ignore|skipped
+        "applies": applies,
+        "severity": (ev.severity if ev is not None else meta.get("severity")),
+        "title": (ev.title if ev is not None else meta.get("title", res.check_id)),
+        "config_key": (ev.config_key if ev is not None else meta.get("config_key")),
+        "category": (ev.category if ev is not None else meta.get("category")),
+        "policy": policy_map.get(res.check_id),
+        "coverage": coverage,
+        "threshold": threshold,
+        "cov_text": info.get("cov_text"),
+    }
+    if ev is not None:
+        out.update({
+            "reason": ev.reason,
+            "impact": ev.impact,
+            "suggested_action": ev.suggested_action,
+            "evidence": ev.evidence,
+        })
+    return out
 
 
 def check_result_to_json(res: CheckResult) -> dict:
