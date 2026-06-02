@@ -150,6 +150,10 @@ export function SubToolbar({ path = [], fkeys = [], right }) {
           const label = typeof p === 'string' ? p : p.label;
           const to = (typeof p === 'string' ? null : p.to) ?? CRUMB_ROUTES[label] ?? null;
           const clickable = !isLast && !!to;
+          // Strip a label's own trailing slash; the "/" separator below draws the
+          // divider, so keeping both would render a redundant double slash. The
+          // raw `label` (with slash) is still used for the CRUMB_ROUTES lookup.
+          const display = label.replace(/\/+$/, '');
           return (
             <React.Fragment key={i}>
               <span
@@ -161,7 +165,7 @@ export function SubToolbar({ path = [], fkeys = [], right }) {
                   letterSpacing: isLast ? 0 : '0.04em',
                   textTransform: isLast ? 'none' : 'uppercase',
                 }}
-              >{label}</span>
+              >{display}</span>
               {!isLast && <span style={{ color: 'var(--fg-mute)', margin: '0 6px' }}>/</span>}
             </React.Fragment>
           );
