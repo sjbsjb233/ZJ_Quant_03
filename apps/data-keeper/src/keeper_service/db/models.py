@@ -38,3 +38,6 @@ class Job(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_utcnow, index=True)
     started_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
     finished_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    # progress heartbeat (可观测层重构方案 §6.5 · D6): bumped on every progress/log
+    # update so the回收线程 can tell a 卡死 job (stale heartbeat) from a slow one.
+    progress_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)

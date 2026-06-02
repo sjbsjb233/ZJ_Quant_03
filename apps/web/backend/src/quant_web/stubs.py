@@ -9,11 +9,12 @@ from fastapi import APIRouter
 
 from .errors import ApiError
 
-# planned ship dates (doc §1.3 / terminal-shell module phases)
+# planned ship dates (doc §1.3 / terminal-shell module phases). The ``monitor``
+# module is no longer a stub — it ships as the 监控 / 外部观察 layer (quant_web.monitor),
+# replacing this placeholder (可观测层重构方案 §5).
 _PHASES = {
     "factors": {"module": "因子管理", "phase": "P1", "eta": "2026 Q3"},
     "strategies": {"module": "策略管理", "phase": "P2", "eta": "2026 Q4"},
-    "monitor": {"module": "监控告警", "phase": "P3", "eta": "2027"},
 }
 
 
@@ -50,8 +51,4 @@ strategies_router = _make_router("strategies", [
     ("GET", ""), ("GET", "/{name}"), ("GET", "/backtests"),
     ("POST", "/backtests"), ("GET", "/backtests/{id}"),
     ("GET", "/backtests/{id}/positions"),
-])
-monitor_router = _make_router("monitor", [
-    ("GET", "/alerts"), ("GET", "/rules"), ("POST", "/rules"),
-    ("GET", "/channels"), ("POST", "/channels"),
 ])

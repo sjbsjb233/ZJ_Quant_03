@@ -5,7 +5,7 @@ import { useAuth } from '../../lib/auth';
 import { useTheme } from '../../lib/theme';
 import { getLastTraceId } from '../../lib/logger';
 import { useSystemHealth } from '../../lib/health';
-import { DATA_NAV, FACTOR_NAV, MODULES, NavGlyph, VIZ_NAV } from './nav';
+import { DATA_NAV, FACTOR_NAV, MODULES, NavGlyph, OBSERV_NAV, VIZ_NAV } from './nav';
 
 export function ModuleStrip({ current, env = 'PROD' }) {
   const nav = useNavigate();
@@ -58,9 +58,11 @@ export function ModuleStrip({ current, env = 'PROD' }) {
 }
 
 export function TerminalSidebar({ module = 'data', current }) {
-  const nav = module === 'viz' ? VIZ_NAV : module === 'factor' ? FACTOR_NAV : DATA_NAV;
+  const nav = module === 'viz' ? VIZ_NAV : module === 'factor' ? FACTOR_NAV
+    : module === 'observ' ? OBSERV_NAV : DATA_NAV;
   const moduleLabel =
-    module === 'viz' ? '数据可视化' : module === 'factor' ? '因子管理' : '数据管理';
+    module === 'viz' ? '数据可视化' : module === 'factor' ? '因子管理'
+      : module === 'observ' ? '可观测' : '数据管理';
   return (
     <aside style={{
       width: 184, background: 'var(--surface-2)', borderRight: '1px solid var(--border)',
@@ -151,10 +153,44 @@ export function SubToolbar({ path = [], fkeys = [], right }) {
         <>
           <span style={{ color: 'var(--fg-3)' }}>tz: <span style={{ color: 'var(--fg)' }}>Asia/Shanghai</span></span>
           <span style={{ color: 'var(--fg-mute)', margin: '0 10px' }}>│</span>
-          <span style={{ color: 'var(--ok)' }}>● live</span>
+          <SystemStatusPill />
         </>
       )}
     </div>
+  );
+}
+
+// 右上角系统状态标识 (可观测层重构方案 §7.5): 替换硬编码 `● live`，按「最差层级状态」
+// 渲染 live / degraded / alert 三态,点进可观测页。任一层出问题立刻在每个页面右上角可见。
+export function SystemStatusPill() {
+  const nav = useNavigate();
+  const { data, isError } = useSystemHealth();
+  const status = isError ? 'down' : (data?.status || 'ok');
+  const firing = data?.alerts?.firing || 0;
+  const map = {
+    ok: { c: 'var(--ok)', txt: '正常', en: 'live', glyph: '●' },
+    degraded: { c: 'var(--warn)', txt: '降级', en: firing ? `· ${firing}` : '', glyph: '▲' },
+    down: { c: 'var(--err)', txt: '故障', en: firing ? `· ${firing}` : '', glyph: '■' },
+  };
+  const m = map[status] || map.ok;
+  const to = status === 'ok' ? '/observ/overview' : '/observ/alerts';
+  return (
+    <span data-testid="system-status-pill" data-state={status}
+      onClick={() => nav(to)} title="系统状态 (监控层裁决) · 点击进入可观测"
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer',
+        padding: '1px 9px', borderRadius: 10, lineHeight: '15px',
+        border: '1px solid ' + (status === 'ok' ? 'var(--border)' : m.c),
+        background: status === 'ok' ? 'transparent' : `color-mix(in oklch, ${m.c} 12%, transparent)`,
+        color: m.c, fontWeight: 500,
+      }}>
+      <span style={{
+        width: 6, height: 6, borderRadius: '50%', background: m.c,
+        animation: status === 'down' ? 'pulse 1.3s ease-in-out infinite' : 'none',
+      }} />
+      <span>{m.txt}</span>
+      {m.en && <span style={{ color: status === 'ok' ? 'var(--fg-3)' : m.c, fontWeight: 400 }}>{m.en}</span>}
+    </span>
   );
 }
 
@@ -199,7 +235,7 @@ function TraceChip() {
         navigator.clipboard?.writeText(traceId);
         setCopied(true);
         setTimeout(() => setCopied(false), 800);
-        nav(`/data/logs/trace/${traceId}`);
+        nav(`/observ/trace/${traceId}`);
       }}
       style={{ cursor: 'pointer', color: 'var(--info)' }}
     >
@@ -222,22 +258,36 @@ function CompDot({ label, state, title }) {
   );
 }
 
-export function StatusBar({ middle, right }) {
-  // 状态栏数据源：聚合下游健康 (修复 A1 · 五容器拓扑)。
-  const { data, isError, isLoading } = useSystemHealth();
-  const c = data?.components || {};
-  // 整个 /health/deps 失败 ⇒ 各点按 down 渲染 (红),不停在绿色或加载态。
-  const fail = (s) => (isError ? 'error' : s);
+// 监控层 state (ok|degraded|down) → CompDot state (ok|warn|error)。
+const _MON_STATE = { ok: 'ok', degraded: 'warn', down: 'error' };
 
-  // factor 三态：api 不通=error;api 通但 worker stale/down=warn;都好=ok。
-  const factorState = (() => {
-    if (isError || c.factor?.state === 'error') return 'error';
-    if (!c.factor) return undefined;
-    const w = c.factor.worker;
-    return (w === 'stale' || w === 'down') ? 'warn' : 'ok';
+export function StatusBar({ middle, right }) {
+  const nav = useNavigate();
+  // 状态栏数据源：监控层裁决 (可观测层重构方案 §7.4) —— /monitor/health，含 uptime /
+  // 重启数 / 上次成功 / 活跃告警。某层即便 /health 回 200,只要有活跃告警仍渲染为红。
+  const { data, isError, isLoading } = useSystemHealth();
+  const layers = data?.layers || {};
+  const comp = data?.components || {};
+  const firing = data?.alerts?.firing || 0;
+  const fail = (s) => (isError ? 'error' : s);
+  const layerState = (k) => (isError ? 'error' : _MON_STATE[layers[k]?.state]);
+
+  // hover 即见根因线索 (uptime / 重启数 / 上次成功)。
+  const dataTip = (() => {
+    const d = layers.data || {};
+    const bits = [];
+    if (d.uptime_s != null) bits.push(`uptime ${Math.round(d.uptime_s / 60)}m`);
+    if (d.restart_count) bits.push(`重启 ×${d.restart_count}`);
+    if (d.oom_killed) bits.push('OOM');
+    if (d.last_job_success_at) bits.push(`上次成功 ${String(d.last_job_success_at).slice(0, 16)}`);
+    if (d.mem_pct != null) bits.push(`mem ${d.mem_pct}%`);
+    return '数据层 (data-keeper) ' + (bits.join(' · ') || '');
+  })();
+  const monTip = (() => {
+    const m = layers.monitor || {};
+    return `监控层 — sentinel: ${m.sentinel_last_seen ? '在线' : '离线/未上线'} · eval: ${m.eval_last_run ? '在线' : '—'}`;
   })();
 
-  // 右侧标签：cluster · env。加载中显 …,下游探测失败仍能拿到 (来自缓存/上次)。
   const label = isLoading ? '…'
     : `${data?.cluster || '—'}${data?.environment ? ' · ' + data.environment : ''}`;
 
@@ -247,22 +297,25 @@ export function StatusBar({ middle, right }) {
       padding: '0 14px', display: 'flex', alignItems: 'center', gap: 14,
       fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-3)', flexShrink: 0,
     }}>
-      <CompDot label="db" state={fail(c.db?.state)} title="web-backend 元数据库 (审计 + app_log)" />
-      <CompDot label="warehouse" state={fail(c.warehouse?.state)} title="parquet 数据湖 /data (所有数据读取)" />
-      {/* keeper 在回滚态 (KEEPER_BASE 未设) 后端不返回该键 ⇒ 自动不显示这个点;
-          但 /health/deps 整体失败 (isError) 时仍要把它按 down 渲染 (红),不能让它消失。 */}
-      {(isError || c.keeper) && (
-        <CompDot label="keeper" state={fail(c.keeper?.state)}
-          title={c.keeper?.scheduler === false
-            ? '唯一写者 · 调度已关闭 (ENABLE_SCHEDULER=false)'
-            : '唯一写者 (所有写操作 + 定时调度)'} />
-      )}
-      <CompDot label="factor" state={factorState}
-        title={`因子模块 — api: ${c.factor?.state || '—'} · worker: ${c.factor?.worker || '—'}`} />
+      <CompDot label="db" state={fail(comp.db?.state)} title="web-backend 元数据库 (审计 + app_log)" />
+      <CompDot label="warehouse" state={fail(comp.warehouse?.state)} title="parquet 数据湖 /data (所有数据读取)" />
+      <CompDot label="data" state={layerState('data')} title={dataTip} />
+      <CompDot label="factor" state={layerState('factor')}
+        title={`因子层 — worker: ${layers.factor?.worker || '—'} · mem: ${layers.factor?.mem_pct ?? '—'}%`} />
+      <CompDot label="monitor" state={layerState('monitor')} title={monTip} />
       <span style={{ color: 'var(--fg-mute)' }}>│</span>
       <span data-testid="status-cluster">{label}</span>
       {middle && (<><span style={{ color: 'var(--fg-mute)' }}>│</span>{middle}</>)}
       <div style={{ flex: 1 }} />
+      {firing > 0 && (
+        <span data-testid="statusbar-alerts" onClick={() => nav('/observ/alerts')}
+          title={`${firing} 条触发中告警 · 点击查看`}
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 5, cursor: 'pointer',
+            padding: '0 8px', borderRadius: 8, lineHeight: '14px',
+            background: 'var(--err-bg)', border: '1px solid var(--err)', color: 'var(--err)', fontWeight: 600,
+          }}>⚠ {firing}</span>
+      )}
       <TraceChip />
       {right || (
         <>

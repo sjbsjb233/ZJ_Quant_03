@@ -8,6 +8,10 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base
 
+# 五容器拓扑 — log layers (matches deps.ALL_SOURCES). "monitor" is the
+# observability layer added by 可观测层重构方案.
+LAYERS = ("frontend", "backend", "data", "factor", "monitor")
+
 
 def _utcnow() -> dt.datetime:
     return dt.datetime.utcnow()
@@ -111,3 +115,54 @@ class AppLog(Base):
         Index("idx_app_log_source_ts", "source", "ts"),
         Index("idx_app_log_logger_ts", "logger", "ts"),
     )
+
+
+class MonitorAlert(Base):
+    """A monitor-layer alert with a *lifecycle* (可观测层重构方案 §4.4 / §4.5).
+
+    Unlike ``app_log`` (append-only 取证), an alert is stateful and deduped by
+    ``(rule_id, layer, target)``: re-triggering an already-active alert bumps
+    ``count`` / ``last_seen`` instead of inserting a new row. The状态机 is
+    ``firing → acked → resolved``; an alert auto-resolves once its condition has
+    not held for ``ALERT_RESOLVE_CLEAR_SEC``.
+    """
+
+    __tablename__ = "monitor_alert"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    rule_id: Mapped[str] = mapped_column(String(48), index=True)        # 'D2.restart_storm'
+    severity: Mapped[str] = mapped_column(String(10))                   # info|warn|error|critical
+    layer: Mapped[str] = mapped_column(String(16), index=True)          # frontend|backend|data|factor|monitor
+    target: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)  # 容器/任务名 or null
+    title: Mapped[str] = mapped_column(String(255))
+    detail: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    status: Mapped[str] = mapped_column(String(12), default="firing", index=True)  # firing|acked|resolved
+    count: Mapped[int] = mapped_column(Integer, default=1)
+    first_seen: Mapped[dt.datetime] = mapped_column(DateTime, default=_utcnow, index=True)
+    last_seen: Mapped[dt.datetime] = mapped_column(DateTime, default=_utcnow, index=True)
+    resolved_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    acked_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    acked_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    trace_id: Mapped[str | None] = mapped_column(String(64), nullable=True)  # 代表性 trace (一键下钻)
+
+    __table_args__ = (
+        Index("idx_monitor_alert_status_sev", "status", "severity"),
+        Index("idx_monitor_alert_dedupe", "rule_id", "layer", "target", "status"),
+    )
+
+
+class MonitorRule(Base):
+    """Persisted threshold/enable overrides for a detection rule.
+
+    Only rows that *override* the env/code defaults live here; a missing row
+    means "use the default". Editing is admin-only and audited
+    (可观测层重构方案 §6.2 · ``PUT /monitor/rules/{id}``).
+    """
+
+    __tablename__ = "monitor_rule"
+
+    rule_id: Mapped[str] = mapped_column(String(48), primary_key=True)
+    params: Mapped[dict | None] = mapped_column(JSON, nullable=True)     # {param_key: value}
+    enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True)  # None ⇒ default
+    updated_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_utcnow)

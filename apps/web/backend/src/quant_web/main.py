@@ -21,8 +21,10 @@ from .jobs.runner import JobRunner
 from .logging import app_logger, configure as configure_logging, init_store, install_sinks
 from .logging.routes import router as logs_router
 from .middleware import RequestLogMiddleware, TraceIdMiddleware
+from .monitor import init_monitor, stop_evaluator
+from .monitor.routes import router as monitor_router
 from .seed_users import ensure_seed_users
-from .stubs import monitor_router, strategies_router
+from .stubs import strategies_router
 
 # Factor service proxy — replaces the 501 stub. /factors/*, /runs/*,
 # /tasks/*, /universe/*, /imports/*, /queue/* are forwarded to factor-api.
@@ -107,10 +109,15 @@ def create_app() -> FastAPI:
     app.state.job_runner = JobRunner(
         SessionLocal, settings.quant_data_root, workers=settings.job_workers
     )
+    # 监控 / 外部观察层 (可观测层重构方案 §6.6): alert store + sentinel signal buffer +
+    # evaluator thread. Must follow init_db (monitor_alert table) + init_store (D9 reads
+    # the pipeline health). No-op when MONITOR_ENABLED=false.
+    app.state.monitor_evaluator = init_monitor(settings, SessionLocal, settings.keeper_base)
 
     @app.on_event("shutdown")
     def _flush_logs() -> None:  # drain the queue + close files (doc §7.2)
         app_logger.info("app.shutdown")
+        stop_evaluator()
         store.stop()
 
     return app

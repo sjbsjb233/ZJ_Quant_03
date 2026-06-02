@@ -6,8 +6,9 @@ name: Build & Publish Docker Images
 #   - Actions 页面手动触发
 # 注意：main 分支不构建镜像（按团队约定，镜像从 develop 出）。
 #
-# 容器化重构 V3：单 web 镜像已拆为 5 个服务镜像（web-backend / web-frontend /
-# data-keeper / factor）。用 matrix 分别构建推送，镜像名带服务后缀。
+# 容器化重构 V3 + 可观测层方案：单 web 镜像已拆为 5 个服务镜像（web-backend /
+# web-frontend / data-keeper / factor），再加旁路哨兵 obs-sentinel = 6 个。
+# 用 matrix 分别构建推送，镜像名带服务后缀。
 on:
   push:
     branches: [develop]
@@ -41,6 +42,8 @@ jobs:
             dockerfile: apps/data-keeper/Dockerfile
           - service: factor
             dockerfile: apps/factor/Dockerfile
+          - service: obs-sentinel
+            dockerfile: apps/obs-sentinel/Dockerfile
 
     steps:
       - name: Checkout repo

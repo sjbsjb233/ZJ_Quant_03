@@ -350,7 +350,7 @@ function LogsDrawer({ runId, factorId, onClose }) {
         <Tab id="raw">原始 · file tail</Tab>
         <span style={{ flex: 1 }} />
         {traceId && (
-          <span onClick={() => nav(`/data/logs/trace/${traceId}`)} title="看整条 trace"
+          <span onClick={() => nav(`/observ/trace/${traceId}`)} title="看整条 trace"
             style={{ cursor: 'pointer', fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--info)' }}>
             trace: t_{traceId.replace(/^t_/, '').slice(-6)} →
           </span>
@@ -361,7 +361,7 @@ function LogsDrawer({ runId, factorId, onClose }) {
         traceId ? (
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, padding: 8 }}>
             <LogPanel source="factor" lockSource traceId={traceId} embed
-              onTrace={(t) => nav(`/data/logs/trace/${t}`)} />
+              onTrace={(t) => nav(`/observ/trace/${t}`)} />
           </div>
         ) : (
           <div style={{ flex: 1, display: 'grid', placeItems: 'center', padding: 24, color: 'var(--fg-3)', fontFamily: 'var(--font-mono)', fontSize: 11 }}>

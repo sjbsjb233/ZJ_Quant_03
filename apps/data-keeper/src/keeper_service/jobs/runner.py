@@ -43,8 +43,10 @@ class JobContext:
 
     def progress(self, current: int, total: int, unit: str = "items") -> None:
         self.check_cancel()
+        # progress_at = heartbeat for the回收线程 (D6): a job updating progress is
+        # alive, not 卡死, even if it's over its time budget.
         self.runner._update(self.job_id, progress_current=current, progress_total=total,
-                            progress_unit=unit)
+                            progress_unit=unit, progress_at=dt.datetime.utcnow())
 
     def log(self, message: str) -> None:
         ts = dt.datetime.utcnow().strftime("%H:%M:%S")
@@ -106,7 +108,8 @@ class JobRunner:
         # so quant_data's write/QC logs join the same trace (V3 §6.4).
         local_tok = trace_id_var.set(trace_id)
         qd_tok = qd_logging.bind_context(trace_id=trace_id)
-        self._update(job_id, status="running", started_at=dt.datetime.utcnow())
+        _now = dt.datetime.utcnow()
+        self._update(job_id, status="running", started_at=_now, progress_at=_now)
         _log.info(f"job.{job_type}.start", job_id=job_id, job_type=job_type)
         started = dt.datetime.utcnow()
         ctx = JobContext(self, job_id, self._root)
@@ -147,4 +150,5 @@ class JobRunner:
             if job is None:
                 return
             job.log = (job.log or []) + [line]
+            job.progress_at = dt.datetime.utcnow()   # heartbeat (D6)
             db.commit()

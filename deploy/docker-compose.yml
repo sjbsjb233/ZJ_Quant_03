@@ -4,10 +4,14 @@
 # 备份/迁移 = 拷一个 deploy/ 目录 (见 README.md)。
 #
 #   web-frontend   唯一公网入口 (nginx: SPA 静态 + 反代 /api)
-#   web-backend    网关 / 鉴权 / 审计 / 日志中枢 / 读控制台 (/data:ro)
-#   data-keeper    唯一写者 (/data:rw): 写命令 API + 进程内 JobRunner + 进程内调度
+#   web-backend    网关 / 鉴权 / 审计 / 日志中枢 / 读控制台 (/data:ro) + 监控评估器
+#   data-keeper    唯一写者 (/data:rw): 写命令 API + 进程内 JobRunner + 进程内调度 + 对账/回收
 #   factor-api     因子查询 (/data:ro)
 #   factor-worker  因子计算 (/data:ro)
+#   obs-sentinel   进程哨兵 / 外部观察 (旁路, docker.sock:ro): OOM/重启/健康/内存 → /monitor/signals
+#
+# 监控 / 外部观察层 (可观测层重构方案)：哨兵 (外部观察) + keeper 自对账/回收 (内部自报) +
+# web-backend 评估器 (症状/死人开关/告警生命周期)。哨兵只读 docker.sock、只 POST 结果,最小权限。
 #
 # 读 = 库 (web/factor 挂 :ro 直读 parquet)；写 = 服务 (只有 data-keeper 挂 :rw)。
 # app_log / audit 只被 web-backend 写 (./state)；各服务本地 JSONL 写各自 ./logs/<svc>。
@@ -71,8 +75,18 @@ services:
       LOG_TO_FILE: "true"
       LOG_FILE_DIR: /state/logs
       LOG_DB_RETENTION_DAYS: ${LOG_DB_RETENTION_DAYS:-30}
-      # 分层日志可见性 (V3 §4.2)：role:source,source;role:source。admin 恒为全开。
-      LOG_VISIBLE_SOURCES: ${LOG_VISIBLE_SOURCES:-editor:data,factor,backend,frontend;viewer:frontend}
+      # 分层日志可见性 (V3 §4.2 + 可观测层方案 §6.1)：editor 现也可见 monitor 层。
+      LOG_VISIBLE_SOURCES: ${LOG_VISIBLE_SOURCES:-editor:data,factor,backend,frontend,monitor;viewer:frontend}
+      # 监控 / 外部观察层 (可观测层重构方案 §6.7)：评估器 + 哨兵信号接收 + 告警 webhook。
+      MONITOR_ENABLED: "${MONITOR_ENABLED:-true}"
+      MONITOR_SIGNALS_TOKEN: ${LOG_INGEST_TOKEN:-change-me-log-token}   # 哨兵 /monitor/signals 令牌 (复用)
+      MONITOR_EVAL_TICK_SEC: ${MONITOR_EVAL_TICK_SEC:-30}
+      DEADMAN_HOURS: ${DEADMAN_HOURS:-25}
+      ERR_RATE_WARN: ${ERR_RATE_WARN:-10}
+      ERR_RATE_CRIT: ${ERR_RATE_CRIT:-50}
+      LAYER_SILENCE_MIN: ${LAYER_SILENCE_MIN:-data=20,factor=30,backend=15}
+      LOG_ALERT_WEBHOOK: ${LOG_ALERT_WEBHOOK:-}                          # opt-in 钉钉/企业微信 robot
+      MONITOR_ALERT_MIN_LEVEL: ${MONITOR_ALERT_MIN_LEVEL:-error}
       NO_PROXY: "localhost,127.0.0.1"
       no_proxy: "localhost,127.0.0.1"
     volumes:
@@ -110,6 +124,12 @@ services:
       TRUST_PROXY_USER_HEADERS: "true"
       JWT_SECRET: ${JWT_SECRET:-change-me-in-prod}
       LOG_FILE_DIR: /logs
+      # 任务自对账 / 回收 (可观测层重构方案 §6.5 · D5/D6)：进程猝死后启动翻孤儿、
+      # 回收线程清卡死，主动造 ERROR 让中枢感知 (默认开)。
+      RECONCILE_ON_START: "${RECONCILE_ON_START:-true}"
+      JOB_TIMEOUT_MIN: ${JOB_TIMEOUT_MIN:-{"maintenance":15,"quality":10,"crawl":30,"default":20}}
+      JOB_HEARTBEAT_STALE_MIN: ${JOB_HEARTBEAT_STALE_MIN:-5}
+      REAPER_TICK_SEC: ${REAPER_TICK_SEC:-60}
       # tushare 备源 token (akshare 主源无需 token)
       TUSHARE_TOKEN: ${TUSHARE_TOKEN:-}
     volumes:
@@ -191,6 +211,33 @@ services:
       - ./data:/data:ro
       - ./factor-store:/factor-store
       - ./logs/factor:/logs
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+  # ── 进程哨兵 / 外部观察 (旁路, 可观测层重构方案 §4.6) ──────────
+  # 只读挂 docker.sock,巡检本项目容器 (OOM/重启/健康/内存),把原始观测 POST 给
+  # web-backend /monitor/signals,并把 D1/D2/D4 命中以 source=monitor ship 到日志中枢。
+  # 把 socket 给 web-backend 不安全,故单独成最小权限容器。
+  obs-sentinel:
+    image: ${OBS_SENTINEL_IMAGE:-ghcr.io/OWNER/REPO/obs-sentinel:latest}
+    container_name: zj-quant-obs-sentinel
+    restart: unless-stopped
+    mem_limit: 256m
+    memswap_limit: 256m
+    environment:
+      <<: *logging-env                                  # 复用 LOG_INGEST_URL / TOKEN
+      MONITOR_SIGNALS_URL: http://web-backend:8000/api/v1/monitor/signals
+      MONITOR_SIGNALS_TOKEN: ${LOG_INGEST_TOKEN:-change-me-log-token}
+      SENTINEL_INTERVAL_SEC: ${SENTINEL_INTERVAL_SEC:-30}
+      SENTINEL_LABEL_FILTER: "com.docker.compose.project=zj-quant"
+      RESTART_STORM_COUNT: ${RESTART_STORM_COUNT:-3}
+      RESTART_STORM_WINDOW_MIN: ${RESTART_STORM_WINDOW_MIN:-10}
+      MEM_PRESSURE_PCT: ${MEM_PRESSURE_PCT:-90}
+      TZ: Asia/Shanghai
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro    # 只读
+    depends_on:
+      - web-backend
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
 

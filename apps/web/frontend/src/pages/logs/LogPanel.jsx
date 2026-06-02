@@ -32,7 +32,8 @@ export const SOURCE_OPTIONS = [
   { value: 'data', label: 'data' },
   { value: 'factor', label: 'factor' },
   { value: 'frontend', label: 'frontend' },
-  { value: 'backend,data', label: 'be + data' },
+  { value: 'monitor', label: 'monitor' },
+  { value: 'data,factor,monitor', label: 'infra' },
 ];
 const RANGE_OPTIONS = [
   { value: '24h', label: '24h' },
@@ -97,7 +98,7 @@ export default function LogPanel({
   defaultRange = '24h',
 }) {
   const nav = useNavigate();
-  const goTrace = onTrace || ((t) => nav(`/data/logs/trace/${t}`));
+  const goTrace = onTrace || ((t) => nav(`/observ/trace/${t}`));
 
   const [search, setSearch] = useState('');
   const [level, setLevel] = useState(defaultLevel);

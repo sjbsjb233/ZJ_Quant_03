@@ -8,8 +8,11 @@ import { endpoints } from '../../lib/api';
 import { absTime } from '../../lib/format';
 import { LvlChip, SrcMark, fmtTs, fmtTsTime } from './shared';
 
-const SRC_COLOR = { frontend: 'var(--info)', backend: 'var(--fg-2)', quant_data: 'var(--accent)' };
-const SRC_ORDER = ['frontend', 'backend', 'quant_data'];
+const SRC_COLOR = {
+  frontend: 'var(--info)', backend: 'var(--fg-2)', data: 'var(--accent)',
+  quant_data: 'var(--accent)', factor: 'var(--success, var(--accent))', monitor: 'var(--warn)',
+};
+const SRC_ORDER = ['frontend', 'backend', 'data', 'factor', 'monitor'];
 
 function toMs(ts) {
   if (!ts) return 0;
@@ -39,17 +42,17 @@ export default function TraceDetail() {
 
   return (
     <TerminalShell
-      module="data" current="logs"
-      path={['data_mgmt/', 'logs/', `trace/${(traceId || '').slice(0, 12)}…`]}
+      module="observ" current="trace"
+      path={['observ/', `trace/${(traceId || '').slice(0, 12)}…`]}
       fkeys={[
-        { k: 'F1', l: '日志中心', onClick: () => nav('/data/logs') },
-        { k: 'F2', l: '应用日志', onClick: () => nav('/data/logs/app') },
-        { k: 'F3', l: '前端日志', onClick: () => nav('/data/logs/client') },
-        { k: 'F4', l: '实时流', onClick: () => nav('/data/logs/stream') },
+        { k: 'F1', l: '总览', onClick: () => nav('/observ/overview') },
+        { k: 'F2', l: '日志', onClick: () => nav('/observ/logs') },
+        { k: 'F3', l: '会话', onClick: () => nav('/observ/sessions') },
+        { k: 'F4', l: '实时流', onClick: () => nav('/observ/stream') },
         { k: 'esc', l: '返回', onClick: () => nav(-1) },
       ]}
       title="Trace 联查"
-      subtitle="logs/trace · 一次请求的全链路 · 跨 frontend / backend / quant_data"
+      subtitle="trace · 一次请求的全链路 · 跨 frontend / backend / data / factor / monitor"
       badge={data && (failed
         ? <span className="chip err" style={{ fontSize: 10 }}>✕ HAS ERROR</span>
         : <span className="chip ok" style={{ fontSize: 10 }}>✓ OK</span>)}
@@ -106,7 +109,7 @@ export default function TraceDetail() {
             <div style={{ flex: 1, display: 'grid', gridTemplateColumns: '1.6fr 1fr', minHeight: 0 }}>
               <TPanel title="EVENTS" meta={`${events.length} · ts asc`}>
                 <div style={{ fontFamily: 'var(--font-mono)' }}>
-                  {events.map((ev, i) => <TraceEventRow key={ev.id ?? i} ev={ev} onTrace={() => nav(`/data/logs/app?trace_id=${traceId}`)} />)}
+                  {events.map((ev, i) => <TraceEventRow key={ev.id ?? i} ev={ev} onTrace={() => nav(`/observ/logs?trace_id=${traceId}`)} />)}
                 </div>
               </TPanel>
               <TPanel title="RELATED AUDIT" meta={`${data.audit.length} entries · same trace_id`} last>
@@ -164,7 +167,7 @@ function TimelineViz({ events, totalMs }) {
   const width = 1400;
   const trackH = 28;
   const tracks = SRC_ORDER.map((id, i) => ({ id, y: 14 + i * trackH, c: SRC_COLOR[id] }));
-  const H = 14 + 3 * trackH + 20;
+  const H = 14 + tracks.length * trackH + 20;
   const xOf = (off) => (off / totalMs) * (width - 20) + 10;
   const yOf = (s) => (tracks.find((t) => t.id === s) || tracks[1]).y;
   return (

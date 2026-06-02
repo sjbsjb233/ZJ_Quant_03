@@ -50,3 +50,9 @@ services:
     build:
       context: ../
       dockerfile: apps/factor/Dockerfile
+
+  obs-sentinel:
+    image: zj-quant-obs-sentinel:local
+    build:
+      context: ../
+      dockerfile: apps/obs-sentinel/Dockerfile

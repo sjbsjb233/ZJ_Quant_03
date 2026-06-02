@@ -5,7 +5,7 @@ import { TerminalShell } from '../../components/shell';
 import { logsStreamUrl } from '../../lib/api';
 import { LvlChip, SrcMark, TraceShort, fmtTsTime } from './shared';
 
-const SOURCES = ['backend', 'data', 'factor', 'frontend'];
+const SOURCES = ['backend', 'data', 'factor', 'frontend', 'monitor'];
 const LEVEL_OPTIONS = [
   { value: 'DEBUG', label: '≥ DEBUG' },
   { value: 'INFO', label: '≥ INFO' },
@@ -79,12 +79,12 @@ export default function LogStream() {
 
   return (
     <TerminalShell
-      module="data" current="logs"
-      path={['data_mgmt/', 'logs/', 'stream']}
+      module="observ" current="stream"
+      path={['observ/', 'stream']}
       fkeys={[
-        { k: 'F1', l: '日志中心', onClick: () => nav('/data/logs') },
-        { k: 'F2', l: '应用日志', onClick: () => nav('/data/logs/app') },
-        { k: 'F3', l: '前端日志', onClick: () => nav('/data/logs/client') },
+        { k: 'F1', l: '总览', onClick: () => nav('/observ/overview') },
+        { k: 'F2', l: '日志', onClick: () => nav('/observ/logs') },
+        { k: 'F3', l: '会话', onClick: () => nav('/observ/sessions') },
         { k: 'space', l: paused ? '继续' : '暂停', onClick: () => setPaused((p) => !p), active: paused },
         { k: 'c', l: '清屏', onClick: () => setLines([]) },
       ]}
@@ -130,7 +130,7 @@ export default function LogStream() {
       {/* stream body */}
       <div style={{ flex: 1, minHeight: 0, position: 'relative', background: 'var(--surface)', fontFamily: 'var(--font-mono)' }}>
         <div ref={scrollRef} onScroll={onScroll} className="scroll" style={{ height: '100%', overflow: 'auto', padding: '8px 14px', fontSize: 11.5, lineHeight: 1.55 }}>
-          {lines.map((r) => <StreamLine key={r._k} r={r} onTrace={() => r.trace_id && nav(`/data/logs/trace/${r.trace_id}`)} />)}
+          {lines.map((r) => <StreamLine key={r._k} r={r} onTrace={() => r.trace_id && nav(`/observ/trace/${r.trace_id}`)} />)}
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 4, color: 'var(--fg-mute)', fontSize: 11 }}>
             <span style={{ display: 'inline-block', width: 8, height: 14, background: 'var(--fg-3)', animation: 'pulse 1.6s ease-in-out infinite' }} />
             <span>{paused ? 'paused — incoming dropped' : 'waiting for next event…'}</span>

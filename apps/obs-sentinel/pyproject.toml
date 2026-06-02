@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "obs-sentinel"
+version = "0.1.0"
+description = "ZJ Quant — 进程哨兵 / 外部观察容器 (obs-sentinel): reads docker.sock:ro, ships OOM/restart/health/mem signals to web-backend (可观测层重构方案 §4.6)."
+requires-python = ">=3.11"
+# stdlib only — no third-party deps, so the image stays tiny and the watcher is
+# robust (it must keep observing even when everything else is on fire).
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest>=8.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["obs_sentinel*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

@@ -94,10 +94,13 @@ require_admin = require_role("admin")
 
 
 # --- layered log access (容器化重构 V3 §4.2) -----------------------------------
-# The four log layers/sources. admin sees all of them; other roles are narrowed
-# by Settings.log_visible_sources. The narrowing is the security boundary — the
+# The log layers/sources. admin sees all of them; other roles are narrowed by
+# Settings.log_visible_sources. The narrowing is the security boundary — the
 # frontend's lockSource is only UX (V3 §6.2).
-ALL_SOURCES = {"data", "factor", "backend", "frontend"}
+#   "monitor" is the fifth layer (可观测层重构方案 §6.1): the 进程哨兵 / 评估器
+#   emit ``source=monitor`` logs through the same pipeline. viewer never sees it
+#   (avoids leaking infra), editor/admin do.
+ALL_SOURCES = {"data", "factor", "backend", "frontend", "monitor"}
 
 
 def allowed_sources_for(user: User) -> set[str]:

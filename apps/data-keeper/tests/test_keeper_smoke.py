@@ -98,3 +98,62 @@ def test_heavy_job_submit_and_query(client):
     assert any(j["job_id"] == job_id for j in jobs)
     one = client.get(f"/jobs/{job_id}", headers=_admin()).json()
     assert one["job_id"] == job_id and one["trace_id"]
+
+
+# ===========================================================================
+# 任务自对账 / 回收 (可观测层重构方案 §6.5 · D5/D6) + 扩展 /health (§6.5)
+# ===========================================================================
+def test_health_exposes_uptime_and_scheduler_tasks(client):
+    h = client.get("/health").json()
+    assert h["uptime_seconds"] >= 0 and h["started_at"]
+    for key in ("jobs_running", "jobs_failed_24h", "jobs_succeeded_24h"):
+        assert key in h
+    assert set(h["scheduler_tasks"]) == {"crawl", "quality", "maintenance"}
+    for task in h["scheduler_tasks"].values():
+        assert "last_run_at" in task and "last_success_at" in task
+
+
+def test_reconcile_orphans_marks_failed_and_logs(client):
+    """A leftover running Job (process died) → failed(interrupted) on the next boot."""
+    import datetime as dt
+
+    from keeper_service.db import base as db_base
+    from keeper_service.db.models import Job
+    from keeper_service.reconcile import reconcile_orphans
+
+    with db_base.SessionLocal() as db:
+        db.add(Job(job_id="job_orphan1", type="scheduled_maintenance", status="running",
+                   initiated_by="scheduler", started_at=dt.datetime.utcnow()))
+        db.commit()
+
+    n = reconcile_orphans(db_base.SessionLocal)
+    assert n >= 1
+    with db_base.SessionLocal() as db:
+        job = db.get(Job, "job_orphan1")
+        assert job.status == "failed" and "interrupted" in (job.error or "")
+        assert job.finished_at is not None
+
+
+def test_reaper_reclaims_stuck_job_as_timeout(client):
+    """running + over budget + no heartbeat → timeout; a fresh/heartbeating one is spared."""
+    import datetime as dt
+
+    from keeper_service.config import get_settings
+    from keeper_service.db import base as db_base
+    from keeper_service.db.models import Job
+    from keeper_service.reaper import Reaper
+
+    now = dt.datetime.utcnow()
+    stale = now - dt.timedelta(hours=2)             # well past any budget + heartbeat window
+    with db_base.SessionLocal() as db:
+        db.add(Job(job_id="job_stuck", type="scheduled_maintenance", status="running",
+                   initiated_by="scheduler", started_at=stale, progress_at=stale))
+        db.add(Job(job_id="job_alive", type="scheduled_maintenance", status="running",
+                   initiated_by="scheduler", started_at=stale, progress_at=now))  # heartbeating
+        db.commit()
+
+    reaped = Reaper(db_base.SessionLocal, get_settings()).reap_once()
+    assert reaped >= 1
+    with db_base.SessionLocal() as db:
+        assert db.get(Job, "job_stuck").status == "timeout"
+        assert db.get(Job, "job_alive").status == "running"   # spared (recent heartbeat)
