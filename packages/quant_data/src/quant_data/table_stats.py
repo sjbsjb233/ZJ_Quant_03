@@ -65,7 +65,13 @@ def compute_table_stats(table: str, root=None) -> dict:
             latest_id = newest["batch_id"]
             latest_at = newest.get("finished_at") or newest.get("started_at")
         try:
-            row_count = reader.current_view(table).num_rows
+            # COUNT(*) in-db -- never materialise the table. ``current_view().num_rows``
+            # copies the whole de-duplicated table into Arrow/Python first, so RSS grows
+            # linearly with table size and OOM-kills the memory-limited data-keeper on
+            # large raw tables (e.g. 18M-row raw.bars_daily). The DuckDB memory limit only
+            # bounds the engine, not the to-Python copy, so it does not help here.
+            # web-backend switched to count_current_view after the 2026-05-23 incident.
+            row_count = reader.count_current_view(spec)
         except Exception:  # noqa: BLE001 - never let a bad file kill the whole refresh
             row_count = None
     else:  # reference: single mutable file, no batch ledger
