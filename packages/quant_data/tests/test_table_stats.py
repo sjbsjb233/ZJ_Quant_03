@@ -11,8 +11,6 @@ from __future__ import annotations
 
 import datetime as dt
 
-import pytest
-
 from quant_data import ingest, table_stats
 from quant_data.reader import DataReader
 
