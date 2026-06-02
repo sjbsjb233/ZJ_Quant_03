@@ -625,6 +625,11 @@ def test_monitor_rules_list_and_admin_override(client, admin, editor, viewer):
     assert client.put("/api/v1/monitor/rules/D2.restart_storm",
                       json={"params": {"count": 3}}, headers=editor).status_code == 403
 
+    # restore the default so the persisted override doesn't leak into other tests
+    # (the evaluator now honors DB overrides, so a stale count=7 would suppress D2).
+    client.put("/api/v1/monitor/rules/D2.restart_storm",
+               json={"params": {"count": 3}}, headers=admin)
+
 
 def test_monitor_signals_requires_service_token(client):
     sig = {"observed_at": "2026-06-02T01:23:45Z",
@@ -711,3 +716,21 @@ def test_monitor_tasks_degrades_without_keeper(client, admin):
     assert body["keeper"] is False
     assert body["scheduler_tasks"] == {} and body["jobs"] == []
     assert body["deadman_hours"] >= 1
+
+
+def test_monitor_rule_param_honors_db_override():
+    """rules.param() must apply admin DB overrides. Regression guard: it used to
+    pass the {"params":...,"enabled":...} wrapper straight to effective_params,
+    so every threshold edit was silently ignored by the evaluator while the rules
+    table still showed the new value (可观测层重构方案 §6.2)."""
+    from quant_web.config import Settings
+    from quant_web.monitor import rules as rulemod
+
+    s = Settings()
+    # no override → env/code default (restart_storm_count)
+    assert rulemod.param(s, {}, "D2.restart_storm", "count", 0) == s.restart_storm_count
+    # override (in the load_overrides wrapper shape) → honored, not the default
+    overrides = {"D2.restart_storm": {"params": {"count": 7}, "enabled": True}}
+    assert rulemod.param(s, overrides, "D2.restart_storm", "count", 0) == 7
+    # unrelated keys in the override must not leak through
+    assert rulemod.param(s, overrides, "D2.restart_storm", "window_min", 0) == s.restart_storm_window_min

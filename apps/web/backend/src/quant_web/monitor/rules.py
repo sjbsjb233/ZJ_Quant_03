@@ -71,10 +71,11 @@ RULES: tuple[Rule, ...] = (
         "data-keeper 启动时把上一代残留 running 的 Job 翻成 failed(interrupted)。无可调参数。",
     ),
     Rule(
+        # 阈值在 data-keeper 侧 (JOB_TIMEOUT_MIN / JOB_HEARTBEAT_STALE_MIN)；web 评估器只把
+        # keeper 造的 job.*.timeout ERROR 升为告警，不持有可调参数，故此处 params 为空 (规则页只读说明)。
         "D6.job_timeout", "任务超时回收", "数据写者", "error", "data",
         "running 任务超过 per-type 超时且无进度心跳 —— 卡死任务被回收为 failed(timeout)。",
-        "超时 (按类型 maintenance/quality/crawl) + 心跳过期 H 分钟无更新即回收。",
-        (Param("heartbeat_min", "心跳 H 分钟", "monitor_eval_tick_sec"),),
+        "超时 (按类型 maintenance/quality/crawl) + 心跳过期 H 分钟无更新即回收。阈值在 data-keeper 配置。",
     ),
     Rule(
         "D7.deadman", "死人开关", "评估器", "error", "data",
@@ -148,7 +149,10 @@ def param(settings: Settings, overrides: dict[str, dict], rule_id: str, key: str
     rule = RULES_BY_ID.get(rule_id)
     if rule is None:
         return default or 0
-    ov = overrides.get(rule_id)
+    # ``overrides`` is keyed rule_id → {"params": {...}, "enabled": ...} (load_overrides);
+    # effective_params wants the inner params dict, NOT the wrapper — unwrap it, else every
+    # admin threshold override is silently ignored while the rules table still shows it.
+    ov = (overrides.get(rule_id) or {}).get("params")
     eff = effective_params(settings, rule, ov)
     val = eff.get(key, default)
     try:
