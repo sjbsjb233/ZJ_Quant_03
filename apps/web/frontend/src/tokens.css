@@ -176,7 +176,9 @@ input, select, textarea { font: inherit; color: inherit; }
 }
 
 .crumb-link {
+  color: var(--fg-3);          /* base (muted) — set here, not inline, so :hover wins */
   cursor: pointer;
+  text-decoration: none;       /* reset the <a> default underline */
   transition: color 0.12s;
 }
 .crumb-link:hover {

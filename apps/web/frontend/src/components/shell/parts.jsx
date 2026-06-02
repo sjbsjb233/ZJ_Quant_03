@@ -133,7 +133,6 @@ const CRUMB_ROUTES = {
 };
 
 export function SubToolbar({ path = [], fkeys = [], right }) {
-  const nav = useNavigate();
   return (
     <div style={{
       display: 'flex', alignItems: 'center', padding: '0 14px', height: 30,
@@ -154,18 +153,23 @@ export function SubToolbar({ path = [], fkeys = [], right }) {
           // divider, so keeping both would render a redundant double slash. The
           // raw `label` (with slash) is still used for the CRUMB_ROUTES lookup.
           const display = label.replace(/\/+$/, '');
+          // Shared typography. Crumb COLOR is intentionally left to CSS for
+          // clickable crumbs so `.crumb-link:hover` can recolor them (an inline
+          // color would win over the hover rule).
+          const typo = {
+            fontWeight: isLast ? 500 : 400,
+            letterSpacing: isLast ? 0 : '0.04em',
+            textTransform: isLast ? 'none' : 'uppercase',
+          };
           return (
             <React.Fragment key={i}>
-              <span
-                className={clickable ? 'crumb-link' : undefined}
-                onClick={clickable ? () => nav(to) : undefined}
-                style={{
-                  color: isLast ? 'var(--fg)' : 'var(--fg-3)',
-                  fontWeight: isLast ? 500 : 400,
-                  letterSpacing: isLast ? 0 : '0.04em',
-                  textTransform: isLast ? 'none' : 'uppercase',
-                }}
-              >{display}</span>
+              {clickable ? (
+                // A real <a> via react-router's <Link>: keyboard-accessible,
+                // open-in-new-tab / copy-link, and no inline color so hover applies.
+                <Link to={to} className="crumb-link" style={typo}>{display}</Link>
+              ) : (
+                <span style={{ color: isLast ? 'var(--fg)' : 'var(--fg-3)', ...typo }}>{display}</span>
+              )}
               {!isLast && <span style={{ color: 'var(--fg-mute)', margin: '0 6px' }}>/</span>}
             </React.Fragment>
           );
