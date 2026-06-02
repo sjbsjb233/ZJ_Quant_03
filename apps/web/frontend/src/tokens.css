@@ -175,6 +175,16 @@ input, select, textarea { font: inherit; color: inherit; }
   color: var(--fg-3);
 }
 
+.crumb-link {
+  cursor: pointer;
+  transition: color 0.12s;
+}
+.crumb-link:hover {
+  color: var(--fg);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 .scroll { overflow: auto; }
 .scroll::-webkit-scrollbar { width: 8px; height: 8px; }
 .scroll::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 4px; }
