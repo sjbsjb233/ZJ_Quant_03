@@ -113,9 +113,12 @@ class AlertStore:
 
     def list(self, *, status: str | None = None, severity: str | None = None,
              layer: str | None = None, target: str | None = None, search: str | None = None,
-             page: int = 1, page_size: int = 50) -> dict:
+             allowed_layers: set[str] | None = None, page: int = 1, page_size: int = 50) -> dict:
         with self._sf() as db:
             q = db.query(MonitorAlert)
+            # RBAC 收窄 (可观测层方案 §8): 非全开角色只能看其有权层的告警 (viewer → frontend)。
+            if allowed_layers is not None:
+                q = q.filter(MonitorAlert.layer.in_(sorted(allowed_layers) or ["__none__"]))
             if status:
                 q = q.filter(MonitorAlert.status.in_([s.strip() for s in status.split(",") if s.strip()]))
             if severity:

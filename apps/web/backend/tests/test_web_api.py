@@ -734,3 +734,28 @@ def test_monitor_rule_param_honors_db_override():
     assert rulemod.param(s, overrides, "D2.restart_storm", "count", 0) == 7
     # unrelated keys in the override must not leak through
     assert rulemod.param(s, overrides, "D2.restart_storm", "window_min", 0) == s.restart_storm_window_min
+
+
+def test_monitor_read_rbac_narrowing(client, admin, viewer):
+    """折中收窄 (可观测层方案 §8): viewer 的告警列表只见 frontend 层, data/monitor/factor
+    层告警被收窄掉; 任务台账(data 层视图)对 viewer 返回空。admin (全开) 不收窄。"""
+    from quant_web.monitor.store import get_alert_store
+
+    store = get_alert_store()
+    store.trigger(rule_id="D1.oom_killed", severity="critical", layer="data",
+                  target="rbac-data-ct", title="rbac data alert")
+    store.trigger(rule_id="D11.frontend_crash", severity="warn", layer="frontend",
+                  target="rbac-fe-sess", title="rbac fe alert")
+
+    admin_items = client.get("/api/v1/monitor/alerts", params={"page_size": 200},
+                             headers=admin).json()["items"]
+    assert {"data", "frontend"} <= {a["layer"] for a in admin_items}   # admin 看全层
+
+    viewer_items = client.get("/api/v1/monitor/alerts", params={"page_size": 200},
+                              headers=viewer).json()["items"]
+    assert viewer_items, "viewer 仍应看到自己有权的 frontend 层告警"
+    assert all(a["layer"] == "frontend" for a in viewer_items)          # 只见 frontend
+    assert not any(a.get("target") == "rbac-data-ct" for a in viewer_items)
+
+    vt = client.get("/api/v1/monitor/tasks", headers=viewer).json()     # 任务台账对 viewer 空
+    assert vt["scheduler_tasks"] == {} and vt["jobs"] == []

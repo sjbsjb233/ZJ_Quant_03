@@ -32,7 +32,15 @@ from ..audit.log import Auditor
 from ..config import get_settings
 from ..db.base import SessionLocal
 from ..db.models import AppLog, MonitorRule
-from ..deps import get_auditor, get_current_user, require_admin, require_editor, require_log_access
+from ..deps import (
+    ALL_SOURCES,
+    allowed_sources_for,
+    get_auditor,
+    get_current_user,
+    require_admin,
+    require_editor,
+    require_log_access,
+)
 from ..errors import ApiError
 from . import rules as rulemod
 from .evaluator import get_evaluator, layer_of_container
@@ -256,6 +264,9 @@ async def monitor_tasks(user=Depends(require_log_access), limit: int = 50):
     s = get_settings()
     out = {"deadman_hours": s.deadman_hours, "scheduler_tasks": {}, "jobs": [],
            "keeper": bool(s.keeper_base)}
+    # RBAC 收窄 (折中收窄): 任务台账是 data 层视图；无 data 可见权的角色 (viewer) 看空。
+    if "data" not in allowed_sources_for(user):
+        return out
     if not s.keeper_base:
         return out
     base = s.keeper_base.rstrip("/")
@@ -305,8 +316,12 @@ def list_alerts(user=Depends(require_log_access),
     store = get_alert_store()
     if store is None:
         return {"items": [], "total": 0, "page": page, "page_size": page_size}
+    # RBAC 收窄 (可观测层方案 §8 · 折中收窄)：告警按角色可见层收窄 (viewer → 仅 frontend
+    # 层告警)；admin (全开) 不收窄。health/topology 仍全员可见 (状态栏需要全局健康)。
+    allowed = allowed_sources_for(user)
+    allowed_layers = None if allowed >= ALL_SOURCES else allowed
     return store.list(status=status, severity=severity, layer=layer, target=target,
-                      search=search, page=page, page_size=page_size)
+                      search=search, allowed_layers=allowed_layers, page=page, page_size=page_size)
 
 
 @router.post("/alerts/{alert_id}/ack")
