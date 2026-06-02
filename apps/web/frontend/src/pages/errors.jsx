@@ -50,6 +50,6 @@ export function Page500({ boundary = false }) {
     actions={<>
       <button className="btn sm primary" onClick={() => location.reload()}>↻ 重试</button>
       <button className="btn sm" onClick={() => nav('/data/dashboard')}>返回首页</button>
-      {traceId && <button className="btn sm" onClick={() => nav(`/data/logs/trace/${traceId}`)}>在日志中心查看 →</button>}
+      {traceId && <button className="btn sm" onClick={() => nav(`/observ/trace/${traceId}`)}>在可观测查看 →</button>}
     </>} />;
 }

@@ -219,12 +219,24 @@ export const endpoints = {
   submitCorrelation: (body) => post('/factors/correlation', body),
   correlationResult: (taskId) => get(`/factors/correlation/${taskId}`),
 
-  // logs (admin) — 全链路日志方案 v2.0 §6.5
+  // logs — 全链路日志方案 v2.0 §6.5 (合并入「可观测」模块, 可观测层重构方案 §7)
   logs: (params) => get('/logs', params),
   logsSummary: () => get('/logs/summary'),
   logsTrace: (traceId) => get(`/logs/trace/${encodeURIComponent(traceId)}`),
   logsExport: (params) => api.get('/logs/export', { params, responseType: 'blob' }).then((r) => r.data),
   archiveLogs: (retention_days) => api.post('/logs/archive', null, { params: { retention_days } }).then((r) => r.data),
+
+  // 监控 / 外部观察层 (可观测层重构方案 §6.2)
+  monitorHealth: () => get('/monitor/health'),          // 状态栏 / live 数据源
+  monitorTopology: () => get('/monitor/topology'),      // 拓扑 tab
+  monitorTasks: (limit = 50) => get('/monitor/tasks', { limit }),  // 死人开关 + 任务台账
+  monitorAlerts: (params) => get('/monitor/alerts', params),
+  ackAlert: (id) => post(`/monitor/alerts/${id}/ack`, {}),
+  resolveAlert: (id) => post(`/monitor/alerts/${id}/resolve`, {}),
+  monitorRules: () => get('/monitor/rules'),
+  updateRule: (id, body) => api.put(`/monitor/rules/${encodeURIComponent(id)}`, body).then((r) => r.data),
+  monitorChannels: () => get('/monitor/channels'),
+  setMonitorChannel: (webhook) => post('/monitor/channels', { webhook }),
 };
 
 // SSE stream URL — EventSource can't set headers, so the token rides as a query

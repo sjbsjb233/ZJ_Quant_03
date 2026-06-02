@@ -51,6 +51,29 @@ class Settings(BaseSettings):
     log_ingest_url: str = ""               # http://web-backend:8000/api/v1/logs/ingest
     log_ingest_token: str = ""             # shared service token (NOT a user JWT)
 
+    # ── 任务自对账 / 回收 (可观测层重构方案 §6.5 · D5/D6) ─────────────────────
+    # 进程猝死 (SIGKILL/OOM) 不写日志，runner 的 except 抓不到。启动对账把上一代残留
+    # running 的 Job 翻成 failed(interrupted)，回收线程把卡死 (超时且无心跳) 的 running
+    # 翻成 timeout —— 两者都主动造一条 ERROR，让中枢 Alerter/评估器感知进程猝死。
+    reconcile_on_start: bool = True
+    # per-type job budget (minutes). matched by substring of the job type, else default.
+    job_timeout_min: str = '{"maintenance":15,"quality":10,"crawl":30,"default":20}'
+    job_heartbeat_stale_min: int = 5       # running 且超时，还须无进度心跳 ≥ H 分钟才回收
+    reaper_tick_sec: int = 60              # 回收线程扫描间隔
+
+    @property
+    def job_timeout_by(self) -> dict[str, int]:
+        """Parse ``job_timeout_min`` (JSON) → ``{type_substring: minutes}`` with a
+        guaranteed ``default``."""
+        import json
+        try:
+            raw = json.loads(self.job_timeout_min)
+            out = {str(k): int(v) for k, v in raw.items()}
+        except (ValueError, TypeError):
+            out = {}
+        out.setdefault("default", 20)
+        return out
+
     @property
     def origins(self) -> list[str]:
         return [o.strip() for o in self.allowed_origins.split(",") if o.strip()]

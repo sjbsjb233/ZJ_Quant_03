@@ -52,6 +52,21 @@ def list_jobs(db: Session = Depends(get_db), user: CallingUser = Depends(current
     return {"items": [job_to_dict(j) for j in q.all()]}
 
 
+@router.get("/recent")
+def list_recent_jobs(db: Session = Depends(get_db), user: CallingUser = Depends(current_user),
+                     limit: int = 50, type: str | None = None, status: str | None = None):
+    """All recent jobs across initiators — the 可观测 任务台账 (§7.3⑦). Read-only
+    metadata (type/status/times/trace), incl. autonomous scheduler runs that the
+    per-initiator ``GET /jobs`` would hide."""
+    q = db.query(Job)
+    if type:
+        q = q.filter(Job.type == type)
+    if status:
+        q = q.filter(Job.status.in_([s.strip() for s in status.split(",") if s.strip()]))
+    rows = q.order_by(Job.created_at.desc()).limit(min(limit, 200)).all()
+    return {"items": [job_to_dict(j) for j in rows]}
+
+
 def _require_owned_job(job_id: str, db: Session, user: CallingUser) -> Job:
     job = db.get(Job, job_id)
     if job is None:

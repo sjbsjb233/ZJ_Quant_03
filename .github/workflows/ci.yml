@@ -41,6 +41,10 @@ jobs:
         working-directory: apps/data-keeper
         run: pytest
 
+      - name: obs-sentinel tests
+        working-directory: apps/obs-sentinel
+        run: pytest
+
       - name: factor service tests
         working-directory: apps/factor
         run: pytest

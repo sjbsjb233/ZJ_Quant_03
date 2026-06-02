@@ -446,7 +446,9 @@ class ServiceLogBatch(BaseModel):
 
 # Out-of-process services may only claim these sources; anything else is coerced
 # to "data" so a compromised shipper can't forge "frontend"/spoofed rows. (V3 §6.7)
-_ALLOWED_INGEST_SOURCES = {"data", "factor", "backend"}
+#   "monitor" lets the obs-sentinel ship its OOM/restart detections as a distinct
+#   layer over the same /logs/ingest path (可观测层重构方案 §5).
+_ALLOWED_INGEST_SOURCES = {"data", "factor", "backend", "monitor"}
 
 
 @router.post("/ingest")

@@ -310,7 +310,7 @@ export default function Audit() {
                     <button
                       className="btn ghost sm"
                       style={{ fontSize: 10 }}
-                      onClick={() => window.location.assign(`/data/logs/trace/${selected.trace_id}`)}
+                      onClick={() => window.location.assign(`/observ/trace/${selected.trace_id}`)}
                     >关联技术日志 →</button>
                   )}
                 </div>

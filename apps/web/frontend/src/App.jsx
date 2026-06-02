@@ -1,5 +1,5 @@
 import React from 'react';
-import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import { Navigate, Route, Routes, useLocation, useParams } from 'react-router-dom';
 import { useAuth } from './lib/auth';
 import { Loading } from './components/ui';
 
@@ -23,18 +23,23 @@ import Fundamentals from './pages/charts/Fundamentals';
 import Explorer from './pages/charts/Explorer';
 import Placeholder from './pages/Placeholder';
 import { Page403, Page404, Page500 } from './pages/errors';
-import LogsHub from './pages/logs/LogsHub';
-import AppLogs from './pages/logs/AppLogs';
+// 「可观测」模块 (可观测层重构方案 §7): 合并旧日志中心/因子日志 + 监控/外部观察。
+// ClientLogs / LogStream / TraceDetail 沿用 (已切到 module="observ")。
 import ClientLogs from './pages/logs/ClientLogs';
 import LogStream from './pages/logs/LogStream';
 import TraceDetail from './pages/logs/TraceDetail';
+import ObsOverview from './pages/observability/ObsOverview';
+import Alerts from './pages/observability/Alerts';
+import Topology from './pages/observability/Topology';
+import ObsLogs from './pages/observability/ObsLogs';
+import ObsTasks from './pages/observability/ObsTasks';
+import Rules from './pages/observability/Rules';
 import FactorLibrary from './pages/factors/FactorLibrary';
 import FactorDetail from './pages/factors/FactorDetail';
 import FactorTasks from './pages/factors/FactorTasks';
 import UniverseManager from './pages/factors/UniverseManager';
 import FactorImport from './pages/factors/FactorImport';
 import FactorCorrelation from './pages/factors/FactorCorrelation';
-import FactorLogs from './pages/factors/FactorLogs';
 
 const ROLE_RANK = { viewer: 0, editor: 1, admin: 2 };
 
@@ -45,9 +50,15 @@ function Protected({ children, role }) {
     return <div style={{ height: '100%', display: 'grid', placeItems: 'center' }}><Loading label="校验登录态…" /></div>;
   }
   if (!user) return <Navigate to="/login" state={{ from: loc.pathname }} replace />;
-  // role gate (doc §8.8.3): the log centre is admin-only
+  // role gate (doc §8.8.3): e.g. 可观测「规则」页是 admin-only
   if (role && ROLE_RANK[user.role] < ROLE_RANK[role]) return <Navigate to="/403" replace />;
   return children;
+}
+
+// 旧 /data/logs/trace/:id → /observ/trace/:id (保留 param, §7.1)
+function LegacyTraceRedirect() {
+  const { traceId } = useParams();
+  return <Navigate to={`/observ/trace/${traceId}`} replace />;
 }
 
 export default function App() {
@@ -69,14 +80,27 @@ export default function App() {
       <Route path="/data/maintenance" element={<Protected><Maintenance /></Protected>} />
       <Route path="/data/audit" element={<Protected><Audit /></Protected>} />
 
-      {/* Log centre — 中枢 admin only (doc §8.1 / §8.8.3). The cross-layer trace
-          view drops to login-only so any layer's page can follow "看整条 trace";
-          the backend narrows the rows to the caller's allowed layers (V3 §4.2). */}
-      <Route path="/data/logs" element={<Protected role="admin"><LogsHub /></Protected>} />
-      <Route path="/data/logs/app" element={<Protected role="admin"><AppLogs /></Protected>} />
-      <Route path="/data/logs/client" element={<Protected role="admin"><ClientLogs /></Protected>} />
-      <Route path="/data/logs/stream" element={<Protected role="admin"><LogStream /></Protected>} />
-      <Route path="/data/logs/trace/:traceId" element={<Protected><TraceDetail /></Protected>} />
+      {/* ── 可观测 (observ) ──────────────────────────────────────────────────
+          模块入口 = 任何非纯无权角色可进 (后端按 source 收窄数据)；规则页单独 admin。
+          (可观测层重构方案 §7.1 / §8) */}
+      <Route path="/observ" element={<Navigate to="/observ/overview" replace />} />
+      <Route path="/observ/overview" element={<Protected><ObsOverview /></Protected>} />
+      <Route path="/observ/alerts" element={<Protected><Alerts /></Protected>} />
+      <Route path="/observ/topology" element={<Protected><Topology /></Protected>} />
+      <Route path="/observ/logs" element={<Protected><ObsLogs /></Protected>} />
+      <Route path="/observ/stream" element={<Protected><LogStream /></Protected>} />
+      <Route path="/observ/sessions" element={<Protected><ClientLogs /></Protected>} />
+      <Route path="/observ/tasks" element={<Protected><ObsTasks /></Protected>} />
+      {/* 规则页对 log-access 可见(非 admin 只读, 禁用态); 写阈值由后端 require_admin 把关 (§7.3⑧) */}
+      <Route path="/observ/rules" element={<Protected><Rules /></Protected>} />
+      <Route path="/observ/trace/:traceId" element={<Protected><TraceDetail /></Protected>} />
+
+      {/* 旧「日志中心」/「因子日志」入口已被「可观测」接管 (§7.1)。保留 301-style
+          重定向, 避免书签 / 外链 404。 */}
+      <Route path="/data/logs/trace/:traceId" element={<LegacyTraceRedirect />} />
+      <Route path="/data/logs/*" element={<Navigate to="/observ/logs" replace />} />
+      <Route path="/data/logs" element={<Navigate to="/observ/overview" replace />} />
+      <Route path="/factors/logs" element={<Navigate to="/observ/logs?source=factor" replace />} />
 
       <Route path="/data/charts" element={<Protected><ChartsHub /></Protected>} />
       <Route path="/data/charts/kline" element={<Protected><Kline /></Protected>} />
@@ -93,11 +117,12 @@ export default function App() {
       <Route path="/factors/universe" element={<Protected><UniverseManager /></Protected>} />
       <Route path="/factors/import" element={<Protected role="editor"><FactorImport /></Protected>} />
       <Route path="/factors/correlation" element={<Protected><FactorCorrelation /></Protected>} />
-      {/* 因子层日志页 — login-only; backend narrows ?source=factor by role (V3 §4.4). */}
-      <Route path="/factors/logs" element={<Protected><FactorLogs /></Protected>} />
+      {/* 因子日志已并入「可观测」(/observ/logs?source=factor) — 重定向在上方 §7.1 */}
 
       <Route path="/strategies/*" element={<Protected><Placeholder module="strategy" /></Protected>} />
-      <Route path="/monitor/*" element={<Protected><Placeholder module="live" /></Protected>} />
+      {/* 实盘交易 (P3 2027) 占位；旧 /monitor 前缀重定向到 /live (现 /monitor 为监控 API 命名空间) */}
+      <Route path="/live/*" element={<Protected><Placeholder module="live" /></Protected>} />
+      <Route path="/monitor/*" element={<Navigate to="/live" replace />} />
 
       <Route path="/403" element={<Page403 />} />
       <Route path="/500" element={<Page500 />} />

@@ -22,6 +22,7 @@ ERROR_STATUS = {
     "INVALID_DATE_RANGE": 400,
     "UNAUTHENTICATED": 401,
     "PERMISSION_DENIED": 403,
+    "NOT_FOUND": 404,                  # generic 404 (e.g. 监控告警/规则 not found)
     "BATCH_NOT_FOUND": 404,
     "FIELD_NOT_FOUND": 404,
     "SOURCE_NOT_FOUND": 404,

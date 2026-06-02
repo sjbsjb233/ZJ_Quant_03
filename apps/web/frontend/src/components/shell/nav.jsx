@@ -5,19 +5,22 @@ export const MODULES = [
   { id: 'data', label: '数据管理', en: 'DATA', enabled: true, to: '/data/dashboard' },
   { id: 'viz', label: '数据可视化', en: 'VIZ', enabled: true, to: '/data/charts' },
   { id: 'factor', label: '因子管理', en: 'FACTOR', enabled: true, badge: 'NEW', to: '/factors/library' },
+  // 可观测：合并旧「日志中心」+「因子日志」并新增监控/外部观察 (可观测层重构方案 §7.1)。
+  { id: 'observ', label: '可观测', en: 'OBSERV', enabled: true, badge: 'NEW', to: '/observ/overview' },
   { id: 'strategy', label: '策略管理', en: 'STRATEGY', enabled: false, phase: 'Q4', to: '/strategies' },
-  { id: 'live', label: '实盘交易', en: 'LIVE', enabled: false, phase: '2027', to: '/monitor' },
+  { id: 'live', label: '实盘交易', en: 'LIVE', enabled: false, phase: '2027', to: '/live' },
 ];
 
+// 因子日志 tab 已并入「可观测」(observ/logs?source=factor)，故此处删除 (§7.1)。
 export const FACTOR_NAV = [
   { id: 'library',     label: '因子库',      to: '/factors/library',     hot: true },
   { id: 'queue',       label: '任务队列',    to: '/factors/tasks',       badge: 'LIVE' },
   { id: 'pools',       label: '股票池',      to: '/factors/universe' },
   { id: 'import',      label: '因子导入',    to: '/factors/import',      warn: true },
   { id: 'correlation', label: '因子相关性',  to: '/factors/correlation' },
-  { id: 'logs',        label: '因子日志',    to: '/factors/logs' },
 ];
 
+// 日志中心 tab 已并入「可观测」(/observ/*)，故此处删除 (§7.1)。
 export const DATA_NAV = [
   { id: 'overview', label: '总览', to: '/data/dashboard', hot: true },
   { id: 'batches', label: '批次台账', to: '/data/batches' },
@@ -27,7 +30,18 @@ export const DATA_NAV = [
   { id: 'quality', label: '数据质量', to: '/data/quality', warn: true },
   { id: 'maintenance', label: '维护操作', to: '/data/maintenance' },
   { id: 'audit', label: '审计日志', to: '/data/audit' },
-  { id: 'logs', label: '日志中心', to: '/data/logs', warn: true },
+];
+
+// 可观测模块侧栏 (顺序即重要性, 可观测层重构方案 §7.2)。
+export const OBSERV_NAV = [
+  { id: 'overview', label: '总览', to: '/observ/overview', hot: true },
+  { id: 'alerts', label: '告警', to: '/observ/alerts', warn: true },
+  { id: 'topology', label: '拓扑', to: '/observ/topology' },
+  { id: 'logs', label: '日志', to: '/observ/logs' },
+  { id: 'stream', label: '实时流', to: '/observ/stream', badge: 'LIVE' },
+  { id: 'sessions', label: '会话', to: '/observ/sessions' },
+  { id: 'tasks', label: '任务', to: '/observ/tasks' },
+  { id: 'rules', label: '规则', to: '/observ/rules' },
 ];
 
 export const VIZ_NAV = [
@@ -58,6 +72,13 @@ export function NavGlyph({ id }) {
     pools: <svg {...p}><circle cx="5" cy="5" r="3" /><circle cx="11" cy="7" r="2" /><circle cx="6" cy="11" r="2" /><circle cx="11.5" cy="12" r="1.5" /></svg>,
     import: <svg {...p}><path d="M8 2v8M5 7l3 3 3-3" /><path d="M2 12v2h12v-2" /></svg>,
     correlation: <svg {...p}><rect x="2" y="2" width="3" height="3" /><rect x="6.5" y="2" width="3" height="3" opacity=".6" /><rect x="11" y="2" width="3" height="3" opacity=".3" /><rect x="2" y="6.5" width="3" height="3" opacity=".6" /><rect x="6.5" y="6.5" width="3" height="3" /><rect x="11" y="6.5" width="3" height="3" opacity=".6" /><rect x="2" y="11" width="3" height="3" opacity=".3" /><rect x="6.5" y="11" width="3" height="3" opacity=".6" /><rect x="11" y="11" width="3" height="3" /></svg>,
+    // 可观测模块图标 (沿用线性 svg 风格, §7.1)
+    alerts: <svg {...p}><path d="M8 2l6 11H2z" /><path d="M8 6v4M8 11.5v.5" /></svg>,
+    topology: <svg {...p}><circle cx="3" cy="8" r="2" /><circle cx="13" cy="3.5" r="2" /><circle cx="13" cy="12.5" r="2" /><path d="M4.8 7L11 4M4.8 9L11 12" /></svg>,
+    stream: <svg {...p}><path d="M2 4h12M2 8h9M2 12h6" /><circle cx="13" cy="11.5" r="1.6" /></svg>,
+    sessions: <svg {...p}><circle cx="8" cy="5" r="2.6" /><path d="M3 14c0-3 2.5-4.5 5-4.5s5 1.5 5 4.5" /></svg>,
+    tasks: <svg {...p}><path d="M2 4l1.6 1.6L6 3" /><path d="M2 9l1.6 1.6L6 8" /><path d="M8.5 4.3h5.5M8.5 9.3h5.5M8.5 13h4" /></svg>,
+    rules: <svg {...p}><path d="M3 2h8l3 3v9H3z" /><path d="M5.5 6.5h5M5.5 9h5M5.5 11.5h3" /></svg>,
   };
   return G[id] || <svg {...p}><circle cx="8" cy="8" r="5.5" strokeDasharray="2 2" /></svg>;
 }

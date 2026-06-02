@@ -35,6 +35,8 @@ const SRC_META = {
   data: { c: 'var(--accent)', g: 'D', label: 'data' },
   quant_data: { c: 'var(--accent)', g: 'D', label: 'data' },
   factor: { c: 'var(--success, var(--accent))', g: 'X', label: 'factor' },
+  // 监控 / 外部观察层 (可观测层重构方案 §7.7)。
+  monitor: { c: 'var(--warn)', g: 'M', label: 'monitor' },
 };
 
 // Source mark — F (frontend) · B (backend) · D (data) · X (factor).

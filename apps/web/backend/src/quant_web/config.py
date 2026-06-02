@@ -85,7 +85,36 @@ class Settings(BaseSettings):
     # The view+permission layers are how we make logs "feel" per-layer without
     # splitting storage — the app_log table stays a single ledger so trace joins
     # keep working (V3 §3.5/§3.6).
-    log_visible_sources: str = "editor:data,factor,backend,frontend;viewer:frontend"
+    #   editor now also sees the "monitor" layer (基础设施可观测); viewer never does
+    #   (可观测层重构方案 §6.1).
+    log_visible_sources: str = "editor:data,factor,backend,frontend,monitor;viewer:frontend"
+
+    # --- 监控 / 外部观察层 (可观测层重构方案 §4.3 / §11.1) ------------------
+    # The evaluator + sentinel detectors (D1–D12). All thresholds are env-tunable
+    # and the UI (admin) can override them per-rule (落库覆盖 → monitor_rule).
+    monitor_enabled: bool = True                 # master switch for the evaluator thread
+    monitor_eval_tick_sec: int = 30              # evaluator loop cadence (D7–D12 + lifecycle)
+    monitor_signals_token: str = ""              # sentinel → /monitor/signals (falls back to log_ingest_token)
+    # D2 重启风暴 / D3 不健康 / D4 内存压力 (sentinel observes, evaluator windows)
+    restart_storm_count: int = 3                 # ΔRestartCount ≥ N …
+    restart_storm_window_min: int = 10           # … within W minutes → CRITICAL
+    unhealthy_for_sec: int = 90                  # Health.Status==unhealthy 持续 ≥ S
+    health_flap_count: int = 3                   # 或 W 内健康状态翻转 ≥ F 次
+    health_flap_window_min: int = 10
+    mem_pressure_pct: int = 90                   # mem_usage/mem_limit ≥ P% …
+    mem_pressure_for_sec: int = 120              # … 持续 ≥ S (OOM 前预警)
+    oom_clear_minutes: int = 15                  # D1 OOM auto-resolve window
+    # D7 死人开关 / D8 错误率 / D9 管道 / D10 静默 / D11 前端崩溃 / D12 哨兵离线
+    deadman_hours: int = 25                      # 定时任务 > Hh 无一次 success → ERROR
+    err_rate_window_min: int = 15                # 错误率统计窗口
+    err_rate_warn: int = 10                      # 窗口内 ERROR+ ≥ T → WARN
+    err_rate_crit: int = 50                      # … ≥ Tc → ERROR
+    pipeline_queue_pct: int = 80                 # 队列水位 ≥ Q% → WARN
+    layer_silence_min: str = "data=20,factor=30,backend=15"  # 某层连续 M 分钟 0 条 → WARN
+    fe_crash_per_session: int = 2                # 单会话前端崩溃 ≥ Cf → WARN
+    sentinel_heartbeat_sec: int = 60             # 哨兵心跳超时 → WARN (监控的监控)
+    alert_resolve_clear_sec: int = 60            # 条件连续不满足 S 秒 → 自动 resolve
+    monitor_alert_min_level: str = "error"       # webhook 推送阈值 (info|warn|error|critical)
 
     @property
     def log_sources_by_role(self) -> dict[str, set[str]]:
@@ -97,6 +126,23 @@ class Settings(BaseSettings):
             role, srcs = seg.split(":", 1)
             out[role.strip()] = {s.strip() for s in srcs.split(",") if s.strip()}
         return out
+
+    @property
+    def layer_silence_by(self) -> dict[str, int]:
+        """Parse ``layer_silence_min`` ("data=20,factor=30") → ``{layer: minutes}``."""
+        out: dict[str, int] = {}
+        for seg in self.layer_silence_min.split(","):
+            layer, _, mins = seg.partition("=")
+            layer = layer.strip()
+            if layer and mins.strip().isdigit():
+                out[layer] = int(mins.strip())
+        return out
+
+    @property
+    def signals_token(self) -> str:
+        """Service token the sentinel uses for /monitor/signals (reuses LOG_INGEST_TOKEN
+        when MONITOR_SIGNALS_TOKEN is unset, so one shared secret配 the whole chain)."""
+        return self.monitor_signals_token or self.log_ingest_token
 
     @property
     def origins(self) -> list[str]:

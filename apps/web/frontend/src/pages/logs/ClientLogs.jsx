@@ -63,16 +63,16 @@ export default function ClientLogs() {
 
   return (
     <TerminalShell
-      module="data" current="logs"
-      path={['data_mgmt/', 'logs/', 'client']}
+      module="observ" current="sessions"
+      path={['observ/', 'sessions']}
       fkeys={[
-        { k: 'F1', l: '日志中心', onClick: () => nav('/data/logs') },
-        { k: 'F2', l: '应用日志', onClick: () => nav('/data/logs/app') },
-        { k: 'F3', l: '实时流', onClick: () => nav('/data/logs/stream') },
+        { k: 'F1', l: '总览', onClick: () => nav('/observ/overview') },
+        { k: 'F2', l: '日志', onClick: () => nav('/observ/logs') },
+        { k: 'F3', l: '实时流', onClick: () => nav('/observ/stream') },
         { k: 'F5', l: '刷新', onClick: () => q.refetch() },
       ]}
-      title="前端日志"
-      subtitle={`logs/client · JS 错误 + Promise rejection + React boundary + 用户动作 · ${fmtN(total)} 条`}
+      title="前端会话"
+      subtitle={`sessions · JS 错误 + Promise rejection + React boundary + 用户动作 · ${fmtN(total)} 条`}
       actions={<>
         <div style={{ display: 'inline-flex', height: 26, border: '1px solid var(--border-strong)', borderRadius: 4, overflow: 'hidden', fontFamily: 'var(--font-mono)', fontSize: 11 }}>
           {[['list', '列表视图'], ['session', '会话视图']].map(([k, l]) => (
@@ -105,12 +105,12 @@ export default function ClientLogs() {
             <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', background: 'var(--surface)', minHeight: 0 }}>
               <DetailHeader label="FE DETAIL" meta={selected ? selected.event : 'select a row'} />
               <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
-                <LogDetail row={selected} onTrace={(t) => nav(`/data/logs/trace/${t}`)} />
+                <LogDetail row={selected} onTrace={(t) => nav(`/observ/trace/${t}`)} />
               </div>
             </div>
           </div>
         ) : (
-          <SessionView items={items} onTrace={(t) => nav(`/data/logs/trace/${t}`)} />
+          <SessionView items={items} onTrace={(t) => nav(`/observ/trace/${t}`)} />
         )}
     </TerminalShell>
   );

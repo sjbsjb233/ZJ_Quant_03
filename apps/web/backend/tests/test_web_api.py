@@ -328,10 +328,11 @@ def test_maintenance_requires_admin(client, viewer):
 
 
 def test_stub_501(client, admin):
-    # /factors/* is now proxied to factor-api (see test_factors_proxy_*).
-    for path in ("/api/v1/strategies/backtests", "/api/v1/monitor/alerts"):
-        r = client.get(path, headers=admin)
-        assert r.status_code == 501 and r.json()["error"]["code"] == "NOT_IMPLEMENTED"
+    # /factors/* is now proxied to factor-api (see test_factors_proxy_*);
+    # /monitor/* is now the real 监控 / 外部观察 layer (see test_monitor_*).
+    # 策略管理 remains a 501 stub this period.
+    r = client.get("/api/v1/strategies/backtests", headers=admin)
+    assert r.status_code == 501 and r.json()["error"]["code"] == "NOT_IMPLEMENTED"
 
 
 def test_factors_proxy_attempts_upstream(client, admin, monkeypatch):
@@ -478,8 +479,9 @@ def test_log_source_scoping_helpers_unit():
     from quant_web.logging.routes import _scoped_source
 
     cfg = Settings()
+    # editor now also sees the "monitor" layer (可观测层重构方案 §6.1); viewer never does.
     assert cfg.log_sources_by_role == {
-        "editor": {"data", "factor", "backend", "frontend"},
+        "editor": {"data", "factor", "backend", "frontend", "monitor"},
         "viewer": {"frontend"},
     }
 
@@ -587,3 +589,173 @@ def test_app_log_store_overflow_keeps_warn_and_self_reports(tmp_path):
     content = (tmp_path / f"quant_web-{today}.log").read_text()
     assert "log.queue.dropped" in content       # self-report written to file
     assert "kept.err" in content                # WARN+ bypassed the full queue
+
+
+# ===========================================================================
+# 监控 / 外部观察层 (可观测层重构方案). The evaluator thread is inert under a
+# short-lived TestClient (first tick is delayed a full interval), so we drive
+# ``_tick()`` directly where we need detection to run.
+# ===========================================================================
+def test_monitor_health_shape(client, viewer):
+    r = client.get("/api/v1/monitor/health", headers=viewer)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] in ("ok", "degraded", "down")
+    assert set(body["layers"]) == {"frontend", "backend", "data", "factor", "monitor"}
+    assert "firing" in body["alerts"]
+
+
+def test_monitor_rules_list_and_admin_override(client, admin, editor, viewer):
+    # log-access roles may read the rule table; viewer has ≥1 source so it's allowed.
+    r = client.get("/api/v1/monitor/rules", headers=viewer)
+    assert r.status_code == 200
+    items = r.json()["items"]
+    assert len(items) == 12
+    ids = {it["id"] for it in items}
+    assert {"D1.oom_killed", "D2.restart_storm", "D7.deadman", "D12.sentinel_offline"} <= ids
+
+    # admin overrides a threshold → persisted + reflected
+    up = client.put("/api/v1/monitor/rules/D2.restart_storm",
+                    json={"params": {"count": 7}, "enabled": True}, headers=admin)
+    assert up.status_code == 200
+    d2 = up.json()
+    assert any(p["key"] == "count" and p["value"] == 7 for p in d2["params"])
+
+    # non-admin cannot edit rules
+    assert client.put("/api/v1/monitor/rules/D2.restart_storm",
+                      json={"params": {"count": 3}}, headers=editor).status_code == 403
+
+    # restore the default so the persisted override doesn't leak into other tests
+    # (the evaluator now honors DB overrides, so a stale count=7 would suppress D2).
+    client.put("/api/v1/monitor/rules/D2.restart_storm",
+               json={"params": {"count": 3}}, headers=admin)
+
+
+def test_monitor_signals_requires_service_token(client):
+    sig = {"observed_at": "2026-06-02T01:23:45Z",
+           "containers": [{"name": "zj-quant-data-keeper", "status": "running",
+                           "oom_killed": False, "restart_count": 0,
+                           "mem_usage": 1e9, "mem_limit": 8e9}]}
+    # no / wrong token → 401
+    assert client.post("/api/v1/monitor/signals", json=sig).status_code == 401
+    assert client.post("/api/v1/monitor/signals", json=sig,
+                       headers={"X-Monitor-Token": "nope"}).status_code == 401
+    # correct shared token (reuses LOG_INGEST_TOKEN) → accepted
+    ok = client.post("/api/v1/monitor/signals", json=sig,
+                     headers={"X-Log-Token": "test-log-token"})
+    assert ok.status_code == 200 and ok.json()["accepted"] == 1
+
+
+def test_monitor_oom_signal_creates_alert_and_marks_layer_down(client, admin):
+    from quant_web.monitor import routes as monitor_routes
+
+    sig = {"observed_at": "2026-06-02T02:00:00Z",
+           "containers": [{"name": "zj-quant-data-keeper", "status": "running",
+                           "oom_killed": True, "restart_count": 91, "health": "none",
+                           "mem_usage": 8_589_934_592, "mem_limit": 8_589_934_592}]}
+    client.post("/api/v1/monitor/signals", json=sig,
+                headers={"X-Log-Token": "test-log-token"})
+
+    # topology reflects the raw observation (mem 100% + OOM flag)
+    topo = client.get("/api/v1/monitor/topology", headers=admin).json()
+    keeper = next(c for c in topo["containers"] if c["layer"] == "data")
+    assert keeper["oom_killed"] is True and keeper["mem_pct"] == 100
+
+    # drive one evaluation pass → D1 fires
+    client.app.state.monitor_evaluator._tick()
+    alerts = client.get("/api/v1/monitor/alerts",
+                        params={"status": "firing"}, headers=admin).json()
+    oom = [a for a in alerts["items"] if a["rule_id"] == "D1.oom_killed"]
+    assert oom and oom[0]["layer"] == "data" and oom[0]["severity"] == "critical"
+
+    # the monitor layer's verdict overrides liveness: data.state == down
+    monitor_routes._health_cache["data"] = None
+    health = client.get("/api/v1/monitor/health", headers=admin).json()
+    assert health["layers"]["data"]["state"] == "down"
+    assert health["alerts"]["firing"] >= 1
+
+    # ack then resolve the alert
+    aid = oom[0]["id"]
+    assert client.post(f"/api/v1/monitor/alerts/{aid}/ack", headers=admin).json()["status"] == "acked"
+    assert client.post(f"/api/v1/monitor/alerts/{aid}/resolve", headers=admin).json()["status"] == "resolved"
+
+
+def test_monitor_logs_ingest_accepts_monitor_source(client, admin):
+    """The sentinel ships source=monitor through the same /logs/ingest path."""
+    r = client.post("/api/v1/logs/ingest",
+                    json={"records": [{"source": "monitor", "level": "CRITICAL",
+                                       "logger": "monitor.sentinel",
+                                       "event": "monitor.container.oom_killed",
+                                       "message": "data-keeper OOM"}]},
+                    headers={"X-Log-Token": "test-log-token"})
+    assert r.status_code == 200 and r.json()["accepted"] == 1
+    _flush_logs(client)
+    rows = client.get("/api/v1/logs", params={"source": "monitor"}, headers=admin).json()
+    assert any(x["event"] == "monitor.container.oom_killed" for x in rows["items"])
+
+
+def test_monitor_restart_storm_fires_d2(client, admin):
+    """重启风暴 D2 — the detector that turns the last OOM crash loop from '10h
+    无人发现' into '重启第 3 次即 CRITICAL'. Two observations build the window."""
+    name = "zj-quant-data-keeper-stormtest"
+    for rc in (0, 5):                               # ΔRestartCount = 5 ≥ N(3)
+        client.post("/api/v1/monitor/signals",
+                    json={"containers": [{"name": name, "status": "running",
+                                          "restart_count": rc, "mem_usage": 1e9, "mem_limit": 8e9}]},
+                    headers={"X-Log-Token": "test-log-token"})
+    client.app.state.monitor_evaluator._tick()
+    al = client.get("/api/v1/monitor/alerts", params={"status": "firing"}, headers=admin).json()
+    storm = [a for a in al["items"] if a["rule_id"] == "D2.restart_storm" and a["target"] == name]
+    assert storm and storm[0]["severity"] == "critical"
+    assert storm[0]["detail"]["restart_delta"] == 5
+
+
+def test_monitor_tasks_degrades_without_keeper(client, admin):
+    """No KEEPER_BASE (本地写模式) → tasks tab degrades gracefully, never 500s."""
+    body = client.get("/api/v1/monitor/tasks", headers=admin).json()
+    assert body["keeper"] is False
+    assert body["scheduler_tasks"] == {} and body["jobs"] == []
+    assert body["deadman_hours"] >= 1
+
+
+def test_monitor_rule_param_honors_db_override():
+    """rules.param() must apply admin DB overrides. Regression guard: it used to
+    pass the {"params":...,"enabled":...} wrapper straight to effective_params,
+    so every threshold edit was silently ignored by the evaluator while the rules
+    table still showed the new value (可观测层重构方案 §6.2)."""
+    from quant_web.config import Settings
+    from quant_web.monitor import rules as rulemod
+
+    s = Settings()
+    # no override → env/code default (restart_storm_count)
+    assert rulemod.param(s, {}, "D2.restart_storm", "count", 0) == s.restart_storm_count
+    # override (in the load_overrides wrapper shape) → honored, not the default
+    overrides = {"D2.restart_storm": {"params": {"count": 7}, "enabled": True}}
+    assert rulemod.param(s, overrides, "D2.restart_storm", "count", 0) == 7
+    # unrelated keys in the override must not leak through
+    assert rulemod.param(s, overrides, "D2.restart_storm", "window_min", 0) == s.restart_storm_window_min
+
+
+def test_monitor_read_rbac_narrowing(client, admin, viewer):
+    """折中收窄 (可观测层方案 §8): viewer 的告警列表只见 frontend 层, data/monitor/factor
+    层告警被收窄掉; 任务台账(data 层视图)对 viewer 返回空。admin (全开) 不收窄。"""
+    from quant_web.monitor.store import get_alert_store
+
+    store = get_alert_store()
+    store.trigger(rule_id="D1.oom_killed", severity="critical", layer="data",
+                  target="rbac-data-ct", title="rbac data alert")
+    store.trigger(rule_id="D11.frontend_crash", severity="warn", layer="frontend",
+                  target="rbac-fe-sess", title="rbac fe alert")
+
+    admin_items = client.get("/api/v1/monitor/alerts", params={"page_size": 200},
+                             headers=admin).json()["items"]
+    assert {"data", "frontend"} <= {a["layer"] for a in admin_items}   # admin 看全层
+
+    viewer_items = client.get("/api/v1/monitor/alerts", params={"page_size": 200},
+                              headers=viewer).json()["items"]
+    assert viewer_items, "viewer 仍应看到自己有权的 frontend 层告警"
+    assert all(a["layer"] == "frontend" for a in viewer_items)          # 只见 frontend
+    assert not any(a.get("target") == "rbac-data-ct" for a in viewer_items)
+
+    vt = client.get("/api/v1/monitor/tasks", headers=viewer).json()     # 任务台账对 viewer 空
+    assert vt["scheduler_tasks"] == {} and vt["jobs"] == []
