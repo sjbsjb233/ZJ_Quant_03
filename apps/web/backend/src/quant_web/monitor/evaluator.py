@@ -38,7 +38,8 @@ _KEEPER_TIMEOUT = 2.0
 def layer_of_container(name: str) -> str:
     """Map a real container name → its observability layer (可观测层方案 §7.3③)."""
     n = (name or "").lower()
-    if "sentinel" in n or "monitor" in n:
+    # 旁路/运维容器 (哨兵 + watchtower 自动更新) 归入 monitor 层，避免被误判成 backend 幽灵节点。
+    if "sentinel" in n or "monitor" in n or "watchtower" in n:
         return "monitor"
     if "factor" in n:
         return "factor"

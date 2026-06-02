@@ -23,11 +23,13 @@ _log = qd_logging.get_logger("keeper.reaper")
 
 
 def timeout_minutes_for(job_type: str, table: dict[str, int]) -> int:
-    """Per-type budget: match a substring of the job type, else ``default``."""
+    """Per-type budget: match the **most specific** (longest) substring key of the
+    job type, else ``default``. Longest-match avoids dict-order ambiguity when a
+    custom JOB_TIMEOUT_MIN has overlapping keys (e.g. ``quality`` vs ``quality_scan``)."""
     t = (job_type or "").lower()
-    for key, minutes in table.items():
-        if key != "default" and key in t:
-            return minutes
+    matches = [(key, minutes) for key, minutes in table.items() if key != "default" and key in t]
+    if matches:
+        return max(matches, key=lambda kv: len(kv[0]))[1]
     return table.get("default", 20)
 
 

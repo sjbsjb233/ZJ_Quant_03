@@ -98,10 +98,12 @@ RULES: tuple[Rule, ...] = (
         (Param("queue_pct", "队列水位 Q%", "pipeline_queue_pct"),),
     ),
     Rule(
+        # 阈值是 per-layer 字符串 (LAYER_SILENCE_MIN="data=20,factor=30,...")，不符合单 int 的
+        # param() 契约；_d10_silence 直接读 settings.layer_silence_by，不走 param 覆盖。故此处
+        # 不声明可调 Param (规则页只读说明)，避免"改了 UI 却不生效"。
         "D10.layer_silent", "某层静默", "评估器", "warn", "data",
         "24h 内有日志的层连续 M 分钟 0 条 —— 容器卡死但没死 (没有崩溃日志)。",
-        "M = 按层静默阈值 (分钟，data=20/factor=30/backend=15)。超时即触发。",
-        (Param("minutes", "静默 M 分钟", "layer_silence_min"),),
+        "M = 按层静默阈值 (分钟，data=20/factor=30/backend=15)，由 LAYER_SILENCE_MIN 配置。超时即触发。",
     ),
     Rule(
         "D11.frontend_crash", "前端崩溃", "评估器", "warn", "frontend",
