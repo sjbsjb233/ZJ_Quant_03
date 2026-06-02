@@ -114,6 +114,24 @@ export function TerminalSidebar({ module = 'data', current }) {
   );
 }
 
+// Maps a breadcrumb label to the route it should jump to. Lets every parent
+// crumb act like a path segment in a file explorer — click it to go up to that
+// level — without each page having to wire its own targets. Intermediate crumbs
+// follow the trailing-slash convention (e.g. 'library/'). A page can still pass
+// an explicit { label, to } crumb to override or extend this map.
+const CRUMB_ROUTES = {
+  'data_mgmt/': '/data/dashboard',
+  'factor_mgmt/': '/factors/library',
+  'viz/': '/data/charts',
+  'settings/': '/settings',
+  'library/': '/factors/library',
+  'batches/': '/data/batches',
+  'tables/': '/data/tables',
+  'sources/': '/data/sources',
+  'logs/': '/data/logs',
+  'kline/': '/data/charts/kline',
+};
+
 export function SubToolbar({ path = [], fkeys = [], right }) {
   return (
     <div style={{
@@ -122,17 +140,40 @@ export function SubToolbar({ path = [], fkeys = [], right }) {
       fontFamily: 'var(--font-mono)', fontSize: 11, flexShrink: 0,
     }}>
       <div style={{ display: 'inline-flex', alignItems: 'center' }}>
-        {path.map((p, i) => (
-          <React.Fragment key={i}>
-            <span style={{
-              color: i === path.length - 1 ? 'var(--fg)' : 'var(--fg-3)',
-              fontWeight: i === path.length - 1 ? 500 : 400,
-              letterSpacing: i === path.length - 1 ? 0 : '0.04em',
-              textTransform: i === path.length - 1 ? 'none' : 'uppercase',
-            }}>{p}</span>
-            {i < path.length - 1 && <span style={{ color: 'var(--fg-mute)', margin: '0 6px' }}>/</span>}
-          </React.Fragment>
-        ))}
+        {path.map((p, i) => {
+          // A crumb may be a plain string or { label, to }. Parent crumbs become
+          // clickable when a target is known (explicit `to`, or the label is in
+          // CRUMB_ROUTES), jumping straight to that level — like the path bar in
+          // a file explorer. The last crumb is the current page, never a link.
+          const isLast = i === path.length - 1;
+          const label = typeof p === 'string' ? p : p.label;
+          const to = (typeof p === 'string' ? null : p.to) ?? CRUMB_ROUTES[label] ?? null;
+          const clickable = !isLast && !!to;
+          // Strip a label's own trailing slash; the "/" separator below draws the
+          // divider, so keeping both would render a redundant double slash. The
+          // raw `label` (with slash) is still used for the CRUMB_ROUTES lookup.
+          const display = label.replace(/\/+$/, '');
+          // Shared typography. Crumb COLOR is intentionally left to CSS for
+          // clickable crumbs so `.crumb-link:hover` can recolor them (an inline
+          // color would win over the hover rule).
+          const typo = {
+            fontWeight: isLast ? 500 : 400,
+            letterSpacing: isLast ? 0 : '0.04em',
+            textTransform: isLast ? 'none' : 'uppercase',
+          };
+          return (
+            <React.Fragment key={i}>
+              {clickable ? (
+                // A real <a> via react-router's <Link>: keyboard-accessible,
+                // open-in-new-tab / copy-link, and no inline color so hover applies.
+                <Link to={to} className="crumb-link" style={typo}>{display}</Link>
+              ) : (
+                <span style={{ color: isLast ? 'var(--fg)' : 'var(--fg-3)', ...typo }}>{display}</span>
+              )}
+              {!isLast && <span style={{ color: 'var(--fg-mute)', margin: '0 6px' }}>/</span>}
+            </React.Fragment>
+          );
+        })}
       </div>
       {fkeys.length > 0 && (
         <>
