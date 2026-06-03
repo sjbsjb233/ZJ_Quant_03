@@ -138,6 +138,80 @@ def test_tables_rows_and_lineage(client, admin):
     assert "history" in lin and "diff_columns" in lin
 
 
+def test_schema_capability_contract_raw(client, admin):
+    """raw.bars_daily schema declares batch lineage + symbols/date_range/adjust
+    filters (方案 §2.1)."""
+    s = client.get("/api/v1/data/tables/raw.bars_daily/schema", headers=admin).json()
+    assert s["mutable"] is False
+    assert s["supports_lineage"] is True and s["lineage_kind"] == "batch"
+    assert s["has_symbol"] is True and s["time_col"] == "date"
+    assert s["require_filter"] is True
+    kinds = {f["kind"] for f in s["filters"]}
+    assert {"symbols", "date_range", "adjust"} <= kinds
+
+
+def test_schema_capability_contract_reference_sectors(client, admin):
+    """reference.sectors: mutable, no batch lineage, no symbols/date filters --
+    only classification_system (enum) + level (int) (方案 §2.2)."""
+    s = client.get("/api/v1/data/tables/reference.sectors/schema", headers=admin).json()
+    assert s["mutable"] is True
+    assert s["supports_lineage"] is False and s["lineage_kind"] == "reference"
+    assert s["has_symbol"] is False and s["time_col"] is None
+    assert s["require_filter"] is False
+    keys = {f["key"] for f in s["filters"]}
+    assert keys == {"classification_system", "level"}
+    assert "symbols" not in keys and "date" not in keys
+    enum_f = next(f for f in s["filters"] if f["kind"] == "enum")
+    assert enum_f["options_endpoint"] == "/tables/reference.sectors/enum/classification_system"
+
+
+def test_reference_symbols_lineage_no_longer_500(client, admin):
+    """Regression for 方案 §0.3: reference.symbols row lineage used to raise a
+    DuckDB binder error (_batch_id missing) -> INTERNAL_ERROR 500. It must now
+    return a clean 200 provenance payload."""
+    r = client.get("/api/v1/data/tables/reference.symbols/rows/lineage", headers=admin,
+                   params={"symbol": "600519.SH"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["lineage_kind"] == "reference" and body["mutable"] is True
+    assert body["history"] == []
+    assert body["current"] is not None
+    assert body["current"]["values"]["name"] == "贵州茅台"
+    assert body["current"]["source"] is not None
+
+
+def test_reference_sectors_lineage_provenance(client, admin):
+    r = client.get("/api/v1/data/tables/reference.sectors/rows/lineage", headers=admin,
+                   params={"code": "801120", "classification_system": "sw"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["lineage_kind"] == "reference"
+    assert body["current"]["values"]["name"] == "食品饮料"
+
+
+def test_enum_values_whitelist_blocks_symbol(client, admin):
+    """enum endpoint must reject a high-cardinality column like symbol (方案 §4.2):
+    the symbol dimension goes through typeahead, never a full-table DISTINCT."""
+    r = client.get("/api/v1/data/tables/raw.bars_daily/enum/symbol", headers=admin)
+    assert r.status_code == 400 and r.json()["error"]["code"] == "INVALID_PARAMETER"
+
+
+def test_enum_values_returns_distinct(client, admin):
+    r = client.get("/api/v1/data/tables/reference.symbols/enum/exchange", headers=admin)
+    assert r.status_code == 200
+    vals = r.json()["values"]
+    assert "SH" in vals and "SZ" in vals
+    # reference.sectors classification_system enum
+    cs = client.get("/api/v1/data/tables/reference.sectors/enum/classification_system",
+                    headers=admin).json()["values"]
+    assert "sw" in cs
+
+
+def test_enum_values_unknown_field_400(client, admin):
+    r = client.get("/api/v1/data/tables/reference.symbols/enum/nope", headers=admin)
+    assert r.status_code == 400
+
+
 def test_full_view_has_status_column(client, admin):
     fv = client.get("/api/v1/data/tables/raw.bars_daily/rows/all", headers=admin,
                     params={"symbols": "600519.SH"}).json()

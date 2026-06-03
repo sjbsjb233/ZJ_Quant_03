@@ -1,24 +1,209 @@
-// 单表浏览 · TableBrowser (v0.2 core page)
-// 3 view modes, internal cols, extras-as-columns, row lineage drawer
-import React, { useState, useMemo, useCallback } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+// 单表浏览 · TableBrowser (v1.0 schema-driven)
+// Filter bar / lineage entry are now driven by the backend schema "capability
+// contract" (schema.filters / schema.lineage_kind) instead of per-table
+// hard-coding, so each table renders only the controls that make sense for it
+// (方案 §2 / §3). The OOM guardrails (_REQUIRE_FILTER, count+page pushdown) are
+// unchanged on the backend; the frontend only adds a pre-flight prompt.
+import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { TerminalShell } from '../components/shell';
-import { FInput, FSelect, Stat } from '../components/shell';
+import { FInput, FSelect } from '../components/shell';
 import {
-  Loading, ErrorState, Empty, CopyableId, StatusChip, StatusGlyph,
-  Drawer, Modal, TableNameCode,
+  Loading, ErrorState, Empty, CopyableId, StatusChip,
+  Drawer, Modal, SymbolMultiSelect,
 } from '../components/ui';
 import { endpoints } from '../lib/api';
 import TableQuickChart from '../components/TableQuickChart';
 import {
-  fmtCompact, fmtBytes, relTime, absTime, freshnessMeta, statusMeta, toneColor,
+  fmtCompact, relTime, absTime, statusMeta, toneColor,
 } from '../lib/format';
 
 // ─── constants ─────────────────────────────────────────────────────────────────
-const INTERNAL_COLS = new Set(['_batch_id', '_source', '_ingested_at', '_publish_date', '_status', '_invalidated_at', '_superseded_by']);
+const INTERNAL_COLS = new Set(['_batch_id', '_source', '_ingested_at', '_publish_date', '_status', '_invalidated_at', '_superseded_by', '_updated_at']);
 const EXTRAS_TYPES = ['VARCHAR', 'DOUBLE', 'BIGINT', 'INTEGER', 'BOOLEAN', 'DATE', 'TIMESTAMP'];
 const TODAY = new Date().toISOString().slice(0, 10);
+
+// Default value per declarative filter kind (mirrors backend defaults so the
+// initial query matches the old hard-coded behaviour exactly).
+function defaultForFilter(f) {
+  if (f.kind === 'adjust') return { adjust: 'none' };
+  if (f.kind === 'freq') return { frequency: '1m' };
+  if (f.kind === 'as_of') return { as_of_date: TODAY };
+  if (f.kind === 'bool') return { [f.key]: false };
+  return {};
+}
+
+// A filter is "active" (counts toward the badge) only when it diverges from its
+// default — adjust=none / freq=1m / as_of=today don't count.
+function filterIsActive(f, values) {
+  switch (f.kind) {
+    case 'symbols': return !!(values.symbols && values.symbols.trim());
+    case 'date_range': return !!(values.start || values.end);
+    case 'enum': return !!values[f.key];
+    case 'bool': return !!values[f.key];
+    case 'int': return values[f.key] !== '' && values[f.key] != null;
+    case 'as_of': return false; // always sent, never "extra"
+    case 'adjust': return (values.adjust || 'none') !== 'none';
+    case 'freq': return (values.frequency || '1m') !== '1m';
+    default: return false;
+  }
+}
+
+// Translate the declarative filter values into the backend query params. Only
+// keys declared in schema.filters are emitted, so e.g. sectors never sends
+// `symbols=` and bars never sends `classification_system=` (方案 §3.1).
+function buildFilterParams(filters, values) {
+  const p = {};
+  for (const f of filters) {
+    switch (f.kind) {
+      case 'symbols':
+        if (values.symbols && values.symbols.trim()) p.symbols = values.symbols.trim();
+        break;
+      case 'date_range':
+        if (values.start) p.start = values.start;
+        if (values.end) p.end = values.end;
+        break;
+      case 'enum':
+        if (values[f.key]) p[f.key] = values[f.key];
+        break;
+      case 'bool':
+        if (values[f.key]) p[f.key] = true;
+        break;
+      case 'int':
+        if (values[f.key] !== '' && values[f.key] != null) p[f.key] = values[f.key];
+        break;
+      case 'as_of':
+        p.as_of_date = values.as_of_date || TODAY;
+        break;
+      case 'adjust':
+        p.adjust = values.adjust || 'none';
+        break;
+      case 'freq':
+        p.frequency = values.frequency || '1m';
+        break;
+      default:
+        break;
+    }
+  }
+  return p;
+}
+
+// ─── EnumSelect — dropdown fed by the table's enum endpoint ────────────────────
+function EnumSelect({ field, tableName, value, onChange }) {
+  const enumQ = useQuery({
+    queryKey: ['table-enum', tableName, field.key],
+    queryFn: () => endpoints.tableEnum(tableName, field.key),
+    enabled: !!tableName && !!field.key,
+    staleTime: 60_000,
+  });
+  const opts = [{ value: '', label: '全部' }].concat(
+    (enumQ.data?.values || []).map((v) => ({ value: String(v), label: String(v) })),
+  );
+  return (
+    <FSelect
+      label={field.label || field.key}
+      testId={`filter-enum-${field.key}`}
+      value={value ?? ''}
+      options={opts}
+      onChange={onChange}
+      width={90}
+    />
+  );
+}
+
+// ─── FilterBar — generic renderer over schema.filters ──────────────────────────
+function FilterBar({ filters, values, setV, tableName }) {
+  return filters.map((f) => {
+    switch (f.kind) {
+      case 'symbols':
+        return (
+          <React.Fragment key="symbols">
+            <SymbolMultiSelect value={values.symbols || ''} onChange={(v) => setV('symbols', v)} width={250} />
+            <span style={{ marginRight: 10 }} />
+          </React.Fragment>
+        );
+      case 'date_range':
+        return (
+          <React.Fragment key={`date-${f.key}`}>
+            <FInput label="start" testId="filter-start" placeholder="YYYY-MM-DD" value={values.start || ''} onChange={(v) => setV('start', v)} width={100} />
+            <span style={{ marginRight: 4 }} />
+            <span style={{ color: 'var(--fg-3)', marginRight: 4 }}>→</span>
+            <FInput label="end" testId="filter-end" placeholder="YYYY-MM-DD" value={values.end || ''} onChange={(v) => setV('end', v)} width={100} />
+            <span style={{ marginRight: 10 }} />
+          </React.Fragment>
+        );
+      case 'enum':
+        return (
+          <React.Fragment key={`enum-${f.key}`}>
+            <EnumSelect field={f} tableName={tableName} value={values[f.key]} onChange={(v) => setV(f.key, v)} />
+            <span style={{ marginRight: 10 }} />
+          </React.Fragment>
+        );
+      case 'bool':
+        return (
+          <label key={`bool-${f.key}`} data-testid={`filter-bool-${f.key}`} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer', color: 'var(--fg-2)', marginRight: 12 }}>
+            <input type="checkbox" checked={!!values[f.key]} onChange={(e) => setV(f.key, e.target.checked)} style={{ accentColor: 'var(--fg)' }} />
+            {f.label}
+          </label>
+        );
+      case 'int':
+        return (
+          <React.Fragment key={`int-${f.key}`}>
+            <FInput
+              label={f.label || f.key}
+              testId={`filter-int-${f.key}`}
+              placeholder="—"
+              value={values[f.key] ?? ''}
+              onChange={(v) => setV(f.key, v.replace(/[^0-9]/g, ''))}
+              width={54}
+            />
+            <span style={{ marginRight: 10 }} />
+          </React.Fragment>
+        );
+      case 'as_of':
+        return (
+          <React.Fragment key="as_of">
+            <FInput label="as_of_date" testId="filter-as-of" placeholder="YYYY-MM-DD" value={values.as_of_date || ''} onChange={(v) => setV('as_of_date', v)} width={110} />
+            <span style={{ marginRight: 10 }} />
+          </React.Fragment>
+        );
+      case 'adjust':
+        return (
+          <React.Fragment key="adjust">
+            <span style={{ fontSize: 9.5, color: 'var(--fg-3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginRight: 6 }}>adjust</span>
+            <div style={{ display: 'inline-flex', border: '1px solid var(--border-strong)', borderRadius: 3, overflow: 'hidden', marginRight: 12 }}>
+              {['none', 'pre', 'post'].map((a) => (
+                <button
+                  key={a}
+                  data-testid={`filter-adjust-${a}`}
+                  onClick={() => setV('adjust', a)}
+                  style={{
+                    height: 22, padding: '0 8px',
+                    background: (values.adjust || 'none') === a ? 'var(--fg)' : 'transparent',
+                    color: (values.adjust || 'none') === a ? 'var(--bg)' : 'var(--fg-2)',
+                    border: 'none', borderRight: '1px solid var(--border-strong)',
+                    fontFamily: 'var(--font-mono)', fontSize: 10, cursor: 'pointer',
+                  }}
+                >
+                  {a}
+                </button>
+              ))}
+            </div>
+          </React.Fragment>
+        );
+      case 'freq':
+        return (
+          <React.Fragment key="freq">
+            <FSelect label="freq" testId="filter-freq" value={values.frequency || '1m'} options={['1m', '5m', '15m', '30m', '1h']} onChange={(v) => setV('frequency', v)} width={60} />
+            <span style={{ marginRight: 10 }} />
+          </React.Fragment>
+        );
+      default:
+        return null;
+    }
+  });
+}
 
 // ─── RowLineageDrawer ───────────────────────────────────────────────────────────
 function RowLineageDrawer({ tableName, pk, onClose, nav }) {
@@ -29,6 +214,7 @@ function RowLineageDrawer({ tableName, pk, onClose, nav }) {
   });
 
   const pkDisplay = Object.entries(pk).map(([k, v]) => `${k}=${v}`).join(', ');
+  const isReference = lineageQ.data?.lineage_kind === 'reference';
 
   const copyJson = () => {
     if (lineageQ.data) {
@@ -44,14 +230,14 @@ function RowLineageDrawer({ tableName, pk, onClose, nav }) {
           <span style={{
             fontFamily: 'var(--font-mono)', fontSize: 10,
             color: 'var(--fg-3)', textTransform: 'uppercase', letterSpacing: '0.08em',
-          }}>ROW LINEAGE</span>
+          }}>{isReference ? '字段来源 / PROVENANCE' : 'ROW LINEAGE'}</span>
           <div style={{ flex: 1 }} />
           <button data-testid="lineage-close" className="btn ghost sm" style={{ height: 20 }} onClick={onClose}>✕</button>
         </div>
         <div data-testid="lineage-pk" style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--fg)', marginTop: 4 }}>
           {pkDisplay}
         </div>
-        {lineageQ.data && (
+        {lineageQ.data && !isReference && (
           <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-3)', marginTop: 2 }}>
             {lineageQ.data.history?.length || 0} 次写入 · {lineageQ.data.current ? '当前生效' : '无生效数据'}
           </div>
@@ -61,7 +247,65 @@ function RowLineageDrawer({ tableName, pk, onClose, nav }) {
       <div className="scroll" style={{ flex: 1, minHeight: 0 }}>
         {lineageQ.isLoading && <Loading />}
         {lineageQ.error && <ErrorState error={lineageQ.error} onRetry={lineageQ.refetch} />}
-        {lineageQ.data && (() => {
+        {lineageQ.data && isReference && (() => {
+          const { current } = lineageQ.data;
+          return (
+            <>
+              <div data-testid="provenance-note" style={{
+                margin: 12, padding: '8px 10px',
+                border: '1px solid var(--info)', borderRadius: 4, background: 'var(--info-bg)',
+                fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--info)',
+                display: 'flex', gap: 8, alignItems: 'flex-start',
+              }}>
+                <span>ⓘ</span>
+                <span>此表为可变参考字典（单文件原地 upsert），无批次历史 / 作废链。下方为当前生效值与来源。</span>
+              </div>
+              {current ? (
+                <div data-testid="provenance-current" style={{
+                  margin: 12, padding: 12,
+                  border: '1px solid var(--fg)', borderRadius: 4, background: 'var(--ok-bg)',
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                    <span style={{ color: 'var(--ok)' }}>●</span>
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--ok)', textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 600 }}>当前生效值</span>
+                  </div>
+                  {current.values && (
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8, fontFamily: 'var(--font-mono)', fontSize: 11 }}>
+                      {Object.entries(current.values).map(([k, v]) => (
+                        <div key={k}>
+                          <div style={{ color: 'var(--fg-3)', fontSize: 9.5, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{k}</div>
+                          <div style={{ color: 'var(--fg)', fontWeight: 500, fontSize: 12 }}>{v ?? '·'}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <div style={{
+                    marginTop: 10, padding: '6px 8px', background: 'var(--surface)', borderRadius: 3,
+                    fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--fg-2)',
+                    display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+                  }}>
+                    <span><span style={{ color: 'var(--fg-3)' }}>更新时间</span> {absTime(current.updated_at) || '·'}</span>
+                    <span style={{ color: 'var(--fg-mute)' }}>│</span>
+                    <span><span style={{ color: 'var(--fg-3)' }}>来源</span> {current.source || '·'}</span>
+                  </div>
+                  {current.extras && Object.keys(current.extras).length > 0 && (
+                    <div style={{ marginTop: 8 }}>
+                      <div style={{ color: 'var(--warn)', fontSize: 9.5, fontFamily: 'var(--font-mono)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4 }}>◇ _extras</div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+                        {Object.entries(current.extras).map(([k, v]) => (
+                          <span key={k} className="chip warn" style={{ fontSize: 9.5 }}>{k}={String(v)}</span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <Empty label="未找到该主键对应的记录" />
+              )}
+            </>
+          );
+        })()}
+        {lineageQ.data && !isReference && (() => {
           const { current, history = [], diff_columns = [] } = lineageQ.data;
           return (
             <>
@@ -245,7 +489,7 @@ function RowLineageDrawer({ tableName, pk, onClose, nav }) {
         flexShrink: 0,
       }}>
         <button className="btn ghost sm" style={{ height: 22, fontSize: 10 }} onClick={copyJson}>复制为 JSON</button>
-        {lineageQ.data?.current?.batch_id && (
+        {!isReference && lineageQ.data?.current?.batch_id && (
           <button
             className="btn ghost sm"
             style={{ height: 22, fontSize: 10 }}
@@ -364,39 +608,40 @@ function ExtrasConfigPanel({ tableName, extrasAsColumns, setExtrasAsColumns }) {
   );
 }
 
+// per-table empty-state hint (方案 §3.4)
+function emptyHintFor(schema) {
+  if (!schema) return '调整过滤条件后重试';
+  if (schema.name === 'reference.sectors') return '本表无 symbol 维度,请用分类体系 / 层级筛选';
+  if (!schema.has_symbol) return '调整筛选条件后重试';
+  return '调整过滤条件后重试';
+}
+
 // ─── Main TableBrowser ────────────────────────────────────────────────────────
 export default function TableBrowser() {
   const { tableName } = useParams();
   const nav = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   // View state
   const [viewMode, setViewMode] = useState('current'); // 'current' | 'all' | 'batch'
   const [viewTab, setViewTab] = useState('table');      // 'table' | 'chart'
   const [showInternal, setShowInternal] = useState(true);
 
-  // Filters
-  const [symbols, setSymbols] = useState('');
-  const [dateStart, setDateStart] = useState('');
-  const [dateEnd, setDateEnd] = useState('');
+  // Schema-driven filter values (keyed by filter key / start / end / adjust …)
+  const [values, setValues] = useState({});
+  const [initialized, setInitialized] = useState(false);
+
+  // Global (non-table-specific) controls
   const [batchId, setBatchId] = useState('');
   const [source, setSource] = useState('');
   const [limit, setLimit] = useState('200');
-  const [asOfDate, setAsOfDate] = useState(TODAY);
-  const [adjust, setAdjust] = useState('none');
-  const [frequency, setFrequency] = useState('1m');
-
-  // Extras as columns
   const [extrasAsColumns, setExtrasAsColumns] = useState([]);
+  const [hiddenCols, setHiddenCols] = useState(() => new Set());
+  const [showColsPanel, setShowColsPanel] = useState(false);
 
-  // Lineage drawer
-  const [lineageRow, setLineageRow] = useState(null); // { pk: {...} }
-
-  // Extras modal
+  // Lineage drawer + extras modal
+  const [lineageRow, setLineageRow] = useState(null);
   const [extrasModal, setExtrasModal] = useState(null);
-
-  const isBarsDaily = tableName === 'raw.bars_daily';
-  const isBarsMinute = tableName === 'raw.bars_minute';
-  const isFundamentals = tableName === 'raw.fundamentals';
 
   // Schema query
   const schemaQ = useQuery({
@@ -405,25 +650,80 @@ export default function TableBrowser() {
     enabled: !!tableName,
   });
   const schema = schemaQ.data;
+  const filters = schema?.filters || [];
 
-  // Build query params
+  // Keep the latest URL params available without re-triggering the init effect.
+  const spRef = useRef(searchParams);
+  spRef.current = searchParams;
+
+  // (Re)initialise filter values when the table changes: defaults overlaid with
+  // any values restored from the URL query (方案 §3.4 持久化).
+  useEffect(() => {
+    if (!schema) return;
+    setInitialized(false);
+    const base = {};
+    for (const f of schema.filters) Object.assign(base, defaultForFilter(f));
+    const sp = spRef.current;
+    const restore = (k) => { const v = sp.get(k); if (v != null) base[k] = v; };
+    for (const f of schema.filters) {
+      if (f.kind === 'symbols') restore('symbols');
+      else if (f.kind === 'date_range') { restore('start'); restore('end'); }
+      else if (f.kind === 'bool') { const v = sp.get(f.key); if (v != null) base[f.key] = v === 'true'; }
+      else restore(f.key);
+    }
+    setValues(base);
+    const vm = sp.get('view');
+    setViewMode(schema.mutable ? 'current' : (vm || 'current'));
+    setBatchId(sp.get('batch_id') || '');
+    setInitialized(true);
+    // re-run only when the table identity changes
+  }, [schema?.name]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const setV = useCallback((k, val) => setValues((p) => ({ ...p, [k]: val })), []);
+
+  const isFundamentals = tableName === 'raw.fundamentals';
+  const isBarsTable = tableName === 'raw.bars_daily' || tableName === 'raw.bars_minute';
+
+  // Pre-flight: large tables require symbols or a full date window (mirrors the
+  // backend _REQUIRE_FILTER guard) — block the request client-side so the user
+  // gets a hint instead of a 400 round-trip (方案 §3.4 / C1).
+  const hasSymbols = !!(values.symbols && values.symbols.trim());
+  const hasWindow = !!(values.start && values.end);
+  const filterGate = !!schema?.require_filter && !(hasSymbols || hasWindow);
+
+  // Build query params: only declared filter keys + global controls (方案 §3.1).
   const queryParams = useMemo(() => {
-    const p = {};
-    if (symbols.trim()) p.symbols = symbols.trim();
-    if (dateStart) p.start = dateStart;
-    if (dateEnd) p.end = dateEnd;
+    if (!schema) return {};
+    const p = buildFilterParams(filters, values);
     if (source.trim()) p.source = source.trim();
-    if (parseInt(limit) > 0) p.limit = parseInt(limit);
+    if (parseInt(limit, 10) > 0) p.limit = parseInt(limit, 10);
     if (extrasAsColumns.length > 0) {
       const valid = extrasAsColumns.filter((r) => r.key.trim());
       if (valid.length > 0) p.extras_as_columns = valid.map((r) => `${r.key}:${r.type}`).join(',');
     }
-    if (isFundamentals) p.as_of_date = asOfDate || TODAY;
-    if (isBarsDaily) p.adjust = adjust;
-    if (isBarsMinute) p.frequency = frequency;
     if (viewMode === 'batch' && batchId.trim()) p.batch_id = batchId.trim();
     return p;
-  }, [symbols, dateStart, dateEnd, source, limit, extrasAsColumns, isFundamentals, asOfDate, isBarsDaily, adjust, isBarsMinute, frequency, viewMode, batchId]);
+  }, [schema, filters, values, source, limit, extrasAsColumns, viewMode, batchId]);
+
+  // Sync filter state into the URL so the view can be shared / survives reload.
+  useEffect(() => {
+    if (!initialized || !schema) return;
+    const sp = new URLSearchParams();
+    for (const f of filters) {
+      if (f.kind === 'date_range') {
+        if (values.start) sp.set('start', values.start);
+        if (values.end) sp.set('end', values.end);
+      } else if (f.kind === 'symbols') {
+        if (values.symbols && values.symbols.trim()) sp.set('symbols', values.symbols.trim());
+      } else {
+        const v = values[f.key];
+        if (v !== '' && v != null && v !== false) sp.set(f.key, String(v));
+      }
+    }
+    if (viewMode !== 'current') sp.set('view', viewMode);
+    if (viewMode === 'batch' && batchId.trim()) sp.set('batch_id', batchId.trim());
+    setSearchParams(sp, { replace: true });
+  }, [values, viewMode, batchId, initialized, schema, filters, setSearchParams]);
 
   // Row data query
   const rowsQueryFn = useCallback(() => {
@@ -434,24 +734,31 @@ export default function TableBrowser() {
   const rowsQ = useQuery({
     queryKey: ['table-rows', tableName, viewMode, queryParams],
     queryFn: rowsQueryFn,
-    enabled: !!tableName && !!schema && (viewMode !== 'batch' || !!batchId.trim()),
+    enabled: !!tableName && !!schema && !filterGate && (viewMode !== 'batch' || !!batchId.trim()),
   });
 
-  // Build pk from row using schema.primary_key
   const buildPk = useCallback((row) => {
     if (!schema?.primary_key) return {};
     return Object.fromEntries(schema.primary_key.map((k) => [k, row[k]]));
   }, [schema]);
+
+  // Business columns (for the column show/hide control)
+  const businessCols = useMemo(
+    () => (rowsQ.data?.columns || [])
+      .map((c) => c.name)
+      .filter((n) => n !== '_extras' && !INTERNAL_COLS.has(n)),
+    [rowsQ.data?.columns],
+  );
 
   // Build columns dynamically from response
   const tableColumns = useMemo(() => {
     if (!rowsQ.data?.columns) return [];
     const responseCols = rowsQ.data.columns || [];
     const cols = [];
+    const pks = schema?.primary_key || [];
 
     responseCols.forEach(({ name }) => {
       if (name === '_extras') {
-        // Extras column - show as chip that opens modal
         cols.push({
           key: '_extras',
           label: '◇ _extras',
@@ -461,7 +768,7 @@ export default function TableBrowser() {
           color: 'var(--warn)',
           fontSize: 10,
           mono: true,
-          render: (v, row) => {
+          render: (v) => {
             if (!v || typeof v !== 'object') return <span style={{ color: 'var(--fg-4)' }}>·</span>;
             const n = Object.keys(v).length;
             return (
@@ -480,7 +787,6 @@ export default function TableBrowser() {
 
       if (INTERNAL_COLS.has(name)) {
         if (!showInternal) return;
-        // Internal columns - tinted blue
         if (name === '_batch_id') {
           cols.push({
             key: '_batch_id',
@@ -514,8 +820,10 @@ export default function TableBrowser() {
         return;
       }
 
-      // Business column
-      const isPk = schema?.primary_key?.includes(name);
+      // Business column (hidden via the column toggle?)
+      if (hiddenCols.has(name)) return;
+      const pkIndex = pks.indexOf(name);
+      const isPk = pkIndex >= 0;
       cols.push({
         key: name,
         label: name,
@@ -524,32 +832,34 @@ export default function TableBrowser() {
         headColor: isPk ? 'var(--fg-2)' : 'var(--fg-3)',
         align: isPk ? 'left' : 'right',
         fontSize: 11,
+        // Pin PK columns to the left so they stay visible while a wide table
+        // scrolls horizontally (方案 §3.4 宽表). Offsets stack per PK column.
+        sticky: isPk ? { left: pkIndex * 130, width: 130 } : null,
         cellStyle: isPk ? () => ({ fontWeight: 500 }) : undefined,
       });
     });
 
-    // Actions column
     cols.push({
       key: '__actions',
       label: '',
       align: 'right',
       render: (_v, row) => (
         <span
+          data-testid="row-lineage-link"
           style={{ color: 'var(--info)', fontSize: 10, cursor: 'pointer', userSelect: 'none' }}
           onClick={(e) => { e.stopPropagation(); setLineageRow({ pk: buildPk(row) }); }}
         >
-          lineage →
+          {schema?.supports_lineage === false ? '来源 →' : 'lineage →'}
         </span>
       ),
     });
 
     return cols;
-  }, [rowsQ.data?.columns, showInternal, schema, buildPk]);
+  }, [rowsQ.data?.columns, showInternal, schema, buildPk, hiddenCols]);
 
   const rows = rowsQ.data?.items || [];
   const total = rowsQ.data?.total || 0;
 
-  // Row style for 'all' view — invalidated rows get opacity + line-through
   const rowStyle = useCallback((row) => {
     if (viewMode === 'all' && row._status === 'invalidated') {
       return { opacity: 0.55, textDecoration: 'line-through', color: 'var(--fg-4)' };
@@ -557,22 +867,29 @@ export default function TableBrowser() {
     return {};
   }, [viewMode]);
 
-  // Badge from schema freshness
-  const fm = schema ? freshnessMeta('ok') : null;
-
-  // First symbol for kline link
   const firstSymbol = rows[0]?.symbol || '';
-
-  // path breadcrumb
   const path = ['data_mgmt/', 'tables/', tableName || ''];
 
-  const fkeys = [
-    { k: 'F1', l: '当前生效', onClick: () => setViewMode('current'), active: viewMode === 'current' },
-    { k: 'F2', l: '全量(含作废)', onClick: () => setViewMode('all'), active: viewMode === 'all' },
-    { k: 'F3', l: '单批次', onClick: () => setViewMode('batch'), active: viewMode === 'batch' },
-  ];
+  const isMutable = !!schema?.mutable;
+  const activeFilterCount = filters.filter((f) => filterIsActive(f, values)).length;
 
-  const isBarsTable = isBarsDaily || isBarsMinute;
+  const resetFilters = () => {
+    const base = {};
+    for (const f of filters) Object.assign(base, defaultForFilter(f));
+    setValues(base);
+    setSource('');
+  };
+
+  const fkeys = isMutable
+    ? [{ k: 'F1', l: '当前 (参考字典)', onClick: () => setViewMode('current'), active: true }]
+    : [
+      { k: 'F1', l: '当前生效', onClick: () => setViewMode('current'), active: viewMode === 'current' },
+      { k: 'F2', l: '全量(含作废)', onClick: () => setViewMode('all'), active: viewMode === 'all' },
+      { k: 'F3', l: '单批次', onClick: () => setViewMode('batch'), active: viewMode === 'batch' },
+    ];
+
+  const adjustVal = values.adjust || 'none';
+  const freqVal = values.frequency || '1m';
 
   return (
     <TerminalShell
@@ -585,7 +902,6 @@ export default function TableBrowser() {
       badge={schemaQ.isLoading ? null : <span className="chip ok" style={{ fontSize: 10 }}>FRESH</span>}
       actions={
         <>
-          {/* 表格 / 图表 dual tab (doc §4.5.1 / §6.1) */}
           <div style={{ display: 'inline-flex', border: '1px solid var(--border-strong)', borderRadius: 3, overflow: 'hidden', marginRight: 8 }}>
             {[{ id: 'table', l: '表格视图' }, { id: 'chart', l: '图表视图 ↗' }].map((t, i) => (
               <button
@@ -624,84 +940,41 @@ export default function TableBrowser() {
           flexShrink: 0,
           rowGap: 6,
         }}>
-          {/* View mode segmented */}
+          {/* View mode segmented — only for tables with batch lineage */}
           <span style={{ fontSize: 9.5, color: 'var(--fg-3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginRight: 10 }}>view</span>
-          <div style={{ display: 'inline-flex', border: '1px solid var(--border-strong)', borderRadius: 3, overflow: 'hidden', marginRight: 14 }}>
-            {[
-              { id: 'current', l: '当前生效', s: '◉' },
-              { id: 'all', l: '全量(含作废)', s: '⊕' },
-              { id: 'batch', l: '单批次', s: '◐' },
-            ].map((m) => (
-              <button
-                key={m.id}
-                onClick={() => setViewMode(m.id)}
-                style={{
-                  height: 24, padding: '0 10px',
-                  background: viewMode === m.id ? 'var(--fg)' : 'transparent',
-                  color: viewMode === m.id ? 'var(--bg)' : 'var(--fg-2)',
-                  border: 'none', borderRight: '1px solid var(--border-strong)',
-                  fontFamily: 'var(--font-mono)', fontSize: 10.5, cursor: 'pointer',
-                  display: 'inline-flex', alignItems: 'center', gap: 5,
-                }}
-              >
-                <span>{m.s}</span> {m.l}
-              </button>
-            ))}
-          </div>
+          {isMutable ? (
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginRight: 14 }} title="可变参考字典:单文件原地更新,无批次 / 作废视图">
+              <span className="chip info" style={{ fontSize: 9.5, height: 18 }}>reference · 单文件原地更新</span>
+            </div>
+          ) : (
+            <div style={{ display: 'inline-flex', border: '1px solid var(--border-strong)', borderRadius: 3, overflow: 'hidden', marginRight: 14 }}>
+              {[
+                { id: 'current', l: '当前生效', s: '◉' },
+                { id: 'all', l: '全量(含作废)', s: '⊕' },
+                { id: 'batch', l: '单批次', s: '◐' },
+              ].map((m) => (
+                <button
+                  key={m.id}
+                  onClick={() => setViewMode(m.id)}
+                  style={{
+                    height: 24, padding: '0 10px',
+                    background: viewMode === m.id ? 'var(--fg)' : 'transparent',
+                    color: viewMode === m.id ? 'var(--bg)' : 'var(--fg-2)',
+                    border: 'none', borderRight: '1px solid var(--border-strong)',
+                    fontFamily: 'var(--font-mono)', fontSize: 10.5, cursor: 'pointer',
+                    display: 'inline-flex', alignItems: 'center', gap: 5,
+                  }}
+                >
+                  <span>{m.s}</span> {m.l}
+                </button>
+              ))}
+            </div>
+          )}
 
           <span style={{ color: 'var(--fg-mute)', marginRight: 14 }}>│</span>
 
-          {/* Table-specific controls */}
-          {isFundamentals && (
-            <>
-              <FInput
-                label="as_of_date"
-                placeholder="YYYY-MM-DD"
-                value={asOfDate}
-                onChange={setAsOfDate}
-                width={110}
-              />
-              <span style={{ marginRight: 8 }} />
-            </>
-          )}
-
-          {isBarsDaily && (
-            <>
-              <span style={{ fontSize: 9.5, color: 'var(--fg-3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginRight: 6 }}>adjust</span>
-              <div style={{ display: 'inline-flex', border: '1px solid var(--border-strong)', borderRadius: 3, overflow: 'hidden', marginRight: 14 }}>
-                {['none', 'pre', 'post'].map((a) => (
-                  <button
-                    key={a}
-                    onClick={() => setAdjust(a)}
-                    style={{
-                      height: 22, padding: '0 8px',
-                      background: adjust === a ? 'var(--fg)' : 'transparent',
-                      color: adjust === a ? 'var(--bg)' : 'var(--fg-2)',
-                      border: 'none', borderRight: '1px solid var(--border-strong)',
-                      fontFamily: 'var(--font-mono)', fontSize: 10, cursor: 'pointer',
-                    }}
-                  >
-                    {a}
-                  </button>
-                ))}
-              </div>
-            </>
-          )}
-
-          {isBarsMinute && (
-            <>
-              <FSelect
-                label="freq"
-                value={frequency}
-                options={['1m', '5m', '15m', '30m', '1h']}
-                onChange={setFrequency}
-                width={60}
-              />
-              <span style={{ marginRight: 8 }} />
-            </>
-          )}
-
-          {viewMode === 'batch' && (
+          {/* batch_id only in single-batch view */}
+          {!isMutable && viewMode === 'batch' && (
             <>
               <FInput
                 label="batch_id"
@@ -710,26 +983,12 @@ export default function TableBrowser() {
                 onChange={setBatchId}
                 width={180}
               />
-              <span style={{ marginRight: 8 }} />
+              <span style={{ marginRight: 10 }} />
             </>
           )}
 
-          {/* WHERE / symbols */}
-          <FInput
-            label="symbols"
-            placeholder="600519.SH,000001.SZ"
-            value={symbols}
-            onChange={setSymbols}
-            width={210}
-          />
-          <span style={{ marginRight: 8 }} />
-
-          {/* Date range */}
-          <FInput label="start" placeholder="YYYY-MM-DD" value={dateStart} onChange={setDateStart} width={100} />
-          <span style={{ marginRight: 4 }} />
-          <span style={{ color: 'var(--fg-3)', marginRight: 4 }}>→</span>
-          <FInput label="end" placeholder="YYYY-MM-DD" value={dateEnd} onChange={setDateEnd} width={100} />
-          <span style={{ marginRight: 8 }} />
+          {/* Schema-driven, per-table filter controls */}
+          {schema && <FilterBar filters={filters} values={values} setV={setV} tableName={tableName} />}
 
           {/* limit */}
           <FSelect
@@ -739,6 +998,17 @@ export default function TableBrowser() {
             onChange={setLimit}
             width={60}
           />
+
+          {/* clear filters + active count */}
+          <span style={{ marginLeft: 10 }} />
+          <button
+            className="btn ghost sm"
+            data-testid="filter-reset"
+            style={{ height: 22, fontSize: 10 }}
+            onClick={resetFilters}
+          >
+            清空筛选{activeFilterCount > 0 ? ` (${activeFilterCount})` : ''}
+          </button>
 
           <span style={{ color: 'var(--fg-mute)', margin: '0 10px' }}>│</span>
 
@@ -751,8 +1021,48 @@ export default function TableBrowser() {
               style={{ accentColor: 'var(--fg)' }}
             />
             显示内部列
-            <span style={{ color: 'var(--fg-3)', fontSize: 10 }}>(_batch_id, _source, …)</span>
+            <span style={{ color: 'var(--fg-3)', fontSize: 10 }}>
+              {isMutable ? '(_updated_at, _source, …)' : '(_batch_id, _source, …)'}
+            </span>
           </label>
+
+          {/* Column show/hide */}
+          {businessCols.length > 0 && (
+            <div style={{ position: 'relative', display: 'inline-block', marginRight: 10 }}>
+              <button
+                className="btn ghost sm"
+                data-testid="cols-toggle"
+                style={{ height: 22, fontSize: 10 }}
+                onClick={() => setShowColsPanel((s) => !s)}
+              >
+                列 {hiddenCols.size > 0 ? `(隐藏 ${hiddenCols.size})` : ''}
+              </button>
+              {showColsPanel && (
+                <div style={{
+                  position: 'absolute', top: 26, left: 0, zIndex: 40,
+                  background: 'var(--surface)', border: '1px solid var(--border-strong)', borderRadius: 4,
+                  boxShadow: '0 8px 24px rgba(20,18,14,0.16)', padding: 8, maxHeight: 280, overflow: 'auto',
+                  display: 'flex', flexDirection: 'column', gap: 4, minWidth: 160,
+                }}>
+                  {businessCols.map((c) => (
+                    <label key={c} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 10.5, color: 'var(--fg-2)', cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={!hiddenCols.has(c)}
+                        onChange={(e) => setHiddenCols((prev) => {
+                          const next = new Set(prev);
+                          if (e.target.checked) next.delete(c); else next.add(c);
+                          return next;
+                        })}
+                        style={{ accentColor: 'var(--fg)' }}
+                      />
+                      {c}
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Extras as columns — only if schema.has_extras */}
           {schema?.has_extras && (
@@ -771,52 +1081,56 @@ export default function TableBrowser() {
       {/* View banner */}
       <div style={{
         padding: '5px 14px',
-        background: viewMode === 'all' ? 'var(--warn-bg)' : viewMode === 'batch' ? 'var(--info-bg)' : 'var(--ok-bg)',
+        background: isMutable ? 'var(--info-bg)' : viewMode === 'all' ? 'var(--warn-bg)' : viewMode === 'batch' ? 'var(--info-bg)' : 'var(--ok-bg)',
         borderBottom: '1px solid var(--border)',
         fontFamily: 'var(--font-mono)', fontSize: 10.5,
-        color: viewMode === 'all' ? 'var(--warn)' : viewMode === 'batch' ? 'var(--info)' : 'var(--ok)',
+        color: isMutable ? 'var(--info)' : viewMode === 'all' ? 'var(--warn)' : viewMode === 'batch' ? 'var(--info)' : 'var(--ok)',
         display: 'flex', alignItems: 'center', gap: 8,
         flexShrink: 0,
       }}>
-        <span>{viewMode === 'all' ? '⚠' : viewMode === 'batch' ? 'ⓘ' : '●'}</span>
+        <span>{isMutable ? 'ⓘ' : viewMode === 'all' ? '⚠' : viewMode === 'batch' ? 'ⓘ' : '●'}</span>
         <span>
-          {viewMode === 'current' && '当前生效视图 · 已应用作废/替换规则后的最终有效数据'}
-          {viewMode === 'all' && '全量视图 · 显示所有历史版本(含已作废),作废行用灰色 + 删除线展示'}
-          {viewMode === 'batch' && (batchId ? `单批次视图 · 仅显示 ${batchId} 写入的内容` : '单批次视图 · 请输入 batch_id 进行过滤')}
+          {isMutable && '可变参考字典 · 单文件原地 upsert,无批次历史 / 作废链;行末「来源 →」查看字段来源'}
+          {!isMutable && viewMode === 'current' && '当前生效视图 · 已应用作废/替换规则后的最终有效数据'}
+          {!isMutable && viewMode === 'all' && '全量视图 · 显示所有历史版本(含已作废),作废行用灰色 + 删除线展示'}
+          {!isMutable && viewMode === 'batch' && (batchId ? `单批次视图 · 仅显示 ${batchId} 写入的内容` : '单批次视图 · 请输入 batch_id 进行过滤')}
         </span>
         {isFundamentals && (
           <>
-            <span style={{ color: viewMode === 'all' ? 'var(--warn)' : viewMode === 'batch' ? 'var(--info)' : 'var(--ok)' }}>│</span>
-            <span>as_of_date: {asOfDate}</span>
+            <span style={{ color: 'var(--ok)' }}>│</span>
+            <span>as_of_date: {values.as_of_date || TODAY}</span>
           </>
         )}
       </div>
 
       {/* Main content + potential drawer */}
       <div style={{ flex: 1, display: 'flex', minHeight: 0, position: 'relative', overflow: 'hidden' }}>
-        {/* Chart view */}
         {viewTab === 'chart' ? (
           <div style={{ flex: 1, minWidth: 0, minHeight: 0, position: 'relative', background: 'var(--surface)' }}>
             <TableQuickChart table={tableName} rows={rows} filters={queryParams} nav={nav} />
           </div>
         ) : (
-        /* Table area */
         <div className="scroll" style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
           {schemaQ.isLoading ? (
             <Loading />
           ) : schemaQ.error ? (
             <ErrorState error={schemaQ.error} onRetry={schemaQ.refetch} />
-          ) : viewMode === 'batch' && !batchId.trim() ? (
+          ) : filterGate ? (
+            <Empty
+              label="请先选择 symbols 或日期范围"
+              hint={`大表 ${tableName} 需要先缩小范围再浏览,避免全表扫描`}
+            />
+          ) : !isMutable && viewMode === 'batch' && !batchId.trim() ? (
             <Empty label="请输入 batch_id 以过滤单批次数据" hint="在上方 filter bar 填写 batch_id" />
           ) : rowsQ.isLoading ? (
             <Loading />
           ) : rowsQ.error ? (
             <ErrorState error={rowsQ.error} onRetry={rowsQ.refetch} />
           ) : rows.length === 0 ? (
-            <Empty label="暂无数据" hint="调整过滤条件后重试" />
+            <Empty label="暂无数据" hint={emptyHintFor(schema)} />
           ) : (
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11, fontFamily: 'var(--font-mono)' }}>
-              <thead style={{ position: 'sticky', top: 0, background: 'var(--surface)', zIndex: 2 }}>
+              <thead style={{ position: 'sticky', top: 0, background: 'var(--surface)', zIndex: 3 }}>
                 <tr style={{ borderBottom: '1px solid var(--border-strong)' }}>
                   {tableColumns.map((c, i) => (
                     <th key={c.key || i} style={{
@@ -827,6 +1141,7 @@ export default function TableBrowser() {
                       textTransform: 'uppercase', letterSpacing: '0.05em',
                       background: c.headBg || 'var(--surface)',
                       whiteSpace: 'nowrap',
+                      ...(c.sticky ? { position: 'sticky', left: c.sticky.left, zIndex: 4, minWidth: c.sticky.width } : {}),
                     }}>
                       {c.label}
                     </th>
@@ -838,6 +1153,7 @@ export default function TableBrowser() {
                   const extra = rowStyle(row, ri);
                   const isInvalidated = viewMode === 'all' && row._status === 'invalidated';
                   const rowPk = buildPk(row);
+                  const rowBg = ri % 2 === 0 ? 'var(--surface)' : 'var(--surface-2)';
                   return (
                     <tr
                       key={ri}
@@ -857,6 +1173,11 @@ export default function TableBrowser() {
                         const v = c.render ? c.render(row[c.key], row, ri) : row[c.key];
                         const cellBgStyle = c.cellBg ? { background: c.cellBg } : {};
                         const cellExtraStyle = c.cellStyle ? c.cellStyle(row) : {};
+                        // Sticky PK cells need an opaque background to cover
+                        // columns scrolling underneath; match the row's stripe.
+                        const stickyStyle = c.sticky
+                          ? { position: 'sticky', left: c.sticky.left, zIndex: 1, minWidth: c.sticky.width, background: c.cellBg || rowBg }
+                          : {};
                         return (
                           <td
                             key={c.key || ci}
@@ -869,6 +1190,7 @@ export default function TableBrowser() {
                               fontSize: c.fontSize || 11,
                               whiteSpace: 'nowrap',
                               ...cellBgStyle,
+                              ...stickyStyle,
                               ...cellExtraStyle,
                             }}
                           >
@@ -910,10 +1232,10 @@ export default function TableBrowser() {
           <span style={{ marginLeft: 4 }}>/ <span style={{ color: 'var(--fg)' }}>{fmtCompact(total)}</span></span>
         )}
         <span style={{ color: 'var(--fg-mute)', margin: '0 10px' }}>│</span>
-        <span>view: {viewMode}</span>
-        {isBarsDaily && <><span style={{ color: 'var(--fg-mute)', margin: '0 10px' }}>│</span><span>adjust: {adjust}</span></>}
-        {isBarsMinute && <><span style={{ color: 'var(--fg-mute)', margin: '0 10px' }}>│</span><span>freq: {frequency}</span></>}
-        {isFundamentals && <><span style={{ color: 'var(--fg-mute)', margin: '0 10px' }}>│</span><span>as_of: {asOfDate}</span></>}
+        <span>view: {isMutable ? 'reference (单文件原地更新)' : viewMode}</span>
+        {tableName === 'raw.bars_daily' && <><span style={{ color: 'var(--fg-mute)', margin: '0 10px' }}>│</span><span>adjust: {adjustVal}</span></>}
+        {tableName === 'raw.bars_minute' && <><span style={{ color: 'var(--fg-mute)', margin: '0 10px' }}>│</span><span>freq: {freqVal}</span></>}
+        {isFundamentals && <><span style={{ color: 'var(--fg-mute)', margin: '0 10px' }}>│</span><span>as_of: {values.as_of_date || TODAY}</span></>}
         <div style={{ flex: 1 }} />
         {isBarsTable && firstSymbol && (
           <button
@@ -926,7 +1248,7 @@ export default function TableBrowser() {
         )}
         <span style={{ color: 'var(--fg-mute)', margin: '0 10px' }}>│</span>
         <span className="kbd">L</span>
-        <span style={{ marginLeft: 4 }}>行 lineage</span>
+        <span style={{ marginLeft: 4 }}>{schema?.supports_lineage === false ? '字段来源' : '行 lineage'}</span>
       </div>
 
       {/* Extras modal */}
