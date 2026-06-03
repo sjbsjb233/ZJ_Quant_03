@@ -1,4 +1,0 @@
-# Generated production-scale dataset + DuckDB spill scratch (multi-GB, do not commit)
-data/
-duck_tmp/
-*.log
