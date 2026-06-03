@@ -39,9 +39,13 @@ def _parse_ts(value) -> dt.datetime | None:
         return None
 
 
-def _key(ts: dt.datetime, source, event, trace_id) -> tuple:
-    # second-resolution ts so a re-parsed JSONL line keys the same as its DB row
-    return (ts.replace(microsecond=0), source or "", event or "", trace_id or "")
+def _key(ts: dt.datetime, source, event, trace_id, message) -> tuple:
+    # second-resolution ts so a re-parsed JSONL line keys the same as its DB row.
+    # message is in the key because monitor records carry no trace_id and reuse a
+    # per-code event (monitor.<code>), so two distinct targets in the same second
+    # would otherwise collide and the second be dropped as a false duplicate.
+    return (ts.replace(microsecond=0), source or "", event or "", trace_id or "",
+            (message or "")[:200])
 
 
 def _iter_records(dirs: list[str]):
@@ -80,11 +84,11 @@ def run_backfill(session_factory, dirs: list[str], *, since_hours: int = 48,
         # snapshot existing keys in the window once, so we don't query per line
         with session_factory() as db:
             existing: set[tuple] = set()
-            for ts, source, event, trace_id in (
-                db.query(AppLog.ts, AppLog.source, AppLog.event, AppLog.trace_id)
+            for ts, source, event, trace_id, message in (
+                db.query(AppLog.ts, AppLog.source, AppLog.event, AppLog.trace_id, AppLog.message)
                   .filter(AppLog.ts >= cutoff).all()):
                 if ts is not None:
-                    existing.add(_key(ts, source, event, trace_id))
+                    existing.add(_key(ts, source, event, trace_id, message))
 
             batch: list[AppLog] = []
             for rec in _iter_records(dirs):
@@ -94,7 +98,8 @@ def run_backfill(session_factory, dirs: list[str], *, since_hours: int = 48,
                 if ts is None or ts < cutoff:
                     continue
                 scanned += 1
-                k = _key(ts, rec.get("source"), rec.get("event"), rec.get("trace_id"))
+                k = _key(ts, rec.get("source"), rec.get("event"), rec.get("trace_id"),
+                         rec.get("message"))
                 if k in existing:
                     skipped += 1
                     continue

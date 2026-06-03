@@ -120,8 +120,11 @@ def _make_handler(cfg: Config, state: SentinelState):
                         chunk = ": keep-alive\n\n"     # heartbeat 防中间层断连
                     self.wfile.write(chunk.encode("utf-8"))
                     self.wfile.flush()
-            except (BrokenPipeError, ConnectionResetError, OSError):
-                pass                                   # client disconnected → release
+            except Exception:  # noqa: BLE001 - client disconnect OR a late serialize
+                # error; either way headers+body were already sent, so swallow it here
+                # (don't let it bubble to do_GET, which would write a 2nd status line
+                # into the open SSE body and corrupt the framing).
+                pass
             finally:
                 state.unsubscribe(q)
                 self.close_connection = True

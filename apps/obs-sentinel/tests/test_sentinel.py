@@ -317,6 +317,47 @@ def test_jsonl_fallback_written_before_ship(captured, tmp_path):
     assert line["source"] == "monitor" and line["event"] == "monitor.D1.oom_killed"
 
 
+def test_monitor_log_ts_consistent_jsonl_and_ship(captured, tmp_path):
+    """The record's ts must be identical in the JSONL line and the shipped payload,
+    so the JSONL→app_log backfill keys them the same and never re-inserts a dup
+    (review fix: backend used to stamp ingest-time when ts was absent)."""
+    s = _sentinel([{"name": "zj-quant-data-keeper", "oom_killed": True, "restart_count": 1,
+                    "mem_usage": int(1e9), "mem_limit": int(8e9)}], tmp_path)
+    s.scan_once()
+    shipped = [p for p in captured if p[0].endswith("/logs/ingest")][0][1]["records"][0]
+    line = json.loads((tmp_path / "monitor.jsonl").read_text().strip().splitlines()[0])
+    assert shipped.get("ts") and shipped["ts"] == line["ts"]
+
+
+def test_parse_started_is_utc_regardless_of_process_tz():
+    """docker timestamps are UTC; _parse_started must not reinterpret them in the
+    process-local TZ (review fix H1: TZ=Asia/Shanghai would skew uptime ~8h)."""
+    import datetime as _dt
+    got = sentinel_mod._parse_started("2026-06-02T00:00:00Z")
+    assert got == _dt.datetime(2026, 6, 2, tzinfo=_dt.timezone.utc).timestamp()
+
+
+def test_caches_evicted_when_container_disappears(captured, tmp_path):
+    docker = FakeDocker([{"name": "zj-quant-data-keeper", "mem_usage": int(1e9), "mem_limit": int(8e9)}])
+    s = Sentinel(_cfg(jsonl_dir=str(tmp_path)), docker=docker, state=SentinelState(),
+                 jsonl=JsonlWriter(str(tmp_path)))
+    s.scan_once()
+    assert "zj-quant-data-keeper" in s._restart_hist
+    docker._containers = []                          # container removed from docker
+    s.scan_once()
+    assert "zj-quant-data-keeper" not in s._restart_hist
+    assert "zj-quant-data-keeper" not in s._cpu_prev
+    assert "zj-quant-data-keeper" not in s._deep_cache
+
+
+def test_restart_history_covers_storm_window(tmp_path):
+    """maxlen must hold a full storm window at the fast-scan cadence, else a slow
+    crash-loop is under-counted (review fix M1)."""
+    cfg = _cfg(jsonl_dir=str(tmp_path), restart_storm_window_min=10, liveness_interval_sec=2)
+    s = Sentinel(cfg, docker=FakeDocker([]), state=SentinelState(), jsonl=JsonlWriter(str(tmp_path)))
+    assert s._restart_maxlen >= 300                  # 10m / 2s = 300 in-window samples
+
+
 def test_jsonl_survives_post_failure(tmp_path, monkeypatch):
     # POSTs fail, but the on-disk record must still be there (the P0 fix).
     def boom(req, timeout=None):

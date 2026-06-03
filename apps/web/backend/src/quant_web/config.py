@@ -125,7 +125,9 @@ class Settings(BaseSettings):
     monitor_alert_min_level: str = "error"       # webhook 推送阈值 (info|warn|error|critical)
     # 哨兵上报的 conditions 仅在 sentinel_last_seen 距今 ≤ S 秒时才进台账 (哨兵盲时不臆断,
     # 改由 D12 兜底);超期则停喂 → 现有 auto_resolve 关闭它们 (可观测层重构方案 §6.5)。
-    signal_fresh_sec: int = 120
+    # 与 sentinel_heartbeat_sec 对齐 (≤ 它): 否则哨兵失联后 conditions 比 D12 多撑一段,
+    # 出现「既报哨兵离线、又继续断言其陈旧判定」的双重断言窗口。哨兵每个快扫 (~2s) 都上报,60s 容差足够。
+    signal_fresh_sec: int = 60
 
     # --- 第一层 (哨兵) 新检测器阈值 (L0/D13/D14/D15, 可观测层重构方案 §9.2) ----
     # 检测发生在哨兵 (detector_owner=sentinel)；这些值与哨兵 env 同名,compose 同时下发

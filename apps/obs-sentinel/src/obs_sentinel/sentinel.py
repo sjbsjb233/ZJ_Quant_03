@@ -50,7 +50,10 @@ def _parse_started(value) -> float | None:
         return None
     try:
         s = value.replace("Z", "").split(".")[0]
-        return dt.datetime.fromisoformat(s).timestamp()
+        # docker timestamps are UTC; pin tzinfo so .timestamp() doesn't reinterpret
+        # the naive value in the process-local TZ (compose sets TZ=Asia/Shanghai) →
+        # an ~8h skew that would defeat the L0 start-up grace + D7 cutoff.
+        return dt.datetime.fromisoformat(s).replace(tzinfo=dt.timezone.utc).timestamp()
     except ValueError:
         return None
 
@@ -62,7 +65,7 @@ def _parse_iso(value) -> float | None:
         s = value.replace("Z", "").split(".")[0].replace("T", " ")
         if "+" in s[11:]:
             s = s[:11] + s[11:].split("+")[0]
-        return dt.datetime.fromisoformat(s.strip()).timestamp()
+        return dt.datetime.fromisoformat(s.strip()).replace(tzinfo=dt.timezone.utc).timestamp()
     except ValueError:
         return None
 
@@ -74,7 +77,15 @@ class Sentinel:
         self.docker = docker or DockerClient(cfg.docker_socket)
         self.state = state or SentinelState()
         self.jsonl = jsonl or JsonlWriter(cfg.jsonl_dir)
-        self._restart_hist: dict[str, deque] = defaultdict(lambda: deque(maxlen=240))
+        # Size the restart-history per container to cover the full storm window at the
+        # fast-scan cadence (a sample is appended every scan, incl. shallow liveness
+        # passes). With maxlen=240 fixed, a 10m window at 2s cadence (300 samples)
+        # evicted the oldest in-window sample → D2 under-counted slow crash-loops (the
+        # exact P0 detector). +30 margin; floor 300.
+        self._restart_maxlen = max(
+            300, int(cfg.restart_storm_window_min * 60 / max(1, cfg.liveness_interval_sec)) + 30)
+        self._restart_hist: dict[str, deque] = defaultdict(
+            lambda: deque(maxlen=self._restart_maxlen))
         # duration trackers: (code, target) -> first time the raw predicate held
         self._since: dict[tuple, float] = {}
         # condition keys currently shipped as monitor logs (for transition logging)
@@ -94,6 +105,7 @@ class Sentinel:
         reach = self._probe_all(obs)
         for o in obs:
             o["reachable"] = reach.get(o["name"], o["status"] == "running")
+        self._evict_gone({o["name"] for o in obs})
         disks = self._disks()
         conditions = self._detect(obs, disks)
         frame = self._build_frame(obs, disks, conditions)
@@ -155,6 +167,17 @@ class Sentinel:
                 self._deep_cache[name] = {"mem_usage": mem_usage, "mem_limit": mem_limit,
                                           "cpu_pct": cpu_pct, "rw_size_bytes": o["rw_size_bytes"]}
         return out
+
+    def _evict_gone(self, names: set[str]) -> None:
+        """Drop per-container caches for containers no longer in the docker list, so a
+        long-lived sentinel doesn't slowly leak when container names churn. (Exited
+        containers still appear via all=1, so they aren't pruned — only真正消失的.)
+        ``_since`` keys are all (code, container_name) since D13/D7 don't use the latch."""
+        for cache in (self._deep_cache, self._cpu_prev, self._restart_hist):
+            for k in [k for k in cache if k not in names]:
+                cache.pop(k, None)
+        for k in [k for k in self._since if k[1] not in names]:
+            self._since.pop(k, None)
 
     def _cpu_delta(self, name: str, snap: dict) -> float | None:
         """CPU% over the deep-scan interval, diffing cumulative counters against the
@@ -417,8 +440,13 @@ class Sentinel:
     def _emit_monitor_log(self, cond: dict, *, resolved: bool) -> None:
         level = "INFO" if resolved else _SEV_LEVEL.get(cond["severity"], "WARN")
         event = ("monitor.resolved." if resolved else "monitor.") + cond["code"]
-        record = {"source": "monitor", "level": level, "logger": "monitor.sentinel",
-                  "event": event, "message": cond["title"], "host": self.cfg.host,
+        # Stamp ONE deterministic ts the record carries through BOTH the JSONL write
+        # and the /logs/ingest ship — so the on-disk line and the central app_log row
+        # share an identical timestamp and the JSONL→app_log backfill can dedup them
+        # (else the backend stamps ingest-time and re-inserts shipped records).
+        record = {"ts": _now_iso(), "source": "monitor", "level": level,
+                  "logger": "monitor.sentinel", "event": event, "message": cond["title"],
+                  "host": self.cfg.host,
                   "extra": {"code": cond["code"], "layer": cond.get("layer"),
                             "target": cond.get("target"), "severity": cond["severity"],
                             **(cond.get("detail") or {})}}

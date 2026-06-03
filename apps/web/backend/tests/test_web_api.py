@@ -947,12 +947,35 @@ def test_log_backfill_heals_central_store(client, admin, tmp_path):
 
     res = run_backfill(SessionLocal, [str(tmp_path)], since_hours=48)
     assert res["inserted"] == 1
-    # idempotent — a second run inserts nothing (dedup by trace_id/ts/event)
+    # idempotent — a second run inserts nothing (dedup by trace_id/ts/event/message)
     assert run_backfill(SessionLocal, [str(tmp_path)], since_hours=48)["inserted"] == 0
     _flush_logs(client)
     rows = client.get("/api/v1/logs", params={"source": "monitor", "search": "磁盘"},
                       headers=admin).json()
     assert any(x["event"] == "monitor.D13.disk" for x in rows["items"])
+
+
+def test_log_backfill_message_disambiguates_same_second(tmp_path):
+    """Review fix M3: two monitor records sharing ts-second + source + event but with
+    different messages (different targets, no trace_id) must BOTH insert — message is
+    part of the dedup key so the second isn't dropped as a false duplicate."""
+    import datetime as _dt
+    import json as _json
+
+    from quant_web.db.base import SessionLocal
+    from quant_web.logging.backfill import run_backfill
+
+    ts = _dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    recs = [
+        {"ts": ts, "source": "monitor", "level": "ERROR", "logger": "monitor.sentinel",
+         "event": "monitor.D13.disk", "message": "/ 磁盘 96%"},
+        {"ts": ts, "source": "monitor", "level": "ERROR", "logger": "monitor.sentinel",
+         "event": "monitor.D13.disk", "message": "/mnt/sdb 磁盘 91%"},
+    ]
+    (tmp_path / "monitor.jsonl").write_text(
+        "\n".join(_json.dumps(r) for r in recs) + "\n", encoding="utf-8")
+    res = run_backfill(SessionLocal, [str(tmp_path)], since_hours=48)
+    assert res["inserted"] == 2          # both distinct messages land, not deduped to 1
 
 
 def test_monitor_tasks_degrades_without_keeper(client, admin):
