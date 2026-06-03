@@ -241,6 +241,15 @@ def test_rows_all_pagination_pushed_down(client, admin):
     assert (p1["items"] + p2["items"]) == big["items"]
 
 
+def test_rows_malformed_date_is_400_not_500(client, admin):
+    """A malformed start/end must map to a clean 400 INVALID_PARAMETER, not
+    escape the date-literal builder as a generic 500 (independent-review nit)."""
+    r = client.get("/api/v1/data/tables/raw.bars_daily/rows", headers=admin,
+                   params={"symbols": "600519.SH", "start": "not-a-date"})
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "INVALID_PARAMETER"
+
+
 def test_rows_all_requires_bounding_filter(client, admin):
     """Unfiltered /rows/all on a high-cardinality raw table is rejected (the
     require-filter guard for the unbounded full-view export path)."""

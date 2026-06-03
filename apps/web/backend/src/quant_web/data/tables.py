@@ -461,11 +461,13 @@ def rows(name: str, p: dict = Depends(_all_query_params),
 
     offset = max(0, int(p.get("offset") or 0))
     limit = max(1, min(int(p.get("limit") or 100), 1000))
-    pre, post = _split_filters(spec, name, p)
-    extras = _parse_extras(p.get("extras_as_columns"))
     dedup_order = _FUNDAMENTALS_DEDUP if name == "raw.fundamentals" else None
     order_by = ", ".join(spec.primary_key)
     try:
+        # Inside the try so a malformed start/end/as_of_date (ValueError from the
+        # date literal builders) maps to a clean 400, not a generic 500.
+        pre, post = _split_filters(spec, name, p)
+        extras = _parse_extras(p.get("extras_as_columns"))
         total = reader.count_current_view(
             spec, filters=pre or None, post_filters=post or None,
             dedup_order=dedup_order,
