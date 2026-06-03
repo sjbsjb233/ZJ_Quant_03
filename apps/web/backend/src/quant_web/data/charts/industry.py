@@ -70,20 +70,22 @@ def _bars_values(reader, field: str, as_of: str) -> dict[str, float]:
     return {r[0]: r[1] for r in _rows(reader.aggregate_current_view(spec, proj, tail)) if r[1] is not None}
 
 
-def _fund_rows(reader, metric: str, as_of: str) -> list[dict]:
+def _fund_rows(reader, metric: str, as_of: str, symbols: list[str] | None = None) -> list[dict]:
     extras = {metric: "DOUBLE"} if metric not in _FUND_BUSINESS else None
     try:
-        tbl = reader.read_fundamentals(as_of_date=dt.date.fromisoformat(as_of),
+        # ``symbols`` prunes the PIT read to a known set (e.g. one industry's
+        # members) instead of scanning every symbol's fundamentals into Python.
+        tbl = reader.read_fundamentals(symbols=symbols, as_of_date=dt.date.fromisoformat(as_of),
                                        extras_as_columns=extras)
     except ValueError as e:
         raise ApiError("INVALID_PARAMETER", str(e)) from e
     return tbl.to_pylist()
 
 
-def _fund_point_values(reader, metric: str, as_of: str) -> dict[str, float]:
+def _fund_point_values(reader, metric: str, as_of: str, symbols: list[str] | None = None) -> dict[str, float]:
     """{symbol: value at the latest report_period visible as of ``as_of``}."""
     best: dict[str, tuple] = {}
-    for r in _fund_rows(reader, metric, as_of):
+    for r in _fund_rows(reader, metric, as_of, symbols):
         rp, v = r.get("report_period"), r.get(metric)
         if rp is None or v is None:
             continue
@@ -188,9 +190,13 @@ def composition(
 
     members = [r["symbol"] for r in syms if st.roll(r.get("sector_code"), level) == code]
     mset = set(members)
+    # prune every read to this industry's members -- no whole-table fundamentals
+    # scan (the 2026-06 OOM-audit pattern). ``members or [None]`` keeps an empty
+    # industry from falling back to "all symbols".
+    member_filter = members or ["__none__"]
     mv = {s: v for s, v in _bars_values(reader, "total_mv", as_of).items() if s in mset}
-    pe = {s: v for s, v in _fund_point_values(reader, "pe_ttm", as_of).items() if s in mset}
-    roe = {s: v for s, v in _fund_point_values(reader, "roe", as_of).items() if s in mset}
+    pe = _fund_point_values(reader, "pe_ttm", as_of, member_filter)
+    roe = _fund_point_values(reader, "roe", as_of, member_filter)
 
     out = [
         {"symbol": s, "name": name_of.get(s), "mv": mv.get(s),

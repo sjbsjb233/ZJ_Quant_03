@@ -75,11 +75,17 @@ def _pool_symbols(reader, pool: str | None, as_of) -> list[str] | None:
 
 
 def _resolve_as_of(reader, as_of, table=_UNIVERSE):
-    """Use the given date, else the latest date present in ``table``'s view."""
-    if as_of:
-        return str(as_of)[:10]
+    """Latest trading day on-or-before ``as_of`` (or the latest overall if None).
+
+    The frontend always sends ``as_of = today``; on a weekend / holiday / before
+    that day's bars land there is no row exactly on ``as_of``, so a single-day
+    snapshot must snap back to the most recent real trading day (``date <= as_of``)
+    rather than show an empty panel. Mirrors industry._bars_values' on-or-before
+    semantics so the two pages agree on "the current cross-section".
+    """
     spec = get_spec(table)
-    _, rows = _rows(reader.aggregate_current_view(spec, "MAX(date) AS d", ""))
+    tail = f"WHERE date <= {date_lit(as_of)}" if as_of else ""
+    _, rows = _rows(reader.aggregate_current_view(spec, "MAX(date) AS d", tail))
     return str(rows[0][0])[:10] if rows and rows[0][0] is not None else None
 
 
@@ -99,11 +105,19 @@ def breadth(
         "CAST(date AS DATE) AS d, "
         "SUM(CASE WHEN close > pre_close THEN 1 ELSE 0 END) AS adv, "
         "SUM(CASE WHEN close < pre_close THEN 1 ELSE 0 END) AS dec, "
-        "SUM(CASE WHEN close = pre_close THEN 1 ELSE 0 END) AS unch, "
-        "COUNT(*) AS total"
+        "SUM(CASE WHEN close = pre_close THEN 1 ELSE 0 END) AS unch"
     )
     _, brows = _rows(reader.aggregate_current_view(
         bars, proj, "WHERE pre_close IS NOT NULL GROUP BY 1 ORDER BY 1", base or None))
+
+    # Honest coverage over the window: distinct symbols with a usable pre_close
+    # (those that can contribute to breadth) vs all distinct symbols seen. Can
+    # legitimately read <100% -> the badge标红, never a hardcoded full bar (§8.4).
+    cov_proj = ("COUNT(DISTINCT symbol) AS total, "
+                "COUNT(DISTINCT CASE WHEN pre_close IS NOT NULL THEN symbol END) AS covered")
+    _, crows = _rows(reader.aggregate_current_view(bars, cov_proj, "", base or None))
+    cov_total = int(crows[0][0] or 0) if crows else 0
+    cov_covered = int(crows[0][1] or 0) if crows else 0
 
     uni = get_spec(_UNIVERSE)
     uproj = (
@@ -118,18 +132,16 @@ def breadth(
     lim = {str(r[0]): (int(r[1] or 0), int(r[2] or 0)) for r in urows}
 
     dates, adv, dec, unch, lu, ld = [], [], [], [], [], []
-    covered = 0
     for r in brows:
         d = str(r[0])
         dates.append(d)
         adv.append(int(r[1] or 0)); dec.append(int(r[2] or 0)); unch.append(int(r[3] or 0))
-        covered = max(covered, int(r[4] or 0))
         u = lim.get(d, (0, 0))
         lu.append(u[0]); ld.append(u[1])
     return {
         "dates": dates, "advancers": adv, "decliners": dec, "unchanged": unch,
         "limit_up": lu, "limit_down": ld,
-        "pool": pool or "all", "coverage": {"covered": covered, "total": covered},
+        "pool": pool or "all", "coverage": {"covered": cov_covered, "total": cov_total},
     }
 
 

@@ -276,7 +276,6 @@ export default function MarketPage() {
           </VizPanel>
 
           <VizPanel testId="market-panel-status" n="③" title="交易状态占比" en="trading-status mix · 100% stacked" tag={<TimeseriesTag />}
-            badge={statusQ.data?.total?.length ? <CoverageBadge testId="market-panel-status-coverage" covered={statusQ.data.total[statusQ.data.total.length - 1]} total={statusQ.data.total[statusQ.data.total.length - 1]} /> : null}
             footer={statusFoot}>
             {renderBody({ query: statusQ, option: statusOpt, id: "status", name: "status", empty: "该区间无交易状态数据" })}
           </VizPanel>

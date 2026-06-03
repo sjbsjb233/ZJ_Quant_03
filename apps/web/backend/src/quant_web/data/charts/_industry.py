@@ -15,9 +15,10 @@ from __future__ import annotations
 
 from collections import Counter
 
-# Same guard as neutralize._MAX_ROLLUP_DEPTH: a malformed cycle in parent_code
-# can never spin forever.
-_MAX_ROLLUP_DEPTH = 12
+# Same guard/value as quant_factor.neutralize._MAX_ROLLUP_DEPTH: a malformed
+# cycle in parent_code can never spin forever, and keeping the cap identical keeps
+# the rollup口径 literally the same as factor neutralisation (§5.2).
+_MAX_ROLLUP_DEPTH = 8
 
 
 class SectorTree:
