@@ -11,6 +11,9 @@ import { useTheme } from '../../lib/theme';
 // multi-source diff). The lines are fed via the indicator's `extendData`, which
 // holds up to 5 numeric arrays aligned to the main data list by index.
 export const COMPARE_INDICATOR = 'COMPARE';
+// Market-cap sub-pane (VIZ Layer v2 §6.1): 流通市值 + 总市值 over time, sharing the
+// price chart's x-axis. Fed via the indicator's extendData [circArr, totalArr].
+export const MKTCAP_INDICATOR = 'MKTCAP';
 
 const cssVar = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 
@@ -33,6 +36,7 @@ function decorateAxes(axis, fg3, border) {
 // PNG export etc. (整改方案 v1.0 §5.1).
 export const EChart = forwardRef(function EChart({ option, style, height = '100%' }, ref) {
   const innerRef = useRef(null);
+  const wrapRef = useRef(null);
   const { theme } = useTheme();
   const merged = useMemo(() => {
     const fg2 = cssVar('--fg-2');
@@ -53,7 +57,27 @@ export const EChart = forwardRef(function EChart({ option, style, height = '100%
   useImperativeHandle(ref, () => ({
     getEchartsInstance: () => innerRef.current?.getEchartsInstance?.() || null,
   }));
-  return <ReactECharts ref={innerRef} option={merged} notMerge style={{ height, width: '100%', ...style }} />;
+  // Keep the chart sized to its (often flex/grid) container. echarts-for-react
+  // only listens to window resize; panels that gain their width/height *after*
+  // mount (e.g. a query resolving inside a 2-col grid) would otherwise stay
+  // 0×0 and render no canvas. A ResizeObserver fixes that for every chart page.
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return undefined;
+    const ro = new ResizeObserver(() => {
+      const inst = innerRef.current?.getEchartsInstance?.();
+      if (inst && el.clientWidth > 0 && el.clientHeight > 0) {
+        try { inst.resize(); } catch (e) { /* disposed */ }
+      }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  return (
+    <div ref={wrapRef} style={{ height, width: '100%', ...style }}>
+      <ReactECharts ref={innerRef} option={merged} notMerge style={{ height: '100%', width: '100%' }} />
+    </div>
+  );
 });
 
 // ── batch-revision band (整改方案 v1.0 §3.2) ────────────────────────────────
@@ -119,6 +143,30 @@ function registerCompareIndicator() {
   } catch (e) { /* older build */ }
 }
 
+let _mktcapRegistered = false;
+function registerMktCapIndicator() {
+  if (_mktcapRegistered) return;
+  _mktcapRegistered = true;
+  try {
+    registerIndicator({
+      name: MKTCAP_INDICATOR,
+      shortName: '市值(亿)',
+      precision: 0,
+      figures: [
+        { key: 'circ', title: '流通: ', type: 'line' },
+        { key: 'total', title: '总: ', type: 'line' },
+      ],
+      // The candle payload carries total_mv / circ_mv per bar (§6.1), so the
+      // indicator reads them straight off the data list (in 亿) -- no extendData
+      // plumbing, recalculates automatically whenever applyNewData runs.
+      calc: (dataList) => dataList.map((d) => ({
+        circ: d && d.circ_mv != null ? d.circ_mv / 1e8 : null,
+        total: d && d.total_mv != null ? d.total_mv / 1e8 : null,
+      })),
+    });
+  } catch (e) { /* older klinecharts build */ }
+}
+
 function dateToMs(v) {
   if (v == null) return null;
   if (typeof v === 'number') return v;
@@ -150,6 +198,7 @@ export const Kline = forwardRef(function Kline({
   paneHeights,           // reserved
   mainIndicators = ['MA'],
   subIndicators = ['VOL', 'MACD'],
+  showMktCap = false,    // 市值副图 (VIZ Layer v2 §6.1) — 流通/总市值时序 sub-pane
 }, ref) {
   const elRef = useRef(null);
   const chartRef = useRef(null);
@@ -184,6 +233,7 @@ export const Kline = forwardRef(function Kline({
   useEffect(() => {
     registerBatchRevisionBand();
     registerCompareIndicator();
+    registerMktCapIndicator();
     const chart = init(elRef.current);
     chartRef.current = chart;
     try {
@@ -294,6 +344,23 @@ export const Kline = forwardRef(function Kline({
       } catch (e) {}
     });
   }, [marks]);
+
+  // 市值副图 (VIZ Layer v2 §6.1): create/remove the MKTCAP sub-pane here, inside
+  // the component that owns chartRef — the authoritative place (avoids the
+  // parent-effect ref/StrictMode race where a create lands on a disposed chart).
+  // The indicator reads total_mv / circ_mv straight off the candle data, so it
+  // recalculates whenever applyNewData runs. Re-runs on candles so it survives
+  // data swaps.
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return undefined;
+    try { chart.removeIndicator('mktcap_pane', MKTCAP_INDICATOR); } catch (e) {}
+    const hasMv = (candles || []).some((c) => c && (c.total_mv != null || c.circ_mv != null));
+    if (showMktCap && hasMv) {
+      try { chart.createIndicator(MKTCAP_INDICATOR, false, { id: 'mktcap_pane', height: 92 }); } catch (e) {}
+    }
+    return () => { try { chartRef.current?.removeIndicator('mktcap_pane', MKTCAP_INDICATOR); } catch (e) {} };
+  }, [showMktCap, candles]);
 
   return (
     <div

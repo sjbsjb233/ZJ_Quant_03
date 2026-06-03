@@ -44,9 +44,13 @@ export const OBSERV_NAV = [
   { id: 'rules', label: '规则', to: '/observ/rules' },
 ];
 
+// 数据可视化层重构 · VIZ Layer v2 §3：新增「市场全景」「行业视图」两个分析视角，
+// 让 raw.universe / reference.sectors / 市值列首次进入前端可视化。
 export const VIZ_NAV = [
   { id: 'center', label: '可视化中心', to: '/data/charts' },
-  { id: 'kline', label: 'K 线工作台', to: '/data/charts/kline', hot: true },
+  { id: 'market', label: '市场全景', to: '/data/charts/market', hot: true, badge: 'NEW' },
+  { id: 'industry', label: '行业视图', to: '/data/charts/industry', badge: 'NEW' },
+  { id: 'kline', label: 'K 线工作台', to: '/data/charts/kline' },
   { id: 'fundamentals', label: '财务时间序列', to: '/data/charts/fundamentals' },
   { id: 'explorer', label: '通用图表浏览器', to: '/data/charts/explorer' },
 ];
@@ -64,6 +68,9 @@ export function NavGlyph({ id }) {
     audit: <svg {...p}><path d="M3 2h7l3 3v9H3z" /><path d="M5 6h6M5 9h6M5 12h4" /></svg>,
     logs: <svg {...p}><path d="M2 3h12M2 6h12M2 9h8M2 12h5" /><circle cx="13" cy="12" r="2" /></svg>,
     center: <svg {...p}><circle cx="8" cy="8" r="6" /><path d="M8 2v12M2 8h12" /></svg>,
+    // 市场全景：广度/截面柱状；行业视图：层级树 (VIZ Layer v2 §3)。
+    market: <svg {...p}><path d="M2 14h12" /><rect x="2.6" y="8" width="2.4" height="6" /><rect x="6.8" y="4.5" width="2.4" height="9.5" /><rect x="11" y="10" width="2.4" height="4" /></svg>,
+    industry: <svg {...p}><circle cx="8" cy="3" r="1.6" /><path d="M8 4.6v2.4M8 7L4 10M8 7l4 3" /><rect x="2" y="10" width="4" height="4" /><rect x="10" y="10" width="4" height="4" /></svg>,
     kline: <svg {...p}><path d="M3 12V7M3 5V3M8 13V9M8 7V4M13 11V6M13 4V2" /></svg>,
     fundamentals: <svg {...p}><path d="M2 12L6 8L9 10L14 4" /><circle cx="6" cy="8" r="1" /><circle cx="9" cy="10" r="1" /><circle cx="14" cy="4" r="1" /></svg>,
     explorer: <svg {...p}><rect x="2" y="2" width="5" height="5" /><circle cx="11.5" cy="4.5" r="2.5" /><path d="M2 9h5v5H2z" /><path d="M9 9l5 5M14 9l-5 5" /></svg>,

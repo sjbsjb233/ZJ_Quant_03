@@ -10,6 +10,8 @@ from quant_data.schemas import FUNDAMENTALS
 
 from ...deps import get_current_user, get_reader, get_root
 from ...errors import ApiError
+from . import _industry
+from ._util import percentile
 
 router = APIRouter(prefix="/fundamentals", tags=["charts:fundamentals"])
 
@@ -34,6 +36,7 @@ def fundamentals(
     reader=Depends(get_reader), root: str = Depends(get_root), user=Depends(get_current_user),
     period_type: str = "annual", start: dt.date | None = None, end: dt.date | None = None,
     derivatives: str | None = None, compare_industry: bool = False,
+    industry_system: str = "sw",
 ):
     syms = [s for s in symbols.split(",") if s]
     metric_list = [m for m in metrics.split(",") if m]
@@ -80,8 +83,61 @@ def fundamentals(
                 points.append({"period": rp, "value": val, "yoy": yoy, "qoq": qoq})
             series.append({"symbol": sym, "metric": m, "unit": units.get(m), "points": points})
 
+    industry_comparison = None
+    if compare_industry:
+        industry_comparison = _industry_comparison(
+            reader, syms[0], metric_list, as_of_date, period_type, start, end,
+            extras, industry_system)
+
     return {
         "symbols": syms, "metrics": metric_list, "period_type": period_type,
         "as_of_date": as_of_date, "series": series,
-        "industry_comparison": None,  # doc §11 open-q 12: P1
+        "industry_comparison": industry_comparison,  # VIZ Layer v2 §6.2 / §7.3
+    }
+
+
+def _industry_comparison(reader, primary, metric_list, as_of_date, period_type,
+                         start, end, extras, system):
+    """Same-industry median series per metric (the dashed 行业参照带, §6.2).
+
+    Industry is the primary (first) symbol's classification node and its level;
+    peers are every symbol that rolls up to that same node -- the exact rollup
+    used for factor neutralisation (§5.2), so the参照 is口径-consistent. Returns
+    one ``{symbol: "__industry_median__", metric, points}`` series per metric.
+    """
+    st = _industry.load_tree(reader, system)
+    prow = reader.read_symbols(symbols=[primary]).to_pylist()
+    leaf = prow[0].get("sector_code") if prow else None
+    node = st.by_code.get(leaf) if leaf else None
+    if node is None or node["level"] is None:
+        return None
+    level = node["level"]
+    peers = [r["symbol"] for r in reader.read_symbols(active_only=False).to_pylist()
+             if st.roll(r.get("sector_code"), level) == leaf]
+    if not peers:
+        return None
+    try:
+        tbl = reader.read_fundamentals(symbols=peers, as_of_date=as_of_date,
+                                       extras_as_columns=extras or None)
+    except ValueError:
+        return None
+    prows = [r for r in tbl.to_pylist() if _period_ok(r, period_type)]
+    if start:
+        prows = [r for r in prows if r.get("report_period") and r["report_period"] >= start]
+    if end:
+        prows = [r for r in prows if r.get("report_period") and r["report_period"] <= end]
+
+    series = []
+    for m in metric_list:
+        by_period: dict = {}
+        for r in prows:
+            rp, v = r.get("report_period"), r.get(m)
+            if rp is not None and v is not None:
+                by_period.setdefault(rp, []).append(v)
+        points = [{"period": rp, "value": percentile(sorted(vs), 0.5)}
+                  for rp, vs in sorted(by_period.items())]
+        series.append({"symbol": "__industry_median__", "metric": m, "points": points})
+    return {
+        "industry": {"code": leaf, "name": st.name(leaf), "level": level},
+        "peer_count": len(peers), "series": series,
     }

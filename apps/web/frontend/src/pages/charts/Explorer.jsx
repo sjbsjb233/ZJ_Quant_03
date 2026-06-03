@@ -1,5 +1,6 @@
 // Generic chart explorer: 8-step config panel + ECharts preview + template management
 import React, { useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { TerminalShell, TPanel, FSelect } from '../../components/shell';
 import { EChart, Loading, Empty, ErrorState, Modal } from '../../components/ui';
@@ -124,6 +125,7 @@ function SelectBox({ value, onChange, options, placeholder }) {
 
 export default function ExplorerPage() {
   const qc = useQueryClient();
+  const nav = useNavigate();
 
   // Config state
   const [table, setTable]         = useState('');
@@ -252,6 +254,7 @@ export default function ExplorerPage() {
       ]}
       title="通用图表浏览器"
       subtitle="explorer · 拖列建图 · 任意聚合 · 模板可保存"
+      badge={<span className="chip outline" style={{ height: 18, fontSize: 9.5 }}>临时探索 AD-HOC</span>}
       actions={
         <>
           <button className="btn ghost sm" onClick={() => setShowTemplates((v) => !v)}>加载模板</button>
@@ -263,6 +266,22 @@ export default function ExplorerPage() {
         </>
       }
     >
+      {/* Positioning banner (§6.3): explorer = 临时 / 一次性探索; 固定面板去 全景/行业 */}
+      <div data-testid="explorer-positioning-banner" style={{
+        padding: '6px 14px', background: 'var(--info-bg)', borderBottom: '1px solid var(--border)',
+        display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, flexWrap: 'wrap', rowGap: 4,
+        fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--fg-2)',
+      }}>
+        <span style={{ color: 'var(--info)' }}>ⓘ 定位 · 临时 / 一次性探索</span>
+        <span style={{ color: 'var(--fg-3)' }}>固定要长期看的东西,建议去</span>
+        <span data-testid="explorer-link-market" onClick={() => nav('/data/charts/market')}
+          style={{ color: 'var(--info)', textDecoration: 'underline', textUnderlineOffset: 2, cursor: 'pointer' }}>市场全景 ↗</span>
+        <span style={{ color: 'var(--fg-mute)' }}>/</span>
+        <span data-testid="explorer-link-industry" onClick={() => nav('/data/charts/industry')}
+          style={{ color: 'var(--info)', textDecoration: 'underline', textUnderlineOffset: 2, cursor: 'pointer' }}>行业视图 ↗</span>
+        <span style={{ color: 'var(--fg-3)' }}>—— 那里有沉淀好的固定面板</span>
+      </div>
+
       <div style={{ flex: 1, display: 'grid', gridTemplateColumns: '320px 1fr', minHeight: 0 }}>
         {/* Left config panel */}
         <div style={{ borderRight: '1px solid var(--border)', overflow: 'auto', background: 'var(--surface-2)' }}>

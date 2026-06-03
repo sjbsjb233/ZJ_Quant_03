@@ -1,5 +1,6 @@
 // Financial time series workstation: PIT-constrained multi-symbol/metric ECharts
 import React, { useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { TerminalShell, TPanel, FSelect } from '../../components/shell';
 import { EChart, SymbolSearch, Loading, Empty, ErrorState } from '../../components/ui';
@@ -66,13 +67,18 @@ const RANGE_OPTIONS = [
 ];
 
 export default function FundamentalsPage() {
-  const [symbols, setSymbols] = useState(['600519.SH', '000858.SZ']);
+  const [searchParams] = useSearchParams();
+  const [symbols, setSymbols] = useState(() => {
+    const s = searchParams.get('symbol');
+    return s ? [s] : ['600519.SH', '000858.SZ'];
+  });
   const [metrics, setMetrics] = useState(['roe', 'gross_margin']);
   const [periodType, setPeriodType] = useState('quarterly');
   const [asOf, setAsOf] = useState(today());
   const [rangeIdx, setRangeIdx] = useState(1); // default 3Y
   const [derivYoY, setDerivYoY] = useState(false);
   const [derivQoQ, setDerivQoQ] = useState(false);
+  const [compareIndustry, setCompareIndustry] = useState(false); // VIZ Layer v2 §6.2
   const [addMetric, setAddMetric] = useState('');
   const [normalize, setNormalize] = useState('absolute'); // 'absolute' | 'rebased'
   const [toast, setToast] = useState(null);
@@ -94,7 +100,7 @@ export default function FundamentalsPage() {
   const derivatives = [derivYoY && 'yoy', derivQoQ && 'qoq'].filter(Boolean).join(',') || undefined;
 
   const fundamentalsQ = useQuery({
-    queryKey: ['fundamentals', symbols, metrics, periodType, asOf, start, derivatives],
+    queryKey: ['fundamentals', symbols, metrics, periodType, asOf, start, derivatives, compareIndustry],
     queryFn: () =>
       endpoints.fundamentals({
         symbols: symbols.join(','),
@@ -103,6 +109,7 @@ export default function FundamentalsPage() {
         period_type: periodType,
         start,
         ...(derivatives ? { derivatives } : {}),
+        ...(compareIndustry ? { compare_industry: true } : {}),
       }),
     enabled: symbols.length > 0 && metrics.length > 0 && !!asOf,
   });
@@ -158,12 +165,35 @@ export default function FundamentalsPage() {
       };
     });
 
+    // 行业参照带 (NEW · §6.2): dashed grey median line per metric, visually
+    // distinct from the个股 lines so the reference reads as context, not a peer.
+    const ic = fundamentalsQ.data?.industry_comparison;
+    const industrySeries = (ic?.series || []).map((s) => {
+      const opt = KNOWN_METRICS.find((x) => x.value === s.metric);
+      const label = opt ? opt.label : s.metric;
+      let data = allPeriods.map((p) => {
+        const pt = s.points.find((x) => x.period === p);
+        return pt ? pt.value : null;
+      });
+      if (normalize === 'rebased') {
+        const base = data.find((v) => v != null);
+        if (base) data = data.map((v) => (v != null ? (v / base) * 100 : null));
+      }
+      return {
+        name: `行业中位 · ${label}`,
+        type: 'line', data, z: 1,
+        itemStyle: { color: 'oklch(0.62 0.05 248)' },
+        lineStyle: { color: 'oklch(0.62 0.05 248)', type: 'dashed', width: 1.4, opacity: 0.9 },
+        symbol: 'none', connectNulls: true,
+      };
+    });
+
     return {
       xAxis: { type: 'category', data: allPeriods, boundaryGap: false },
       yAxis: [
         { type: 'value', scale: true },
       ],
-      series: echartsSeries,
+      series: [...echartsSeries, ...industrySeries],
       legend: { show: true, type: 'scroll', bottom: 0, itemWidth: 20, itemHeight: 8 },
       tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
       grid: { left: 52, right: 20, top: 24, bottom: 60 },
@@ -234,7 +264,7 @@ export default function FundamentalsPage() {
       path={['viz/', 'fundamentals']}
       fkeys={[
         { k: 'F1', l: 'PIT 日期', onClick: focusAsOf },
-        { k: 'F2', l: '行业均值', onClick: () => showToast('行业均值对比为 P1 计划功能,即将上线') },
+        { k: 'F2', l: '行业均值', onClick: () => setCompareIndustry((v) => !v), active: compareIndustry },
         { k: 'F3', l: '导出', onClick: exportPng },
       ]}
       title="财务时间序列工作台"
@@ -376,6 +406,31 @@ export default function FundamentalsPage() {
           ))}
         </div>
 
+        {/* 对比同行业 toggle — NEW (§6.2): dashed 行业中位数 reference band */}
+        <span
+          data-testid="fund-compare-industry-toggle"
+          onClick={() => setCompareIndustry((v) => !v)}
+          style={{
+            height: 26, padding: '0 9px', marginRight: 8,
+            background: compareIndustry ? 'var(--info-bg)' : 'var(--surface-2)',
+            border: `1px solid ${compareIndustry ? 'var(--info)' : 'var(--border-strong)'}`, borderRadius: 3,
+            display: 'inline-flex', alignItems: 'center', gap: 7, cursor: 'pointer',
+            color: compareIndustry ? 'var(--info)' : 'var(--fg-2)',
+          }}
+        >
+          <span style={{
+            width: 18, height: 12, borderRadius: 6, position: 'relative', display: 'inline-block',
+            background: compareIndustry ? 'var(--info)' : 'var(--border-strong)', transition: 'background 0.12s',
+          }}>
+            <span style={{
+              position: 'absolute', top: 1.5, [compareIndustry ? 'right' : 'left']: 1.5,
+              width: 9, height: 9, borderRadius: '50%', background: 'var(--surface)',
+            }} />
+          </span>
+          <span style={{ fontSize: 10.5 }}>对比同行业</span>
+          <span style={{ fontSize: 8.5, color: 'var(--ok)', border: '1px solid var(--ok)', borderRadius: 2, padding: '0 3px' }}>NEW</span>
+        </span>
+
         <div style={{ flex: 1 }} />
 
         {/* AS_OF control - prominent */}
@@ -419,6 +474,17 @@ export default function FundamentalsPage() {
             <Empty label="请选择 symbol 和指标，设置 AS_OF 日期后查询" />
           ) : (
             <EChart ref={echartRef} option={chartOption} height="100%" />
+          )}
+          {compareIndustry && fundamentalsQ.data?.industry_comparison && (
+            <span data-testid="fund-legend-industry-ref" style={{
+              position: 'absolute', top: 8, right: 18, fontFamily: 'var(--font-mono)', fontSize: 10,
+              padding: '2px 8px', borderRadius: 3, background: 'var(--info-bg)', color: 'var(--info)',
+              border: '1px solid var(--info)', display: 'inline-flex', alignItems: 'center', gap: 6,
+            }}>
+              <span style={{ width: 16, height: 0, borderTop: '2px dashed oklch(0.62 0.05 248)' }} />
+              行业参照 · {fundamentalsQ.data.industry_comparison.industry?.name || '同行业'}中位数
+              <span style={{ color: 'var(--fg-3)' }}>n={fundamentalsQ.data.industry_comparison.peer_count}</span>
+            </span>
           )}
           {toast && (
             <div data-testid="fund-toast" style={{
