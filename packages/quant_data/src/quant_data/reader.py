@@ -329,6 +329,45 @@ class DataReader:
         """
         return con.execute(sql, [files])
 
+    def latest_date_in_view(self, table_name: str, on_or_before=None,
+                            time_col: str = "date") -> dt.date | None:
+        """Latest ``time_col`` in the current view -- WITHOUT a de-dup window scan.
+
+        ``_resolve_as_of`` only needs a single scalar (the most recent trading
+        day). Routing that through ``aggregate_current_view`` forces a full
+        ``ROW_NUMBER() OVER (PARTITION BY date,symbol)`` window sort over the
+        whole bars/universe table just to read a ``MAX(date)`` -- the hot path
+        behind the 2026-06-01 P0. Source-priority de-dup only decides *which* row
+        wins for a ``(date, symbol)`` key; it never drops a key that has any valid
+        row, so ``max(date) over valid-batch rows`` == ``max(date) of the current
+        view``. Skipping the window lets DuckDB push the aggregate down to parquet
+        row-group stats + partition pruning: O(metadata), not O(rows).
+        """
+        spec = get_spec(table_name)
+        files = storage.list_data_files(spec, self.root)
+        valid_ids = [
+            b["batch_id"]
+            for b in batches.list_batches(
+                target_table=spec.name, status="success", root=self.root)
+        ]
+        if not files or not valid_ids:
+            return None
+        con = self._con
+        con.register(
+            "_valid_batches_md",
+            pa.table({"batch_id": pa.array(valid_ids, pa.string())}),
+        )
+        where = ["t._batch_id IN (SELECT batch_id FROM _valid_batches_md)"]
+        if on_or_before is not None:
+            where.append(f"t.{_ident(time_col)} <= {_date_lit(on_or_before)}")
+        sql = (
+            f"SELECT max(t.{_ident(time_col)}) "
+            "FROM read_parquet(?, hive_partitioning=true, union_by_name=true) t "
+            f"WHERE {' AND '.join(where)}"
+        )
+        row = con.execute(sql, [files]).fetchone()
+        return _to_date(row[0]) if row and row[0] is not None else None
+
     def batch_symbol_date_range(
         self, batch_id: str, table: str, symbol: str, start=None, end=None
     ) -> tuple[dt.date | None, dt.date | None]:

@@ -71,3 +71,39 @@ def test_predicate_pushdown_filters(root, reader):
     ], apply_mapping=False, root=root)
     t = reader.read_bars_daily(["A"], dt.date(2025, 11, 3), dt.date(2025, 11, 3))
     assert t.column("close").to_pylist() == [1.0]
+
+
+# --- latest_date_in_view: cheap MAX(date) without the de-dup window (P0 fix) ---
+def test_latest_date_in_view_matches_current_view(root, reader):
+    """The cheap path must equal the (expensive) current-view MAX(date)."""
+    from quant_data.schemas import get_spec
+    d1, d2 = dt.date(2025, 11, 3), dt.date(2025, 11, 4)
+    ingest.ingest_bars_daily(records=[daily_bar(d1, close=10.0)], root=root)
+    ingest.ingest_bars_daily(records=[daily_bar(d2, close=11.0)], root=root)
+    spec = get_spec("raw.bars_daily")
+    old = reader.aggregate_current_view(spec, "MAX(date) AS d", "").fetchall()[0][0]
+    new = reader.latest_date_in_view("raw.bars_daily")
+    assert new == d2 and str(old)[:10] == new.isoformat()
+
+
+def test_latest_date_in_view_excludes_invalidated_latest(root, reader):
+    """If the latest date's only rows are invalidated, latest must revert -- the
+    de-dup-free path still respects valid-batch filtering."""
+    from quant_data.schemas import get_spec
+    d1, d2 = dt.date(2025, 11, 3), dt.date(2025, 11, 4)
+    ingest.ingest_bars_daily(records=[daily_bar(d1, close=10.0)], root=root)
+    bad = ingest.ingest_bars_daily(records=[daily_bar(d2, close=11.0)], root=root)
+    assert reader.latest_date_in_view("raw.bars_daily") == d2
+    batches.invalidate_batch(bad.batch_id, "wrong", root=root)
+    spec = get_spec("raw.bars_daily")
+    old = reader.aggregate_current_view(spec, "MAX(date) AS d", "").fetchall()[0][0]
+    new = reader.latest_date_in_view("raw.bars_daily")
+    assert new == d1 and str(old)[:10] == new.isoformat()
+
+
+def test_latest_date_in_view_on_or_before(root, reader):
+    d1, d2 = dt.date(2025, 11, 3), dt.date(2025, 11, 10)
+    ingest.ingest_bars_daily(records=[daily_bar(d1, close=10.0)], root=root)
+    ingest.ingest_bars_daily(records=[daily_bar(d2, close=11.0)], root=root)
+    assert reader.latest_date_in_view("raw.bars_daily", on_or_before=dt.date(2025, 11, 5)) == d1
+    assert reader.latest_date_in_view("raw.bars_daily", on_or_before=dt.date(2000, 1, 1)) is None

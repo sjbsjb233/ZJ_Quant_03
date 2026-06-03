@@ -19,11 +19,12 @@ from fastapi import APIRouter, Depends
 
 from quant_data.schemas import get_spec
 
-from ...deps import get_current_user, get_reader
+from ...deps import get_current_user, get_reader, heavy_query_slot
 from ...errors import ApiError
 from ._util import date_lit, parse_date, quartiles, sym_in_clause
 
-router = APIRouter(prefix="/market", tags=["charts:market"])
+router = APIRouter(prefix="/market", tags=["charts:market"],
+                   dependencies=[Depends(heavy_query_slot)])
 
 _BARS = "raw.bars_daily"
 _UNIVERSE = "raw.universe"
@@ -82,10 +83,9 @@ def _resolve_as_of(reader, as_of, table=_UNIVERSE):
     rather than show an empty panel. Mirrors industry._bars_values' on-or-before
     semantics so the two pages agree on "the current cross-section".
     """
-    spec = get_spec(table)
-    tail = f"WHERE date <= {date_lit(as_of)}" if as_of else ""
-    _, rows = _rows(reader.aggregate_current_view(spec, "MAX(date) AS d", tail))
-    return str(rows[0][0])[:10] if rows and rows[0][0] is not None else None
+    # O(metadata) latest date on-or-before -- no full-table de-dup window scan (P0 2026-06-01).
+    d = reader.latest_date_in_view(table, on_or_before=parse_date(as_of) if as_of else None)
+    return d.isoformat() if d is not None else None
 
 
 # ── ① 涨跌广度 ────────────────────────────────────────────────────────────────
