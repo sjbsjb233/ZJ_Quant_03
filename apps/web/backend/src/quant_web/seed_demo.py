@@ -25,24 +25,20 @@ warnings.filterwarnings("ignore")
 RNG = random.Random(20260521)
 
 SYMBOLS = [
-    # (symbol, name, exchange, board, sector_code, base_price, total_share)
-    ("600519.SH", "贵州茅台", "SH", "main", "801120", 1680.0, 1_256_000_000),
-    ("000858.SZ", "五粮液", "SZ", "main", "801120", 148.0, 3_881_000_000),
-    ("000568.SZ", "泸州老窖", "SZ", "main", "801120", 210.0, 1_472_000_000),
-    ("000001.SZ", "平安银行", "SZ", "main", "801780", 11.5, 19_405_000_000),
-    ("600000.SH", "浦发银行", "SH", "main", "801780", 8.2, 29_352_000_000),
-    ("600036.SH", "招商银行", "SH", "main", "801780", 38.0, 25_220_000_000),
-    ("000002.SZ", "万科A", "SZ", "main", "801180", 9.4, 11_039_000_000),
-    ("300750.SZ", "宁德时代", "SZ", "gem", "801730", 185.0, 4_400_000_000),
+    ("600519.SH", "贵州茅台", "SH", "main", "801120", 1680.0),
+    ("000858.SZ", "五粮液", "SZ", "main", "801120", 148.0),
+    ("000568.SZ", "泸州老窖", "SZ", "main", "801120", 210.0),
+    ("000001.SZ", "平安银行", "SZ", "main", "801780", 11.5),
+    ("600000.SH", "浦发银行", "SH", "main", "801780", 8.2),
+    ("600036.SH", "招商银行", "SH", "main", "801780", 38.0),
+    ("000002.SZ", "万科A", "SZ", "main", "801180", 9.4),
+    ("300750.SZ", "宁德时代", "SZ", "gem", "801730", 185.0),
 ]
 SECTORS = [
     ("801120", "食品饮料", 1, None), ("801780", "银行", 1, None),
     ("801180", "房地产", 1, None), ("801730", "电力设备", 1, None),
 ]
 BASE = {s[0]: s[5] for s in SYMBOLS}
-SHARES = {s[0]: s[6] for s in SYMBOLS}  # 总股本 (绝对股数)
-_FLOAT_FRAC = 0.62   # 流通股本占比
-_FREE_FRAC = 0.78    # 自由流通占流通比
 
 
 def trading_days(start: dt.date, end: dt.date) -> list[dt.date]:
@@ -86,17 +82,10 @@ def gen_bars_daily(symbols, days, scale=1.0, jitter=0.015) -> list[dict]:
             low = round(min(close, prev * scale) * (1 - abs(RNG.gauss(0, 0.004))), 2)
             open_ = round(min(max(prev * scale * (1 + RNG.gauss(0, 0.003)), low), high), 2)
             vol = RNG.randint(800_000, 40_000_000)
-            # 市值字段 (VIZ Layer v2: 市值分布 / 规模结构 / 行业市值 rollup 用)。
-            tshare = SHARES.get(s, 1_000_000_000)
-            fshare = tshare * _FLOAT_FRAC
             recs.append(dict(date=d, symbol=s, open=open_, high=high, low=low, close=close,
                              pre_close=round(prev * scale, 2), volume=vol,
                              amount=round(close * vol, 2), vwap=close, adj_factor=1.0,
-                             turnover=round(RNG.uniform(0.1, 1.5), 2),
-                             total_mv=round(close * tshare, 2),
-                             circ_mv=round(close * fshare, 2),
-                             total_share=float(tshare), float_share=round(fshare, 2),
-                             free_float_share=round(fshare * _FREE_FRAC, 2)))
+                             turnover=round(RNG.uniform(0.1, 1.5), 2)))
             prev = close / scale
     return recs
 
