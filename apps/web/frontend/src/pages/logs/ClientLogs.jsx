@@ -5,8 +5,8 @@ import { useQuery } from '@tanstack/react-query';
 import { TerminalShell, FilterBar, FInput, FSelect } from '../../components/shell';
 import { Loading, ErrorState, Empty } from '../../components/ui';
 import { endpoints } from '../../lib/api';
-import { fmtN } from '../../lib/format';
-import { LogTable, LogDetail, DetailHeader, TraceShort, fmtTs, fmtTsTime } from './shared';
+import { fmtN, smartTs } from '../../lib/format';
+import { LogTable, LogDetail, DetailHeader, TraceShort, fmtTs } from './shared';
 
 const LEVEL_OPTIONS = [
   { value: '', label: 'all' },
@@ -167,7 +167,7 @@ function SessionCard({ s, onTrace }) {
           <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-3)', marginTop: 2 }}>{s.actor}</div>
         </div>
         <div>
-          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg-2)' }}>{fmtTsTime(s.start)} – {fmtTsTime(s.end)}</div>
+          <div title={`${fmtTs(s.start)} – ${fmtTs(s.end)}`} style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg-2)' }}>{smartTs(s.start, { seconds: true })} – {smartTs(s.end, { seconds: true })}</div>
           <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-3)', marginTop: 2 }}>{s.rows.length} events</div>
         </div>
         <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
@@ -186,7 +186,7 @@ function SessionCard({ s, onTrace }) {
             const isErr = ev.level === 'ERROR' || ev.level === 'CRITICAL';
             return (
               <div key={i} style={{ display: 'grid', gridTemplateColumns: '70px 14px 1fr', gap: 8, padding: '3px 0', alignItems: 'center' }}>
-                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-3)', textAlign: 'right' }} title={fmtTs(ev.ts)}>{fmtTsTime(ev.ts)}</span>
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-3)', textAlign: 'right' }} title={fmtTs(ev.ts)}>{smartTs(ev.ts, { seconds: true })}</span>
                 <span style={{ width: 9, height: 9, borderRadius: isErr ? 0 : 5, transform: isErr ? 'rotate(45deg)' : 'none', justifySelf: 'center', background: isErr ? 'var(--err)' : ev.level === 'WARN' ? 'var(--warn)' : 'var(--info)' }} />
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontFamily: 'var(--font-mono)', fontSize: 11, minWidth: 0 }}>
                   <span style={{ color: errish ? (isErr ? 'var(--err)' : 'var(--warn)') : 'var(--fg)', fontWeight: errish ? 500 : 400, minWidth: 150 }}>{ev.event}</span>

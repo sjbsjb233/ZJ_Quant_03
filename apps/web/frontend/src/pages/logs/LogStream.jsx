@@ -3,7 +3,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { TerminalShell } from '../../components/shell';
 import { logsStreamUrl } from '../../lib/api';
-import { LvlChip, SrcMark, TraceShort, fmtTsTime } from './shared';
+import { LvlChip, SrcMark, TraceShort, fmtTs, fmtTsTime } from './shared';
 
 const SOURCES = ['backend', 'data', 'factor', 'frontend', 'monitor'];
 const LEVEL_OPTIONS = [
@@ -160,7 +160,7 @@ function StreamLine({ r, onTrace }) {
       borderLeft: errish ? '2px solid var(--err)' : r.level === 'WARN' ? '2px solid var(--warn)' : '2px solid transparent',
       paddingLeft: 8, marginLeft: -8, background: errish ? 'rgba(220, 60, 30, 0.04)' : 'transparent', whiteSpace: 'nowrap',
     }}>
-      <span style={{ color: 'var(--fg-3)', fontSize: 10.5 }}>{fmtTsTime(r.ts)}</span>
+      <span title={fmtTs(r.ts)} style={{ color: 'var(--fg-3)', fontSize: 10.5 }}>{fmtTsTime(r.ts)}</span>
       <span><LvlChip lvl={r.level} mini /></span>
       <span><SrcMark src={r.source} /></span>
       <span style={{ color: errish ? 'var(--fg)' : 'var(--fg-2)', fontWeight: errish ? 500 : 400, overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.event}</span>

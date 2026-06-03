@@ -2,7 +2,7 @@
 // Ported from the design handoff (pages-logs-shared.jsx) into the project's
 // component style; same terminal aesthetic as the rest of the shell.
 import React from 'react';
-import { absTime, relTime } from '../../lib/format';
+import { absTime, relTime, dayBoundaryLabel } from '../../lib/format';
 
 export const LEVELS = ['DEBUG', 'INFO', 'WARN', 'ERROR', 'CRITICAL'];
 
@@ -88,29 +88,91 @@ export function KpiCell({ label, value, sub, tone, trend, accent, last }) {
   );
 }
 
+// A bar's local Date from its { hour } | { ts } field (app_log/UTC convention → +Z).
+function barDate(d) {
+  const v = d?.hour ?? d?.ts;
+  if (v == null) return null;
+  const s = typeof v === 'string' && !(v.endsWith('Z') || v.includes('+')) ? `${v}Z` : v;
+  const t = new Date(s);
+  return isNaN(t.getTime()) ? null : t;
+}
+const _pad2 = (n) => String(n).padStart(2, '0');
+const _md = (t) => `${_pad2(t.getMonth() + 1)}-${_pad2(t.getDate())}`;
+
 // Stacked-by-level histogram. data: [{ hour, info, warn, err }].
+// When the bars carry a `hour`/`ts` stamp we also draw a time axis (§5.7):
+// an HH:00 tick every 6 bars, a bold dashed midnight divider where the local
+// calendar day rolls over, and a date-range caption — so bars map onto a day.
 export function StackedBars({ data, width = 720, height = 130 }) {
   const max = Math.max(1, ...data.map((d) => (d.info || 0) + (d.warn || 0) + (d.err || 0)));
   const bw = data.length ? width / data.length : width;
   const gap = Math.max(1, bw * 0.18);
   const inner = bw - gap;
+
+  const times = data.map(barDate);
+  const hasTime = times.some(Boolean);
+  const capH = hasTime ? 13 : 0;     // top: date-range caption
+  const axisH = hasTime ? 14 : 0;    // bottom: HH:00 ticks
+  const plotTop = capH;
+  const plotH = Math.max(1, height - capH - axisH);
+  const baseY = plotTop + plotH;
+
+  // date-range caption (first → last bar's local day; collapse when single day)
+  const firstT = times.find(Boolean);
+  const lastT = [...times].reverse().find(Boolean);
+  const caption = firstT && lastT
+    ? (_md(firstT) === _md(lastT) ? _md(firstT) : `${_md(firstT)} → ${_md(lastT)}`)
+    : null;
+
   return (
     <svg width={width} height={height} className="spark" style={{ display: 'block' }}>
       {[0.25, 0.5, 0.75].map((t) => (
-        <line key={t} x1={0} x2={width} y1={height * t} y2={height * t} stroke="var(--border-faint)" strokeWidth={1} />
+        <line key={t} x1={0} x2={width} y1={plotTop + plotH * t} y2={plotTop + plotH * t} stroke="var(--border-faint)" strokeWidth={1} />
       ))}
       {data.map((d, i) => {
         const x = i * bw + gap / 2;
-        const ie = (d.info || 0) / max * height;
-        const we = (d.warn || 0) / max * height;
-        const ee = (d.err || 0) / max * height;
-        let y = height;
+        const ie = (d.info || 0) / max * plotH;
+        const we = (d.warn || 0) / max * plotH;
+        const ee = (d.err || 0) / max * plotH;
+        let y = baseY;
         const segs = [];
         if (d.info) { y -= ie; segs.push(<rect key="i" x={x} y={y} width={inner} height={ie} fill="var(--info)" opacity="0.55" />); }
         if (d.warn) { y -= we; segs.push(<rect key="w" x={x} y={y} width={inner} height={we} fill="var(--warn)" />); }
         if (d.err) { y -= ee; segs.push(<rect key="e" x={x} y={y} width={inner} height={ee} fill="var(--err)" />); }
         return <g key={i}>{segs}</g>;
       })}
+
+      {/* §5.7 time axis — ticks, midnight divider, caption */}
+      {hasTime && (
+        <g>
+          {caption && (
+            <text x={2} y={9} fill="var(--fg-3)" fontSize={9} fontFamily="var(--font-mono)">{caption}</text>
+          )}
+          {times.map((t, i) => {
+            if (!t) return null;
+            const nodes = [];
+            // hour tick label every 6 bars (first tick anchored left so it can't clip)
+            if (i % 6 === 0) {
+              const firstTick = i === 0;
+              nodes.push(
+                <text key={`t${i}`} x={firstTick ? 2 : i * bw + bw / 2} y={height - 3} textAnchor={firstTick ? 'start' : 'middle'}
+                  fill="var(--fg-3)" fontSize={9} fontFamily="var(--font-mono)">{`${_pad2(t.getHours())}:00`}</text>,
+              );
+            }
+            // bold dashed midnight divider when the local calendar day rolls over
+            // (compare full Y-M-D, not day-of-month — safe for coarser buckets too)
+            const prev = times[i - 1];
+            if (prev && (prev.getFullYear() !== t.getFullYear() || prev.getMonth() !== t.getMonth() || prev.getDate() !== t.getDate())) {
+              const dx = i * bw;
+              nodes.push(<line key={`m${i}`} x1={dx} x2={dx} y1={plotTop} y2={baseY} stroke="var(--fg-3)" strokeWidth={1.5} strokeDasharray="3 2" opacity={0.8} />);
+              nodes.push(
+                <text key={`ml${i}`} x={dx + 2} y={plotTop + 9} fill="var(--fg-2)" fontSize={9} fontFamily="var(--font-mono)" fontWeight={600}>{_md(t)}</text>,
+              );
+            }
+            return <g key={`ax${i}`}>{nodes}</g>;
+          })}
+        </g>
+      )}
     </svg>
   );
 }
@@ -131,6 +193,19 @@ export function relTimeOf(ts) {
   if (!ts) return '—';
   const s = String(ts).endsWith('Z') || String(ts).includes('+') ? ts : `${ts}Z`;
   return relTime(s);
+}
+
+// 模式 A 的日界分隔行 (§4)。占整行宽度,放在跨日的两行之间。
+export function DayDivider({ label, colSpan }) {
+  return (
+    <tr aria-hidden="true" data-testid="day-divider">
+      <td colSpan={colSpan} style={{
+        padding: '2px 10px', fontFamily: 'var(--font-mono)', fontSize: 10.5,
+        color: 'var(--fg-3)', background: 'var(--surface-2)',
+        borderTop: '1px solid var(--border-faint)', borderBottom: '1px solid var(--border-faint)',
+      }}>── {label} {'─'.repeat(10)}</td>
+    </tr>
+  );
 }
 
 // The dense list table shared by AppLogs + ClientLogs.
@@ -156,22 +231,26 @@ export function LogTable({ rows, selectedId, onSelect, emptyLabel = '无匹配�
         {rows.map((r, i) => {
           const sel = r.id === selectedId;
           const errish = r.level === 'ERROR' || r.level === 'CRITICAL';
+          const divider = dayBoundaryLabel(rows[i - 1]?.ts, r.ts);
           return (
-            <tr key={r.id ?? i} onClick={() => onSelect?.(r)} data-testid="log-row" style={{
-              height: 24, cursor: 'pointer', borderBottom: '1px solid var(--border-faint)',
-              background: sel ? 'var(--info-bg)' : (i % 2 === 0 ? 'transparent' : 'rgba(0,0,0,0.012)'),
-            }}>
-              <td title={fmtTs(r.ts)} style={{ padding: '0 10px', color: 'var(--fg-3)', fontSize: 10.5, whiteSpace: 'nowrap' }}>{fmtTsTime(r.ts)}</td>
-              <td style={{ padding: '0 10px' }}><LvlChip lvl={r.level} mini /></td>
-              <td style={{ padding: '0 10px' }}><SrcMark src={r.source} /></td>
-              <td style={{ padding: '0 10px', color: 'var(--fg-3)', fontSize: 10.5, whiteSpace: 'nowrap' }}>{r.logger}</td>
-              <td style={{ padding: '0 10px', color: errish ? 'var(--fg)' : 'var(--fg-2)', fontWeight: errish ? 500 : 400 }}>{r.event}</td>
-              <td style={{ padding: '0 10px', color: 'var(--fg-3)', fontSize: 10.5, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.route || '—'}</td>
-              <td style={{ padding: '0 10px', color: r.actor === 'system' ? 'var(--info)' : 'var(--fg-2)' }}>{r.actor || '—'}</td>
-              <td style={{ padding: '0 10px', textAlign: 'right', color: r.duration_ms > 1000 ? 'var(--warn)' : 'var(--fg-2)', fontVariantNumeric: 'tabular-nums' }}>{r.duration_ms != null ? `${r.duration_ms}ms` : '—'}</td>
-              <td style={{ padding: '0 10px' }}><TraceShort id={r.trace_id} /></td>
-              <td style={{ padding: '0 10px', textAlign: 'right', color: 'var(--info)', fontSize: 10 }}>{sel ? '◀' : 'trace →'}</td>
-            </tr>
+            <React.Fragment key={r.id ?? i}>
+              {divider && <DayDivider label={divider} colSpan={head.length} />}
+              <tr onClick={() => onSelect?.(r)} data-testid="log-row" style={{
+                height: 24, cursor: 'pointer', borderBottom: '1px solid var(--border-faint)',
+                background: sel ? 'var(--info-bg)' : (i % 2 === 0 ? 'transparent' : 'rgba(0,0,0,0.012)'),
+              }}>
+                <td title={fmtTs(r.ts)} style={{ padding: '0 10px', color: 'var(--fg-3)', fontSize: 10.5, whiteSpace: 'nowrap' }}>{fmtTsTime(r.ts)}</td>
+                <td style={{ padding: '0 10px' }}><LvlChip lvl={r.level} mini /></td>
+                <td style={{ padding: '0 10px' }}><SrcMark src={r.source} /></td>
+                <td style={{ padding: '0 10px', color: 'var(--fg-3)', fontSize: 10.5, whiteSpace: 'nowrap' }}>{r.logger}</td>
+                <td style={{ padding: '0 10px', color: errish ? 'var(--fg)' : 'var(--fg-2)', fontWeight: errish ? 500 : 400 }}>{r.event}</td>
+                <td style={{ padding: '0 10px', color: 'var(--fg-3)', fontSize: 10.5, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.route || '—'}</td>
+                <td style={{ padding: '0 10px', color: r.actor === 'system' ? 'var(--info)' : 'var(--fg-2)' }}>{r.actor || '—'}</td>
+                <td style={{ padding: '0 10px', textAlign: 'right', color: r.duration_ms > 1000 ? 'var(--warn)' : 'var(--fg-2)', fontVariantNumeric: 'tabular-nums' }}>{r.duration_ms != null ? `${r.duration_ms}ms` : '—'}</td>
+                <td style={{ padding: '0 10px' }}><TraceShort id={r.trace_id} /></td>
+                <td style={{ padding: '0 10px', textAlign: 'right', color: 'var(--info)', fontSize: 10 }}>{sel ? '◀' : 'trace →'}</td>
+              </tr>
+            </React.Fragment>
           );
         })}
       </tbody>
