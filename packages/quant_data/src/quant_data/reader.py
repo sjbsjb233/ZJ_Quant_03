@@ -261,6 +261,105 @@ class DataReader:
         """
         return int(con.execute(sql, [files]).fetchone()[0])
 
+    def aggregate_current_view(
+        self,
+        spec: TableSpec,
+        projection: str,
+        tail: str = "",
+        filters: list[str] | None = None,
+    ):
+        """Run an aggregation over the current view **in the engine**.
+
+        Builds the same de-dup CTE as ``_current_view`` and exposes its winning
+        rows as a relation ``cv``; the caller's ``projection`` (the part between
+        ``SELECT`` and ``FROM``) and ``tail`` (its ``WHERE``/``GROUP BY``/
+        ``ORDER BY``/``LIMIT``) run on top, so only the small aggregated result
+        is ever materialised -- never the whole table. This is the bounded
+        replacement for ``current_view(table)`` + register + aggregate, which
+        copied 18M+ rows into the Python heap and OOM-killed the web backend
+        (chart explorer, doc §6.9). ``projection``/``tail`` are assembled by the
+        caller from a validated column/agg whitelist + escaped literals, exactly
+        as before -- the SQL surface is unchanged, only the data path is.
+
+        Returns the executed DuckDB cursor (use ``.fetchall()`` / ``.description``).
+        """
+        con = self._con
+        files = storage.list_data_files(spec, self.root)
+        valid_ids = [
+            b["batch_id"]
+            for b in batches.list_batches(target_table=spec.name, status="success", root=self.root)
+        ]
+        prio = sources.priority_map(self.root)
+        if not files or not valid_ids or not prio:
+            con.register("_agg_empty", self._empty(spec, None))
+            return con.execute(f"SELECT {projection} FROM _agg_empty {tail}")
+
+        con.register("_valid_batches", pa.table({"batch_id": pa.array(valid_ids, pa.string())}))
+        con.register(
+            "_src_prio",
+            pa.table(
+                {
+                    "source_id": pa.array(list(prio), pa.string()),
+                    "priority": pa.array(list(prio.values()), pa.int32()),
+                }
+            ),
+        )
+        where = ["t._batch_id IN (SELECT batch_id FROM _valid_batches)"] + (filters or [])
+        where_sql = " AND ".join(where)
+        pk = ", ".join(spec.primary_key)
+        excepts = ["rn", "_src_priority", *spec.partition_names()]
+        except_sql = f" EXCLUDE ({', '.join(_ident(c) for c in excepts)})" if excepts else ""
+        sql = f"""
+        WITH dwp AS (
+            SELECT t.*, p.priority AS _src_priority
+            FROM read_parquet(?, hive_partitioning=true, union_by_name=true) t
+            JOIN _src_prio p ON t._source = p.source_id
+            WHERE {where_sql}
+        ),
+        ranked AS (
+            SELECT *, ROW_NUMBER() OVER (
+                PARTITION BY {pk} ORDER BY {self._DEFAULT_DEDUP}
+            ) AS rn
+            FROM dwp
+        ),
+        cv AS (
+            SELECT *{except_sql} FROM ranked WHERE rn = 1
+        )
+        SELECT {projection} FROM cv {tail}
+        """
+        return con.execute(sql, [files])
+
+    def batch_symbol_date_range(
+        self, batch_id: str, table: str, symbol: str, start=None, end=None
+    ) -> tuple[dt.date | None, dt.date | None]:
+        """Min/max bar **date** one symbol got from a single batch, in-engine.
+
+        ``get_bar_revisions`` only needs the date span a now-invalidated batch
+        wrote for one symbol; reading the whole batch with ``read_batch`` and
+        filtering in Python materialised an entire multi-million-row batch
+        (doc §4.6.2). Pushing the symbol filter + min/max into SQL returns two
+        scalars instead. ``CAST(col AS DATE)`` unifies daily (date) and minute
+        (datetime) so the returned span matches the old date-based logic.
+        """
+        spec = get_spec(table)
+        files = storage.list_data_files(spec, self.root)
+        if not files:
+            return (None, None)
+        time_col = "date" if table == "raw.bars_daily" else "datetime"
+        d = f"CAST({_ident(time_col)} AS DATE)"
+        where = [f"_batch_id = {_str_lit(batch_id)}", f"symbol = {_str_lit(symbol)}"]
+        if start is not None:
+            where.append(f"{d} >= {_date_lit(start)}")
+        if end is not None:
+            where.append(f"{d} <= {_date_lit(end)}")
+        sql = (
+            f"SELECT min({d}), max({d}) "
+            "FROM read_parquet(?, hive_partitioning=true, union_by_name=true) "
+            f"WHERE {' AND '.join(where)}"
+        )
+        lo, hi = self._con.execute(sql, [files]).fetchone()
+        return (lo, hi)
+
     @staticmethod
     def _validate_extras_types(extras_as_columns: dict[str, str] | None) -> None:
         """Reject unknown extras types up front so the empty-dataset path and the

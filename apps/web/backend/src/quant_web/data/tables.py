@@ -400,6 +400,29 @@ def _require_filter_for_large_tables(name: str, p: dict) -> None:
         )
 
 
+def _require_filter_for_full_view(spec, name: str, p: dict) -> None:
+    """Guard the unbounded ``/rows/all`` path (read_full_view has no LIMIT).
+
+    ``/rows`` pushes pagination into SQL and is bounded even without a filter,
+    but ``/rows/all`` materialises every physical row of the table. The blanket
+    ``_REQUIRE_FILTER`` set only covered bars/universe, leaving fundamentals and
+    corporate_actions able to full-scan into the Python heap. Require a bounding
+    filter (symbols, or a date window on the table's own time column) for every
+    high-cardinality raw table here -- only on the export path, so paged browsing
+    of these tables is unchanged.
+    """
+    if spec.mutable or name == "raw.calendar":
+        return  # reference tables + the small static calendar stay open
+    cols = set(spec.all_names())
+    time_col = ("date" if "date" in cols else "datetime" if "datetime" in cols
+                else "action_date" if "action_date" in cols else None)
+    has_symbols = bool(_parse_symbols(p.get("symbols"))) if "symbol" in cols else False
+    has_window = bool(time_col and p.get("start") and p.get("end"))
+    if not (has_symbols or has_window):
+        hint = "symbols" + (" 或 start+end 日期范围" if time_col else "")
+        raise ApiError("MISSING_PARAMETER", f"导出全量视图 {name} 必须指定 {hint}")
+
+
 def _all_query_params(
     symbols: str | None = None, start: str | None = None, end: str | None = None,
     source: str | None = None, batch_id: str | None = None,
@@ -466,6 +489,7 @@ def rows_all(name: str, p: dict = Depends(_all_query_params),
              reader=Depends(get_reader), user=Depends(get_current_user)):
     spec = _spec_or_404(name)
     _require_filter_for_large_tables(name, p)
+    _require_filter_for_full_view(spec, name, p)
     if spec.mutable:  # reference tables have no append-only history
         tbl = _current_view_table(name, reader, p)
         columns, items = table_payload(tbl)

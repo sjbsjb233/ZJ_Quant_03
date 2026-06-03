@@ -833,3 +833,50 @@ def test_monitor_read_rbac_narrowing(client, admin, viewer):
 
     vt = client.get("/api/v1/monitor/tasks", headers=viewer).json()     # 任务台账对 viewer 空
     assert vt["scheduler_tasks"] == {} and vt["jobs"] == []
+
+
+# --- OOM-hardening regression tests (2026-06 memory audit) -------------------
+def test_sources_diff_requires_window_for_large_tables(client, admin):
+    """A full-source diff materialises both sources in memory. Large tables must
+    require a date window; omitting dates previously skipped the 90-day cap."""
+    no_dates = client.post("/api/v1/data/sources/diff", headers=admin, json={
+        "table": "raw.bars_daily", "source_a": "akshare", "source_b": "tushare_pro"})
+    assert no_dates.status_code == 400
+    assert no_dates.json()["error"]["code"] == "MISSING_PARAMETER"
+
+    too_wide = client.post("/api/v1/data/sources/diff", headers=admin, json={
+        "table": "raw.bars_daily", "source_a": "akshare", "source_b": "tushare_pro",
+        "start": "2024-01-01", "end": "2024-12-31"})
+    assert too_wide.status_code == 400
+    assert too_wide.json()["error"]["code"] == "INVALID_DATE_RANGE"
+
+    ok = client.post("/api/v1/data/sources/diff", headers=admin, json={
+        "table": "raw.bars_daily", "source_a": "akshare", "source_b": "tushare_pro",
+        "start": "2024-01-01", "end": "2024-02-01"})
+    assert ok.status_code == 200
+    assert "n_a" in ok.json() and "n_b" in ok.json()
+
+
+def test_rows_all_requires_filter_for_unbounded_tables(client, admin):
+    """/rows/all uses read_full_view (no LIMIT); fundamentals & corporate_actions
+    were unguarded and could full-scan into the Python heap."""
+    for name in ("raw.fundamentals", "raw.corporate_actions"):
+        r = client.get(f"/api/v1/data/tables/{name}/rows/all", headers=admin)
+        assert r.status_code == 400, name
+        assert r.json()["error"]["code"] == "MISSING_PARAMETER", name
+    # with a bounding filter it works again
+    ok = client.get("/api/v1/data/tables/raw.corporate_actions/rows/all", headers=admin,
+                    params={"symbols": "600519.SH"})
+    assert ok.status_code == 200
+
+
+def test_explorer_aggregate_pushdown(client, admin):
+    """Chart explorer aggregates inside the engine over the current view rather
+    than materialising the whole table; result shape must be intact."""
+    r = client.post("/api/v1/data/charts/explorer/preview", headers=admin, json={
+        "table": "raw.bars_daily", "x_axis": "date", "y_axes": ["close"],
+        "aggregation": "monthly_avg", "chart_type": "line"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "x" in body and "series" in body
+    assert body["series"] and len(body["series"][0]["data"]) == len(body["x"])
