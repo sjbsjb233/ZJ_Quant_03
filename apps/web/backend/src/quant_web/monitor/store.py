@@ -205,6 +205,11 @@ class SignalState:
         self.observed_at: dt.datetime | None = None
         self.sentinel_last_seen: dt.datetime | None = None
         self.containers: dict[str, dict] = {}
+        # v2 (可观测层重构方案 §7.4): the sentinel now also pushes host infra (disk)
+        # and pre-judged alert conditions (L0/D1-D4/D7/D13-D15) it detected itself.
+        self.infra: dict = {}
+        self._conditions: list[dict] = []
+        self._conditions_at: dt.datetime | None = None
         # name -> deque[(observed_at, restart_count)] trimmed to the storm window
         self._restart_hist: dict[str, deque] = defaultdict(lambda: deque(maxlen=200))
 
@@ -225,6 +230,12 @@ class SignalState:
                 rc = c.get("restart_count")
                 if isinstance(rc, int):
                     self._restart_hist[name].append((observed, rc))
+            # v2 extras (only-add: a v1 payload simply omits them, staying compatible)
+            if isinstance(payload.get("infra"), dict):
+                self.infra = payload["infra"]
+            if "conditions" in payload:
+                self._conditions = list(payload.get("conditions") or [])
+                self._conditions_at = now
         return len(containers)
 
     def snapshot(self) -> dict:
@@ -233,7 +244,19 @@ class SignalState:
                 "observed_at": self.observed_at,
                 "sentinel_last_seen": self.sentinel_last_seen,
                 "containers": {k: dict(v) for k, v in self.containers.items()},
+                "infra": dict(self.infra),
             }
+
+    def conditions(self, fresh_within_sec: int) -> list[dict]:
+        """Sentinel-judged conditions, but only while still fresh — if the watcher
+        went silent we must *not* keep asserting its last verdicts (D12 covers that
+        blind spot). Stale ⇒ [] ⇒ the evaluator's auto_resolve closes them."""
+        with self._lock:
+            if self._conditions_at is None:
+                return []
+            if (_utcnow() - self._conditions_at).total_seconds() > max(1, fresh_within_sec):
+                return []
+            return [dict(c) for c in self._conditions]
 
     def restart_delta(self, name: str, window_min: int) -> int:
         """ΔRestartCount over the last ``window_min`` minutes for one container."""

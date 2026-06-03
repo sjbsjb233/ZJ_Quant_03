@@ -7,8 +7,17 @@ import { TerminalShell, FilterBar, FInput, FSelect } from '../../components/shel
 import { Loading, ErrorState, Empty } from '../../components/ui';
 import { useAuth } from '../../lib/auth';
 import { endpoints } from '../../lib/api';
+import { useObsStatus } from '../../lib/obsStatus';
 import LogPanel from '../logs/LogPanel';
-import { ObsSev, ObsLayerMark, ObsAlertChip, ObsKap, ObsDrill, agoFrom } from './shared';
+import { ObsSev, ObsLayerMark, ObsAlertChip, ObsKap, ObsDrill, ObsDetector, ObsResMark, ObsEmptyState, agoFrom } from './shared';
+
+// 检测方 (可观测层重构方案 §7A.4): 哨兵直采的基建/存活类 vs 后端评估器日志派生类。
+const SENTINEL_RULES = new Set([
+  'L0.unreachable', 'D1.oom_killed', 'D2.restart_storm', 'D3.unhealthy', 'D4.mem_pressure',
+  'D7.deadman', 'D13.disk', 'D14.cpu_saturation', 'D15.core_dump',
+]);
+const RES_OF = { 'D13.disk': 'disk', 'D14.cpu_saturation': 'cpu', 'D15.core_dump': 'dump' };
+export function detectorOf(ruleId) { return SENTINEL_RULES.has(ruleId) ? 'external' : 'internal'; }
 
 const STATUS_OPTIONS = [
   { value: 'firing,acked', label: '触发中 + 已确认' },
@@ -28,6 +37,12 @@ const LAYER_OPTIONS = [
   { value: 'frontend', label: '前端' }, { value: 'backend', label: '后端' },
   { value: 'data', label: '数据' }, { value: 'factor', label: '因子' }, { value: 'monitor', label: '监控' },
 ];
+const DETECTOR_OPTIONS = [
+  { value: '', label: '全部' },
+  { value: 'external', label: '哨兵 (外层)' },
+  { value: 'internal', label: '后端 (评估器)' },
+  { value: 'resource', label: '资源 (磁盘/CPU/转储)' },
+];
 
 export default function Alerts() {
   const nav = useNavigate();
@@ -35,9 +50,11 @@ export default function Alerts() {
   const { user } = useAuth();
   const canAct = user && (user.role === 'admin' || user.role === 'editor');
 
+  const obs = useObsStatus();
   const [status, setStatus] = useState('firing,acked');
   const [severity, setSeverity] = useState('');
   const [layer, setLayer] = useState('');
+  const [detector, setDetector] = useState('');
   const [target, setTarget] = useState('');
   const [search, setSearch] = useState('');
   const [selId, setSelId] = useState(null);
@@ -49,9 +66,13 @@ export default function Alerts() {
   const q = useQuery({
     queryKey: ['monitorAlerts', params],
     queryFn: () => endpoints.monitorAlerts(params),
-    refetchInterval: 30_000, keepPreviousData: true,
+    refetchInterval: 30_000, keepPreviousData: true, enabled: obs.backendOk,
   });
-  const items = q.data?.items || [];
+  // 「检测方」是客户端筛选 (后端不按 detector 过滤): 哨兵 / 后端 / 资源类。
+  const rawItems = q.data?.items || [];
+  const items = !detector ? rawItems : rawItems.filter((a) => (
+    detector === 'resource' ? !!RES_OF[a.rule_id] : detectorOf(a.rule_id) === detector
+  ));
   const sel = items.find((a) => a.id === selId) || items[0] || null;
 
   const ackMut = useMutation({
@@ -63,7 +84,7 @@ export default function Alerts() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['monitorAlerts'] }),
   });
 
-  const applied = [status, severity, layer, target, search].filter(Boolean).map((k) => ({ k }));
+  const applied = [status, severity, layer, detector, target, search].filter(Boolean).map((k) => ({ k }));
 
   return (
     <TerminalShell
@@ -81,10 +102,11 @@ export default function Alerts() {
       badge={<span className="chip err" style={{ fontSize: 10 }}>▲ {items.filter((a) => a.status === 'firing').length} 触发中</span>}
       actions={<button className="btn ghost sm" onClick={() => q.refetch()}>↻ 刷新</button>}
       filterBar={
-        <FilterBar applied={applied} onClear={() => { setSeverity(''); setLayer(''); setTarget(''); setSearch(''); }}>
+        <FilterBar applied={applied} onClear={() => { setSeverity(''); setLayer(''); setDetector(''); setTarget(''); setSearch(''); }}>
           <FSelect label="状态" value={status} options={STATUS_OPTIONS} onChange={setStatus} width={150} />
           <FSelect label="严重级" value={severity} options={SEV_OPTIONS} onChange={setSeverity} width={120} />
           <FSelect label="层" value={layer} options={LAYER_OPTIONS} onChange={setLayer} width={110} />
+          <FSelect label="检测方" value={detector} options={DETECTOR_OPTIONS} onChange={setDetector} width={150} />
           <FInput label="目标" placeholder="容器 / 任务" value={target} onChange={setTarget} width={140} />
           <FInput label="search" placeholder="标题 / 规则" value={search} onChange={setSearch} width={160} />
         </FilterBar>
@@ -98,7 +120,11 @@ export default function Alerts() {
             <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-3)' }}>· {items.length} 条 · 触发中置顶</span>
           </div>
           <div className="scroll" style={{ flex: 1, overflow: 'auto' }}>
-            {q.isLoading ? <Loading /> : q.error ? <ErrorState error={q.error} onRetry={q.refetch} />
+            {!obs.backendOk ? (
+              <ObsEmptyState kind="offline" title="后端不可达 · 告警台账暂不可用"
+                sub="告警台账在后端 (唯一台账)。后端恢复后将自动加载;实时基建状态请见总览。"
+                hint="实时基建状态请见" onGoOverview={() => nav('/observ/overview')} />
+            ) : q.isLoading ? <Loading /> : q.error ? <ErrorState error={q.error} onRetry={q.refetch} />
               : items.length === 0 ? <Empty label="无匹配告警 🎉" />
                 : items.map((a) => <AlertRow key={a.id} a={a} sel={a.id === sel?.id} onClick={() => setSelId(a.id)} />)}
           </div>
@@ -124,6 +150,7 @@ export default function Alerts() {
 
 function AlertRow({ a, sel, onClick }) {
   const firing = a.status === 'firing';
+  const res = RES_OF[a.rule_id];
   return (
     <div onClick={onClick} style={{
       padding: '9px 14px', borderBottom: '1px solid var(--border-faint)', cursor: 'pointer',
@@ -133,13 +160,15 @@ function AlertRow({ a, sel, onClick }) {
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <ObsSev sev={a.severity} mini />
+        {res && <ObsResMark res={res} tone={a.severity === 'warn' ? 'warn' : 'err'} />}
         <ObsLayerMark layer={a.layer} />
         <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--fg)', fontWeight: 500, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.title}</span>
         <ObsAlertChip state={a.status} mini />
       </div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 14, fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-3)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-3)' }}>
+        <ObsDetector kind={detectorOf(a.rule_id)} mini />
         <span>{a.target || '—'}</span>
-        <span>触发 ×{a.count}</span>
+        <span>×{a.count}</span>
         <span>最近 {agoFrom(a.last_seen)}</span>
         {a.acked_by && <span style={{ color: 'var(--fg-4)' }}>· {a.status === 'resolved' ? '解决' : '确认'} by {a.acked_by}</span>}
       </div>
@@ -152,12 +181,17 @@ function AlertDetail({ a, canAct, nav, onAck, onResolve, busy }) {
   return (
     <div style={{ padding: '14px 16px', fontFamily: 'var(--font-mono)' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
-        <ObsSev sev={a.severity} /><ObsLayerMark layer={a.layer} full /><ObsAlertChip state={a.status} />
+        <ObsSev sev={a.severity} />
+        {RES_OF[a.rule_id] && <ObsResMark res={RES_OF[a.rule_id]} tone={a.severity === 'warn' ? 'warn' : 'err'} full />}
+        <ObsLayerMark layer={a.layer} full />
+        <ObsAlertChip state={a.status} />
+        <ObsDetector kind={detectorOf(a.rule_id)} />
       </div>
       <div style={{ fontSize: 15, color: 'var(--fg)', fontWeight: 600, marginBottom: 4 }}>{a.title}</div>
       <div style={{ fontSize: 11, color: 'var(--fg-3)' }}>
         触发规则: <span style={{ color: 'var(--info)', cursor: 'pointer' }} onClick={() => nav('/observ/rules')}>{a.rule_id} →</span>
         <span style={{ marginLeft: 12 }}>目标: <span style={{ color: 'var(--fg-2)' }}>{a.target || '—'}</span></span>
+        <span style={{ marginLeft: 12 }}>检测方: <span style={{ color: 'var(--fg-2)' }}>{detectorOf(a.rule_id) === 'external' ? '哨兵 (外层)' : '后端评估器'}</span></span>
       </div>
 
       {a.acked_by && (

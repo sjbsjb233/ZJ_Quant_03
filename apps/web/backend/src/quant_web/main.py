@@ -113,6 +113,20 @@ def create_app() -> FastAPI:
     # evaluator thread. Must follow init_db (monitor_alert table) + init_store (D9 reads
     # the pipeline health). No-op when MONITOR_ENABLED=false.
     app.state.monitor_evaluator = init_monitor(settings, SessionLocal, settings.keeper_base)
+    # JSONL → app_log 回填自愈 (可观测层重构方案 §8.3②): 启动后扫描各层本地 JSONL 补齐
+    # 宕机窗口缺口。默认关 (LOG_BACKFILL_ON_START)，开则在后台线程跑 (不拖慢启动)。
+    if settings.log_backfill_on_start:
+        import threading
+
+        from .logging.backfill import run_backfill
+
+        def _backfill() -> None:
+            dirs = [settings.log_file_dir,
+                    *[d.strip() for d in settings.log_backfill_dirs.split(";") if d.strip()]]
+            res = run_backfill(SessionLocal, dirs, since_hours=settings.log_backfill_since_hours)
+            app_logger.info("log.backfill.done", **res)
+
+        threading.Thread(target=_backfill, name="log-backfill", daemon=True).start()
 
     @app.on_event("shutdown")
     def _flush_logs() -> None:  # drain the queue + close files (doc §7.2)

@@ -375,6 +375,19 @@ def archive_logs(retention_days: int | None = None, _: User = Depends(require_ad
     return store.archive_old(retention_days)
 
 
+# ---------------------------------------------------------------- POST /logs/backfill
+@router.post("/backfill")
+def backfill_logs(since_hours: int | None = None, _: User = Depends(require_admin)):
+    """JSONL → app_log 回填自愈 (可观测层重构方案 §8.3②): 扫描各层本地 JSONL, 按
+    (trace_id,ts,event) 去重补齐 backend 宕机窗口的中枢缺口。admin only."""
+    from ..db.base import SessionLocal
+    from .backfill import run_backfill
+    s = get_settings()
+    dirs = [s.log_file_dir, *[d.strip() for d in s.log_backfill_dirs.split(";") if d.strip()]]
+    return run_backfill(SessionLocal, dirs,
+                        since_hours=since_hours or s.log_backfill_since_hours)
+
+
 # ---------------------------------------------------------------- POST /logs/client
 class ClientLogBatch(BaseModel):
     records: list[dict]

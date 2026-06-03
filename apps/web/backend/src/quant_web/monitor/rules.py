@@ -34,14 +34,28 @@ class Rule:
     detail: str         # "参数含义"
     params: tuple[Param, ...] = field(default_factory=tuple)
     enabled_default: bool = True
+    # 检测方 (可观测层重构方案 §6.5)：sentinel = 哨兵 (docker.sock + statvfs 直采, 绕开
+    # backend);backend = 评估器 (日志派生)。生命周期台账始终在 backend (唯一台账)。
+    detector_owner: str = "backend"
+    # container = 挂在某容器上;host = 宿主级 (磁盘)。前端据此归层/渲染。
+    target_kind: str = "container"
 
 
-# D1–D12 (可观测层重构方案 §4.2). source labels mirror the design's 规则页.
+# L0 + D1–D15 (可观测层重构方案 §4.2). source labels mirror the design's 规则页.
+# detector_owner=sentinel ⇒ 检测在哨兵 (绕开 backend);生命周期仍在 backend 唯一台账。
 RULES: tuple[Rule, ...] = (
+    Rule(
+        "L0.unreachable", "存活探测", "哨兵", "error", "backend",
+        "关键容器对存活探测 (HTTP/TCP) 不可达 —— 「是否还活着」的真相源, 不读任何业务接口。",
+        "T = 单次探测超时秒。连续探测失败即判不可达 (启动宽限期内不误报)。",
+        (Param("timeout_sec", "超时 T 秒", "liveness_probe_timeout_sec"),),
+        detector_owner="sentinel",
+    ),
     Rule(
         "D1.oom_killed", "OOM 强杀", "哨兵", "critical", "data",
         "容器被 cgroup OOM killer 杀死 —— 数据 / 写入链路可能中断。",
         "检测到 OOMKilled 即刻触发，CRITICAL 级，无需窗口聚合。",
+        detector_owner="sentinel",
     ),
     Rule(
         "D2.restart_storm", "重启风暴", "哨兵", "critical", "data",
@@ -49,6 +63,7 @@ RULES: tuple[Rule, ...] = (
         "N = 触发阈值次数 · W = 滑动统计窗口 (分钟)。窗口内重启 ≥ N 次即触发。",
         (Param("count", "N 次", "restart_storm_count"),
          Param("window_min", "W 分钟", "restart_storm_window_min")),
+        detector_owner="sentinel",
     ),
     Rule(
         "D3.unhealthy", "容器不健康", "哨兵", "error", "data",
@@ -57,6 +72,7 @@ RULES: tuple[Rule, ...] = (
         (Param("for_sec", "持续 S 秒", "unhealthy_for_sec"),
          Param("flap_count", "抖动 F 次", "health_flap_count"),
          Param("flap_window_min", "窗口分钟", "health_flap_window_min")),
+        detector_owner="sentinel",
     ),
     Rule(
         "D4.mem_pressure", "内存压力", "哨兵", "warn", "data",
@@ -64,6 +80,7 @@ RULES: tuple[Rule, ...] = (
         "P = 内存占用百分比阈值 · S = 须持续的秒数。占用 ≥ P% 连续 ≥ S 秒即触发。",
         (Param("pct", "达 P%", "mem_pressure_pct"),
          Param("for_sec", "持续 S 秒", "mem_pressure_for_sec")),
+        detector_owner="sentinel",
     ),
     Rule(
         "D5.job_interrupted", "启动对账", "数据写者", "error", "data",
@@ -78,10 +95,11 @@ RULES: tuple[Rule, ...] = (
         "超时 (按类型 maintenance/quality/crawl) + 心跳过期 H 分钟无更新即回收。阈值在 data-keeper 配置。",
     ),
     Rule(
-        "D7.deadman", "死人开关", "评估器", "error", "data",
+        "D7.deadman", "死人开关", "哨兵", "error", "data",
         "定时任务超过 H 小时没有「成功」过 —— 专治「它根本没跑成功」的静默故障。",
         "H = 容许的最长无成功间隔 (小时)。距上次成功 > H 即触发，不依赖任务是否报错。",
         (Param("hours", "超过 H 小时", "deadman_hours"),),
+        detector_owner="sentinel",   # 哨兵直采 keeper /health (不再经 backend)
     ),
     Rule(
         "D8.error_rate", "错误率", "评估器", "warn", "backend",
@@ -116,6 +134,30 @@ RULES: tuple[Rule, ...] = (
         "哨兵自身停止心跳 —— 观测能力本身失效 (监控的监控)，面板可能不可信。",
         "Sh = 容许的最长心跳间隔 (秒)。超时即触发。",
         (Param("heartbeat_sec", "心跳超 S 秒", "sentinel_heartbeat_sec"),),
+    ),
+    # ── 第一层新检测器 (本次盲区, 可观测层重构方案 §4.2 · §9.2) ──────────────
+    Rule(
+        "D13.disk", "磁盘水位", "哨兵", "warn", "backend",
+        "宿主关键分区用量超阈值 —— 上次 P0 的直接盲区 (崩溃转储写爆系统盘)。",
+        "Pw = WARN 阈值% · Pc = CRITICAL 阈值%。哨兵 statvfs 直采宿主分区, 用量 ≥ Pw → WARN, ≥ Pc → CRITICAL。",
+        (Param("warn_pct", "WARN Pw%", "disk_warn_pct"),
+         Param("crit_pct", "CRIT Pc%", "disk_crit_pct")),
+        detector_owner="sentinel", target_kind="host",
+    ),
+    Rule(
+        "D14.cpu_saturation", "CPU 饱和", "哨兵", "warn", "backend",
+        "容器 CPU 占用持续打满 —— 健康检查/轻请求被饿死 (P0 时最轻 lookup 排队 7.9s)。",
+        "P = CPU% 阈值 · S = 须持续秒数。占用 ≥ P% 连续 ≥ S 秒即触发。",
+        (Param("pct", "达 P%", "cpu_sat_pct"),
+         Param("for_sec", "持续 S 秒", "cpu_sat_for_sec")),
+        detector_owner="sentinel",
+    ),
+    Rule(
+        "D15.core_dump", "崩溃转储", "哨兵", "critical", "data",
+        "容器可写层体积突增 —— 崩溃 (SIGABRT/SIGSEGV) 写出数 G core dump, 直接写爆磁盘。",
+        "G = 可写层 (SizeRw) 突增阈值 (GiB)。超过即判疑似 core-dump, CRITICAL。",
+        (Param("rw_gb", "可写层 G GiB", "core_dump_rw_gb"),),
+        detector_owner="sentinel",
     ),
 )
 
@@ -197,6 +239,7 @@ def list_rules(settings: Settings, db) -> list[dict]:
         out.append({
             "id": r.id, "name": r.name, "source": r.source, "severity": r.severity,
             "layer": r.layer, "enabled": is_enabled(r, overrides),
+            "detector_owner": r.detector_owner, "target_kind": r.target_kind,
             "params": [{"key": p.key, "label": p.label, "value": eff.get(p.key)}
                        for p in r.params],
             "fired_24h": fired.get(r.id, 0),

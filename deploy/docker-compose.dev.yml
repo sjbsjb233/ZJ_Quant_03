@@ -56,3 +56,5 @@ services:
     build:
       context: ../
       dockerfile: apps/obs-sentinel/Dockerfile
+    ports:
+      - "${OBS_HTTP_PORT:-8400}:8400"        # 直连哨兵状态帧 /obs/v1/* (绕过 nginx) 调试

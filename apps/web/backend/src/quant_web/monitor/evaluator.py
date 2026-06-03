@@ -1,13 +1,18 @@
 """Monitor evaluator — the background守护线程 that turns signals + logs into a
 managed alert lifecycle (可观测层重构方案 §3.2 / §6.2).
 
+评估器瘦身 (可观测层重构方案 §6.1)：基建/存活类条件 (L0/D1–D4/D7/D13–D15) 改由外置
+哨兵检测并上报,评估器**不再自算**;它只保留日志派生检测,并把哨兵判定喂进同一台账。
+
 每 ``MONITOR_EVAL_TICK_SEC`` 一跳:
-  1. 消费最近哨兵信号 → 判定 D1–D4 (哨兵给瞬时，评估器维护时间窗/持续态);
+  1. 消费哨兵上报的 conditions (L0/D1–D4/D7/D13–D15) → 进入同一告警生命周期 (唯一台账);
   2. 从 app_log 捞 job.*.interrupted / job.*.timeout → D5/D6 进入告警台账;
-  3. D7 死人开关 (查 keeper /health.scheduler_tasks);
-  4. D8 错误率、D9 管道健康、D10 某层静默、D11 前端崩溃、D12 哨兵离线;
-  5. 告警生命周期: 去重 trigger / 自动 resolve / 事件总线 publish / webhook 推送 /
+  3. D8 错误率、D9 管道健康、D10 某层静默、D11 前端崩溃、D12 哨兵离线 (日志派生);
+  4. 告警生命周期: 去重 trigger / 自动 resolve / 事件总线 publish / webhook 推送 /
      以 source=monitor 落一条日志 (供实时流 + trace)。
+
+哨兵判定与生命周期分离：检测可在哨兵 (绕开 backend),但**台账始终只有一个** (在 backend)。
+哨兵停报某条件 ⇒ 现有 ``auto_resolve`` 自动关闭它 (键控于 active 集)。
 
 线程模型与 ``AppLogStore`` 一致 (daemon、整跳与每个检测器都 try/except 包裹，绝不让
 评估器崩溃影响请求线程)。第一跳延后一个 tick，所以短测试永不真正评估。
@@ -19,7 +24,6 @@ import json
 import threading
 import urllib.request
 
-import httpx
 from sqlalchemy import func
 
 from ..config import Settings
@@ -32,7 +36,6 @@ from .store import AlertStore, SignalState
 _SEV_RANK = {"info": 0, "warn": 1, "error": 2, "critical": 3}
 _ERROR_LEVELS = ("ERROR", "CRITICAL")
 _FE_CRASH_EVENTS = ("react.boundary", "window.error", "promise.unhandled")
-_KEEPER_TIMEOUT = 2.0
 
 
 def layer_of_container(name: str) -> str:
@@ -53,17 +56,16 @@ def layer_of_container(name: str) -> str:
 class MonitorEvaluator:
     def __init__(self, settings: Settings, session_factory, alert_store: AlertStore,
                  signal_state: SignalState, keeper_base: str = "") -> None:
+        # keeper_base kept for signature stability; D7 detection moved to the sentinel
+        # (评估器瘦身 §6.1), so the evaluator no longer probes keeper directly.
         self._s = settings
         self._sf = session_factory
         self._alerts = alert_store
         self._signals = signal_state
-        self._keeper_base = (keeper_base or "").rstrip("/")
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self.eval_last_run: dt.datetime | None = None
         self._webhook_override: str | None = None        # /monitor/channels POST
-        # per-condition "since" timestamps for duration rules (D3/D4)
-        self._since: dict[tuple, dt.datetime] = {}
 
     # -- lifecycle -----------------------------------------------------------
     def start(self) -> "MonitorEvaluator":
@@ -90,7 +92,7 @@ class MonitorEvaluator:
     def _tick(self) -> None:
         active: dict[tuple, dict] = {}   # (rule_id, layer, target) -> alert payload
         overrides = self._overrides()
-        for detector in (self._d1_d4_from_signals, self._d5_d6_jobs, self._d7_deadman,
+        for detector in (self._consume_sentinel_conditions, self._d5_d6_jobs,
                          self._d8_error_rate, self._d9_pipeline, self._d10_silence,
                          self._d11_fe_crash, self._d12_sentinel):
             try:
@@ -133,62 +135,31 @@ class MonitorEvaluator:
     def _p(self, overrides, rule_id: str, key: str, default: int) -> int:
         return rulemod.param(self._s, overrides, rule_id, key, default)
 
-    # -- D1–D4 (sentinel signals, windowed/duration here) -------------------
-    def _d1_d4_from_signals(self, active: dict, overrides: dict) -> None:
-        snap = self._signals.snapshot()
-        now = dt.datetime.utcnow()
-        for name, c in snap["containers"].items():
-            layer = layer_of_container(name)
-            mem_pct = _mem_pct(c)
-            # D1 — OOMKilled
-            if self._enabled(overrides, "D1.oom_killed") and c.get("oom_killed"):
-                active[("D1.oom_killed", layer, name)] = {
-                    "severity": "critical",
-                    "title": f"{name} 被内核 OOM 强杀",
-                    "detail": {"container": name, "oom_killed": True,
-                               "restart_count": c.get("restart_count")},
-                }
-            # D2 — restart storm
-            if self._enabled(overrides, "D2.restart_storm"):
-                n = self._p(overrides, "D2.restart_storm", "count", 3)
-                w = self._p(overrides, "D2.restart_storm", "window_min", 10)
-                delta = self._signals.restart_delta(name, w)
-                if delta >= n:
-                    active[("D2.restart_storm", layer, name)] = {
-                        "severity": "critical",
-                        "title": f"{name} 在 {w}m 内重启 {delta} 次",
-                        "detail": {"container": name, "restart_delta": delta,
-                                   "window_min": w, "oom_killed": bool(c.get("oom_killed"))},
-                    }
-            # D3 — unhealthy (duration tracked via _since)
-            if self._enabled(overrides, "D3.unhealthy"):
-                s = self._p(overrides, "D3.unhealthy", "for_sec", 90)
-                key = ("D3", name)
-                if c.get("health") == "unhealthy":
-                    since = self._since.setdefault(key, now)
-                    if (now - since).total_seconds() >= s:
-                        active[("D3.unhealthy", layer, name)] = {
-                            "severity": "error",
-                            "title": f"{name} 持续不健康 ≥ {s}s",
-                            "detail": {"container": name, "health": "unhealthy", "for_sec": s},
-                        }
-                else:
-                    self._since.pop(key, None)
-            # D4 — memory pressure (duration)
-            if self._enabled(overrides, "D4.mem_pressure") and mem_pct is not None:
-                p = self._p(overrides, "D4.mem_pressure", "pct", 90)
-                s = self._p(overrides, "D4.mem_pressure", "for_sec", 120)
-                key = ("D4", name)
-                if mem_pct >= p:
-                    since = self._since.setdefault(key, now)
-                    if (now - since).total_seconds() >= s:
-                        active[("D4.mem_pressure", layer, name)] = {
-                            "severity": "warn",
-                            "title": f"{name} 内存压力 {mem_pct}% 持续 ≥ {s}s",
-                            "detail": {"container": name, "mem_pct": mem_pct, "pct": p, "for_sec": s},
-                        }
-                else:
-                    self._since.pop(key, None)
+    # -- consume sentinel-judged conditions (L0/D1–D4/D7/D13–D15) ------------
+    def _consume_sentinel_conditions(self, active: dict, overrides: dict) -> None:
+        """The infra/liveness plane is detected by the 外置哨兵 (§6.1/§6.5). We do
+        **not** re-compute it here — we ingest the conditions it already judged and
+        feed them through the *same* alert lifecycle (dedup / ack / resolve /
+        webhook), so there stays exactly one ledger. When the sentinel goes blind,
+        ``SignalState.conditions`` returns [] (freshness gate) so these auto-resolve
+        — and D12 fires to flag the blind spot itself."""
+        for c in self._signals.conditions(self._s.signal_fresh_sec):
+            rule_id = c.get("code")
+            # honour the per-rule enable toggle (admin can mute a sentinel rule);
+            # unknown codes are ignored so a forward-compatible sentinel can't inject
+            # arbitrary rule_ids into the ledger.
+            if not rule_id or rule_id not in rulemod.RULES_BY_ID:
+                continue
+            if not self._enabled(overrides, rule_id):
+                continue
+            layer = c.get("layer") or "monitor"
+            target = c.get("target")
+            active[(rule_id, layer, target)] = {
+                "severity": c.get("severity", "warn"),
+                "title": c.get("title", rule_id),
+                "detail": c.get("detail"),
+                "trace_id": c.get("trace_id"),
+            }
 
     # -- D5/D6 (surface keeper's interrupted/timeout ERRORs as alerts) ------
     def _d5_d6_jobs(self, active: dict, overrides: dict) -> None:
@@ -213,34 +184,6 @@ class MonitorEvaluator:
                            "message": r.message, "ts": str(r.ts)},
                 "trace_id": r.trace_id,
             }
-
-    # -- D7 dead-man's switch (keeper scheduler last_success) ----------------
-    def _d7_deadman(self, active: dict, overrides: dict) -> None:
-        if not self._enabled(overrides, "D7.deadman") or not self._keeper_base:
-            return
-        hours = self._p(overrides, "D7.deadman", "hours", 25)
-        try:
-            with httpx.Client(timeout=_KEEPER_TIMEOUT) as client:
-                r = client.get(self._keeper_base + "/health")
-                health = r.json() if r.status_code == 200 else {}
-        except Exception:  # noqa: BLE001
-            return
-        tasks = health.get("scheduler_tasks") or {}
-        uptime = health.get("uptime_seconds") or 0
-        now = dt.datetime.utcnow()
-        cutoff = now - dt.timedelta(hours=hours)
-        for task, info in tasks.items():
-            last_success = _parse(info.get("last_success_at")) if isinstance(info, dict) else None
-            overdue = (last_success is not None and last_success < cutoff) or \
-                      (last_success is None and uptime > hours * 3600)
-            if overdue:
-                ago = "从未" if last_success is None else _humanize_ago(now - last_success)
-                active[("D7.deadman", "data", task)] = {
-                    "severity": "error",
-                    "title": f"死人开关 · {task} 超 {hours}h 无成功 ({ago})",
-                    "detail": {"task": task, "hours": hours,
-                               "last_success_at": str(last_success) if last_success else None},
-                }
 
     # -- D8 error rate (per layer, in window) --------------------------------
     def _d8_error_rate(self, active: dict, overrides: dict) -> None:
@@ -416,30 +359,8 @@ class MonitorEvaluator:
         return (self._webhook_override or self._s.log_alert_webhook or "")
 
 
-def _mem_pct(c: dict) -> int | None:
-    usage, limit = c.get("mem_usage"), c.get("mem_limit")
-    if isinstance(usage, (int, float)) and isinstance(limit, (int, float)) and limit > 0:
-        return round(100 * usage / limit)
-    pct = c.get("mem_pct")
-    return int(pct) if isinstance(pct, (int, float)) else None
-
-
 def _alert_level(severity: str) -> str:
     return {"critical": "CRITICAL", "error": "ERROR", "warn": "WARN"}.get(severity, "INFO")
-
-
-def _parse(value) -> dt.datetime | None:
-    from .store import _parse_ts
-    return _parse_ts(value)
-
-
-def _humanize_ago(delta: dt.timedelta) -> str:
-    secs = int(delta.total_seconds())
-    if secs < 3600:
-        return f"{secs // 60}m 前"
-    if secs < 86400:
-        return f"{secs // 3600}h 前"
-    return f"{secs // 86400}d 前"
 
 
 # ── process singleton ────────────────────────────────────────────────────────

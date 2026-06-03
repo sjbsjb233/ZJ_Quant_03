@@ -79,6 +79,14 @@ class Settings(BaseSettings):
     log_alert_min_level: str = "ERROR"
     log_alert_rate_per_min: int = 20
 
+    # --- JSONL → app_log 回填自愈 (可观测层重构方案 §8.3②) -------------------
+    # backend 宕机窗口各层只落了本地 JSONL；恢复后扫描这些文件按 (trace_id,ts,event)
+    # 去重补齐中枢缺口。log_file_dir 总会扫;额外目录 (哨兵/keeper/factor 的 JSONL,
+    # 经 :ro 挂入) 用 ";" 列在 log_backfill_dirs。on_start 默认关 (避免拖慢启动)。
+    log_backfill_dirs: str = ""
+    log_backfill_on_start: bool = False
+    log_backfill_since_hours: int = 48
+
     # --- layered log visibility (容器化重构 V3 §4.2) -----------------------
     # Which log `source`s each non-admin role may see, as a ";"-separated list of
     # "role:source,source" segments. admin is always all sources (not listed here).
@@ -115,6 +123,19 @@ class Settings(BaseSettings):
     sentinel_heartbeat_sec: int = 60             # 哨兵心跳超时 → WARN (监控的监控)
     alert_resolve_clear_sec: int = 60            # 条件连续不满足 S 秒 → 自动 resolve
     monitor_alert_min_level: str = "error"       # webhook 推送阈值 (info|warn|error|critical)
+    # 哨兵上报的 conditions 仅在 sentinel_last_seen 距今 ≤ S 秒时才进台账 (哨兵盲时不臆断,
+    # 改由 D12 兜底);超期则停喂 → 现有 auto_resolve 关闭它们 (可观测层重构方案 §6.5)。
+    signal_fresh_sec: int = 120
+
+    # --- 第一层 (哨兵) 新检测器阈值 (L0/D13/D14/D15, 可观测层重构方案 §9.2) ----
+    # 检测发生在哨兵 (detector_owner=sentinel)；这些值与哨兵 env 同名,compose 同时下发
+    # 给两侧。后端仅用于「规则页」渲染默认阈值 (只读「哨兵配置」徽标, §7A.5)。
+    disk_warn_pct: int = 85                      # D13 磁盘水位 WARN
+    disk_crit_pct: int = 95                      # D13 磁盘水位 CRITICAL
+    cpu_sat_pct: int = 90                        # D14 CPU 饱和阈值
+    cpu_sat_for_sec: int = 120                   # D14 须持续秒数
+    core_dump_rw_gb: float = 2.0                 # D15 可写层突增 ≥ G → 疑似 core-dump
+    liveness_probe_timeout_sec: int = 2          # L0 存活探测超时秒
 
     @property
     def log_sources_by_role(self) -> dict[str, set[str]]:

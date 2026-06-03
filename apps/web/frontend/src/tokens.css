@@ -118,6 +118,8 @@ input, select, textarea { font: inherit; color: inherit; }
   0%, 100% { box-shadow: 0 0 0 0 var(--info); opacity: 1; }
   50% { box-shadow: 0 0 0 3px transparent; opacity: 0.55; }
 }
+/* 加载骨架闪烁 (可观测层重构方案 §7A.1 · ObsSkeleton) */
+@keyframes sk-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
 
 .chip {
   display: inline-flex;

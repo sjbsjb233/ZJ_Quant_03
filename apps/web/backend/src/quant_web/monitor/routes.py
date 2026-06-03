@@ -107,6 +107,33 @@ def _mem_pct(c: dict | None) -> int | None:
     return int(pct) if isinstance(pct, (int, float)) else None
 
 
+def _cpu_pct(c: dict | None) -> float | None:
+    # 哨兵 v2 信号带 cpu_pct (D14 数据源, 可观测层重构方案 §7.4)。
+    if c and isinstance(c.get("cpu_pct"), (int, float)):
+        return c["cpu_pct"]
+    return None
+
+
+def _reachable(c: dict | None) -> bool | None:
+    """L0 真相源 (哨兵直采)。None = 未知 (无哨兵 / v1 信号)。"""
+    if c and "reachable" in c:
+        return bool(c["reachable"])
+    return None
+
+
+def _disk_infra(infra: dict, warn_pct: int, crit_pct: int) -> list[dict]:
+    """Host disk water-levels from the sentinel signal, annotated with a state so
+    the polling fallback (no SSE) still surfaces D13 (可观测层重构方案 §7.2)."""
+    out: list[dict] = []
+    for d in (infra or {}).get("disk", []) or []:
+        pct = d.get("used_pct")
+        if not isinstance(pct, (int, float)):
+            continue
+        state = "error" if pct >= crit_pct else "warn" if pct >= warn_pct else "ok"
+        out.append({"mount": d.get("mount"), "used_pct": int(pct), "state": state})
+    return out
+
+
 def _count_logs(*filters, since: dt.datetime) -> int:
     with SessionLocal() as db:
         q = db.query(func.count(AppLog.id)).filter(AppLog.ts >= since)
@@ -150,6 +177,8 @@ async def _build_health() -> dict:
     now = dt.datetime.utcnow()
     win = now - dt.timedelta(minutes=s.err_rate_window_min)
     day = now - dt.timedelta(hours=24)
+    frontend_sig = _container_for_layer(containers, "frontend")
+    backend_sig = _container_for_layer(containers, "backend")
     keeper_sig = _container_for_layer(containers, "data")
     factor_sig = _container_for_layer(containers, "factor")
     worker = factor_body.get("worker", "unknown")
@@ -157,13 +186,16 @@ async def _build_health() -> dict:
     layers = {
         "frontend": {
             "state": _layer_state(by_layer.get("frontend", [])),
+            "reachable": _reachable(frontend_sig),
             "crash_24h": _count_logs(AppLog.source == "frontend",
                                      AppLog.event.in_(_FE_CRASH_EVENTS), since=day),
         },
         "backend": {
             "state": _layer_state(by_layer.get("backend", []),
                                   liveness_down=(db_state != "ok")),
+            "reachable": _reachable(backend_sig),
             "uptime_s": int((now - _PROCESS_START).total_seconds()),
+            "cpu_pct": _cpu_pct(backend_sig),
             "err_rate_15m": _count_logs(AppLog.source == "backend",
                                         AppLog.level.in_(_ERROR_LEVELS), since=win),
         },
@@ -172,6 +204,7 @@ async def _build_health() -> dict:
                 by_layer.get("data", []),
                 liveness_down=bool(s.keeper_base) and keeper_state == "error",
             ),
+            "reachable": _reachable(keeper_sig),
             "uptime_s": keeper_body.get("uptime_seconds"),
             "restart_count": (keeper_sig or {}).get("restart_count"),
             "oom_killed": bool((keeper_sig or {}).get("oom_killed")),
@@ -179,6 +212,7 @@ async def _build_health() -> dict:
             "jobs_running": keeper_body.get("jobs_running"),
             "jobs_failed_24h": keeper_body.get("jobs_failed_24h"),
             "mem_pct": _mem_pct(keeper_sig),
+            "cpu_pct": _cpu_pct(keeper_sig),
             "scheduler": keeper_body.get("scheduler"),
         },
         "factor": {
@@ -187,9 +221,11 @@ async def _build_health() -> dict:
                 liveness_down=bool(s.factor_api_base) and factor_state == "error",
                 degraded=worker in ("stale", "down"),
             ),
+            "reachable": _reachable(factor_sig),
             "worker": worker,
             "restart_count": (factor_sig or {}).get("restart_count"),
             "mem_pct": _mem_pct(factor_sig),
+            "cpu_pct": _cpu_pct(factor_sig),
         },
         "monitor": {
             "state": _layer_state(by_layer.get("monitor", [])),
@@ -211,6 +247,9 @@ async def _build_health() -> dict:
         "components": {"db": {"state": db_state}, "warehouse": {"state": wh_state},
                        **({"keeper": {"state": keeper_state}} if s.keeper_base else {}),
                        **({"factor": {"state": factor_state}} if s.factor_api_base else {})},
+        # 基建资源 (哨兵 v2 直采)：磁盘水位带 state，供轮询回退也能看见 D13 (§7.2)。
+        "infra": {"disk": _disk_infra(sig.get("infra", {}), s.disk_warn_pct, s.disk_crit_pct)},
+        "sentinel_online": sig["sentinel_last_seen"] is not None,
         "alerts": alert_store.summary() if alert_store else {"firing": 0, "by_severity": {}, "top": []},
     }
 
@@ -236,11 +275,14 @@ async def monitor_topology(user=Depends(get_current_user)):
     containers = []
     for name, c in sig["containers"].items():
         layer = layer_of_container(name)
+        rw = c.get("rw_size_bytes")
         row = {
             "name": name, "layer": layer, "status": c.get("status", "unknown"),
             "health": c.get("health", "none"), "restart_count": c.get("restart_count", 0),
             "oom_killed": bool(c.get("oom_killed")), "mem_usage": c.get("mem_usage"),
             "mem_limit": c.get("mem_limit"), "mem_pct": _mem_pct(c),
+            "cpu_pct": _cpu_pct(c), "reachable": _reachable(c),
+            "rw_size_bytes": rw, "rw_size_gb": round(rw / (1024 ** 3), 1) if isinstance(rw, (int, float)) else None,
             "uptime_s": c.get("uptime_s"), "last_seen": c.get("_seen_at"),
             "alerts": alerts_by_target.get(name, []),
         }
@@ -255,6 +297,8 @@ async def monitor_topology(user=Depends(get_current_user)):
         containers = _synthesize_topology(s, keeper_body, alerts_by_target)
     containers.sort(key=lambda r: ("frontend", "backend", "data", "factor", "monitor").index(r["layer"]) if r["layer"] in ("frontend", "backend", "data", "factor", "monitor") else 9)
     return {"observed_at": sig.get("observed_at"), "containers": containers,
+            # 宿主资源 (磁盘) 是宿主级、不属单容器 → 单列一块 (拓扑「宿主资源」分区, §7A.3)。
+            "infra": {"disk": _disk_infra(sig.get("infra", {}), s.disk_warn_pct, s.disk_crit_pct)},
             "sentinel": signal is not None and sig.get("observed_at") is not None}
 
 
@@ -428,8 +472,12 @@ def _mask(url: str | None) -> str | None:
 
 # ── POST /monitor/signals — 哨兵原始观测上报 (服务令牌) ──────────────────────
 class SignalPayload(BaseModel):
+    # v2 (可观测层重构方案 §7.4): only-add — v1 哨兵省略 v/infra/conditions 仍兼容。
+    v: int | None = None
     observed_at: str | None = None
     containers: list[dict]
+    infra: dict | None = None
+    conditions: list[dict] | None = None
 
 
 @router.post("/signals")

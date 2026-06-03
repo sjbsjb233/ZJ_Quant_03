@@ -20,7 +20,10 @@ export const tokenStore = {
   clear: () => { localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(REFRESH_KEY); localStorage.removeItem(USER_KEY); },
 };
 
-export const api = axios.create({ baseURL: '/api/v1' });
+// A finite timeout so a down/hung backend fails fast (≤15s) instead of hanging on
+// nginx's 60s upstream connect — lets the SPA fall back to the sentinel plane and
+// render the degraded state promptly (可观测层重构方案 §7A.8).
+export const api = axios.create({ baseURL: '/api/v1', timeout: 15000 });
 
 api.interceptors.request.use((cfg) => {
   const t = tokenStore.get();
@@ -250,6 +253,12 @@ export const endpoints = {
   updateRule: (id, body) => api.put(`/monitor/rules/${encodeURIComponent(id)}`, body).then((r) => r.data),
   monitorChannels: () => get('/monitor/channels'),
   setMonitorChannel: (webhook) => post('/monitor/channels', { webhook }),
+
+  // 第一层 · 哨兵状态帧 (可观测层重构方案 §7A.1): 绕开 backend, 走 nginx /obs/。
+  // SSE 不可用时降级拉取这一快照 (轴线: 实时看哨兵帧, 回退看 /monitor/health)。
+  obsStatus: () => axios.get('/obs/v1/status', {
+    headers: { Authorization: `Bearer ${tokenStore.get()}` },
+  }).then((r) => r.data),
 };
 
 // SSE stream URL — EventSource can't set headers, so the token rides as a query
@@ -269,4 +278,13 @@ export function runLogStreamUrl(runId) {
   const t = tokenStore.get();
   if (t) qs.set('token', t);
   return `/api/v1/runs/${encodeURIComponent(runId)}/logs/stream?${qs.toString()}`;
+}
+
+// 哨兵状态帧 SSE — 经 nginx /obs/ (绕开 backend, 可观测层重构方案 §6.3/§7A.1)。
+// EventSource 不能设 header,token 走 query (与 /logs/stream 一致, 哨兵本地 HS256 校验)。
+export function obsStatusStreamUrl(token) {
+  const qs = new URLSearchParams();
+  const t = token ?? tokenStore.get();
+  if (t) qs.set('token', t);
+  return `/obs/v1/status/stream?${qs.toString()}`;
 }
