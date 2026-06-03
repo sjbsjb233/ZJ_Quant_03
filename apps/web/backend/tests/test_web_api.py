@@ -248,6 +248,23 @@ def test_rows_all_requires_bounding_filter(client, admin):
     assert r.status_code == 400 and r.json()["error"]["code"] == "MISSING_PARAMETER"
 
 
+def test_rows_all_applies_enum_filter(client, admin):
+    """The 全量(含作废) view must honour table-specific enum filters
+    (period_type/action_type/market) the same way the current view does --
+    they're shared URL-persisted controls, so switching views must not silently
+    drop the selection (independent-review finding)."""
+    sym = "600519.SH"
+    allp = client.get("/api/v1/data/tables/raw.fundamentals/rows/all", headers=admin,
+                      params={"symbols": sym, "limit": 1000}).json()
+    types = {r["period_type"] for r in allp["items"]}
+    assert len(types) >= 2, "seed should have multiple period_types for the symbol"
+    q1 = client.get("/api/v1/data/tables/raw.fundamentals/rows/all", headers=admin,
+                    params={"symbols": sym, "period_type": "Q1", "limit": 1000}).json()
+    assert q1["items"], "expected Q1 rows in the full view"
+    assert all(r["period_type"] == "Q1" for r in q1["items"])
+    assert q1["total"] < allp["total"]
+
+
 def test_rows_requires_filter_for_large_tables(client, admin):
     """Browsing bars_daily / bars_minute / universe without symbols or a date
     window must 400 -- not silently scan the whole table (the 2026-05-23 OOM)."""

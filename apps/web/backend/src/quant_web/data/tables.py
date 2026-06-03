@@ -538,6 +538,16 @@ def _build_sql_filters(spec, p: dict) -> list[str]:
         srcs = [s for s in p["source"].split(",") if s]
         if srcs:
             filters.append("t._source IN (" + ",".join(_str_lit(s) for s in srcs) + ")")
+    # Table-specific enum filters surfaced as first-class controls (方案 §2.2):
+    # mirror _split_filters so the "全量(含作废)" view honours the same enum
+    # selection the current view does -- otherwise switching views silently
+    # drops e.g. period_type / action_type / market.
+    if spec.name == "raw.fundamentals" and p.get("period_type"):
+        filters.append(f"t.period_type = {_str_lit(p['period_type'])}")
+    if spec.name == "raw.calendar" and p.get("market"):
+        filters.append(f"t.market = {_str_lit(p['market'])}")
+    if spec.name == "raw.corporate_actions" and p.get("action_type"):
+        filters.append(f"t.action_type = {_str_lit(p['action_type'])}")
     return filters
 
 
