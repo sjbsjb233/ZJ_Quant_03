@@ -33,23 +33,29 @@ WARN = "WARN"
 # sweep has no production caller today; this guard makes accidental wiring fail
 # fast with a clear message instead of triggering a multi-table OOM. Properly
 # enabling it needs a streaming / COUNT(*)+sample rewrite of _Ctx and _viol.
-_MAX_INVARIANT_ROWS = int(os.environ.get("QUANT_INVARIANTS_MAX_ROWS", "2000000"))
+_DEFAULT_MAX_INVARIANT_ROWS = 2_000_000
 _INVARIANT_BIG_TABLES = (
     "raw.bars_daily", "raw.universe", "raw.fundamentals", "raw.corporate_actions",
 )
 
 
+def _max_invariant_rows() -> int:
+    # Read at call time so the limit is configurable without re-importing.
+    return int(os.environ.get("QUANT_INVARIANTS_MAX_ROWS", _DEFAULT_MAX_INVARIANT_ROWS))
+
+
 def _guard_dataset_size(reader: DataReader) -> None:
     if os.environ.get("QUANT_INVARIANTS_ALLOW_LARGE", "").lower() in ("1", "true", "yes"):
         return
+    limit = _max_invariant_rows()
     for table in _INVARIANT_BIG_TABLES:
         n = reader.count_current_view(get_spec(table))
-        if n > _MAX_INVARIANT_ROWS:
+        if n > limit:
             raise RuntimeError(
                 f"invariants.check_all would materialise {table} ({n:,} rows > "
-                f"{_MAX_INVARIANT_ROWS:,}) into memory and OOM a memory-limited "
-                "container. This sweep is not production-wired; rewrite _Ctx/_viol "
-                "for streaming/COUNT+sample before enabling it, or set "
+                f"{limit:,}) into memory and OOM a memory-limited container. This "
+                "sweep is not production-wired; rewrite _Ctx/_viol for "
+                "streaming/COUNT+sample before enabling it, or set "
                 "QUANT_INVARIANTS_ALLOW_LARGE=1 to override deliberately."
             )
 
