@@ -193,3 +193,18 @@ def test_inv203_bar_after_delist(standard_world):
     ingest.ingest_bars_daily(records=[daily_bar(dt.date(2024, 7, 1), symbol="600145.SH")],
                              apply_mapping=False, root=root)
     assert _by(invariants.check_all(root=root), "INV-203").severity == "FATAL"
+
+
+# --- OOM guard (2026-06 memory audit) ---------------------------------------
+def test_guard_blocks_oversized_sweep(standard_world, monkeypatch):
+    """check_all must fail fast (not OOM) when the current view exceeds the
+    row budget; QUANT_INVARIANTS_ALLOW_LARGE overrides."""
+    root = standard_world["root"]
+    # tiny budget -> the standard world already exceeds it
+    monkeypatch.setenv("QUANT_INVARIANTS_MAX_ROWS", "1")
+    monkeypatch.delenv("QUANT_INVARIANTS_ALLOW_LARGE", raising=False)
+    with pytest.raises(RuntimeError, match="would materialise"):
+        invariants.check_all(root=root)
+    # explicit override lets the sweep run again
+    monkeypatch.setenv("QUANT_INVARIANTS_ALLOW_LARGE", "1")
+    assert invariants.check_all(root=root) == []

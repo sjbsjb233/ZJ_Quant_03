@@ -67,7 +67,6 @@ def get_bar_revisions(symbol: str, frequency: str = "1d", start=None, end=None,
     revision band.
     """
     table = "raw.bars_daily" if frequency in ("1d", "1w", "1M", "1D", "1W") else "raw.bars_minute"
-    time_col = "date" if table == "raw.bars_daily" else "datetime"
     reader = DataReader(root=root)
     s = _to_date(start) if start is not None else None
     e = _to_date(end) if end is not None else None
@@ -77,20 +76,19 @@ def get_bar_revisions(symbol: str, frequency: str = "1d", start=None, end=None,
         if b["status"] != "invalidated":
             continue
         try:
-            tbl = reader.read_batch(b["batch_id"], table)
+            # Push the symbol filter + min/max into SQL: a single invalidated
+            # batch can hold millions of rows, and read_batch().to_pylist()
+            # materialised the whole thing just to keep one symbol's dates.
+            lo, hi = reader.batch_symbol_date_range(
+                b["batch_id"], table, symbol, start=s, end=e
+            )
         except Exception:  # noqa: BLE001
             continue
-        rows = [r for r in tbl.to_pylist() if r.get("symbol") == symbol]
-        dates = [_to_date(r[time_col]) for r in rows if r.get(time_col) is not None]
-        if s is not None:
-            dates = [d for d in dates if d >= s]
-        if e is not None:
-            dates = [d for d in dates if d <= e]
-        if not dates:
+        if lo is None or hi is None:
             continue
         out.append({
-            "start": min(dates),
-            "end": max(dates),
+            "start": lo,
+            "end": hi,
             "batch_id": b["batch_id"],
             "status": "invalidated",
             "superseded_by": b.get("superseded_by"),

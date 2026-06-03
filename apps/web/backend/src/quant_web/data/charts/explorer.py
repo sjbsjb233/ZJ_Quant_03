@@ -6,7 +6,6 @@ import datetime as dt
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from quant_data.config import connect_duckdb
 from quant_data.schemas import RAW_TABLES, REFERENCE_TABLES, get_spec
 
 from ...db.base import get_db
@@ -43,10 +42,6 @@ def preview(body: ExplorerRequest, reader=Depends(get_reader), user=Depends(get_
         if col not in valid:
             raise ApiError("INVALID_PARAMETER", f"列 {col} 不在表 {body.table} 中")
 
-    cv = reader.current_view(body.table)
-    con = connect_duckdb()
-    con.register("t", cv)
-
     where = []
     for col, vals in (body.filters or {}).items():
         if col in valid and isinstance(vals, list) and vals:
@@ -59,16 +54,20 @@ def preview(body: ExplorerRequest, reader=Depends(get_reader), user=Depends(get_
              if agg in _BIN else _ident(body.x_axis))
     limit = min(body.limit, 200000)
 
+    # Aggregate inside the engine over the de-dup current view -- never
+    # materialise the whole table into Python (root cause of the explorer OOM).
+    # ``aggregate_current_view`` exposes the current view as relation ``cv``;
+    # ``where`` runs post-dedup, exactly as it did on the registered table.
     if body.group_by:
         gcol = _ident(body.group_by)
         y = _ident(body.y_axes[0])
         if agg == "none":
-            sql = (f"SELECT {xexpr} AS x, {gcol} AS g, {y} AS v FROM t{where_sql} "
-                   f"ORDER BY x LIMIT {limit}")
+            projection = f"{xexpr} AS x, {gcol} AS g, {y} AS v"
+            tail = f"{where_sql} ORDER BY x LIMIT {limit}"
         else:
-            sql = (f"SELECT {xexpr} AS x, {gcol} AS g, {_AGG_FN[agg]}({y}) AS v FROM t{where_sql} "
-                   f"GROUP BY x, g ORDER BY x LIMIT {limit}")
-        rows = con.execute(sql).fetchall()
+            projection = f"{xexpr} AS x, {gcol} AS g, {_AGG_FN[agg]}({y}) AS v"
+            tail = f"{where_sql} GROUP BY x, g ORDER BY x LIMIT {limit}"
+        rows = reader.aggregate_current_view(spec, projection, tail).fetchall()
         xs, seen = [], set()
         for r in rows:
             if r[0] not in seen:
@@ -83,18 +82,18 @@ def preview(body: ExplorerRequest, reader=Depends(get_reader), user=Depends(get_
     else:
         if agg == "none":
             cols = ", ".join(f"{_ident(y)} AS {_ident(y)}" for y in body.y_axes)
-            sql = f"SELECT {xexpr} AS x, {cols} FROM t{where_sql} ORDER BY x LIMIT {limit}"
+            projection = f"{xexpr} AS x, {cols}"
+            tail = f"{where_sql} ORDER BY x LIMIT {limit}"
         else:
             cols = ", ".join(f"{_AGG_FN[agg]}({_ident(y)}) AS {_ident(y)}" for y in body.y_axes)
-            sql = (f"SELECT {xexpr} AS x, {cols} FROM t{where_sql} "
-                   f"GROUP BY x ORDER BY x LIMIT {limit}")
-        cur = con.execute(sql)
+            projection = f"{xexpr} AS x, {cols}"
+            tail = f"{where_sql} GROUP BY x ORDER BY x LIMIT {limit}"
+        cur = reader.aggregate_current_view(spec, projection, tail)
         names = [d[0] for d in cur.description]
         rows = cur.fetchall()
         x_out = [_safe(r[0]) for r in rows]
         series = [{"name": names[i + 1], "data": [r[i + 1] for r in rows]}
                   for i in range(len(body.y_axes))]
-    con.close()
     return {"x": x_out, "series": series, "chart_type": body.chart_type,
             "row_count": len(x_out)}
 
