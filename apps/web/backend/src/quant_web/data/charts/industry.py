@@ -20,7 +20,7 @@ from quant_data.schemas import FUNDAMENTALS, get_spec
 from ...deps import get_current_user, get_reader
 from ...errors import ApiError
 from . import _industry
-from ._util import date_lit, quartiles
+from ._util import date_lit, parse_date, quartiles
 
 router = APIRouter(prefix="/industry", tags=["charts:industry"])
 
@@ -54,7 +54,7 @@ def _rows(cursor):
 
 def _resolve_as_of(reader, as_of) -> str:
     if as_of:
-        return str(as_of)[:10]
+        return parse_date(as_of).isoformat()    # validate → 400 on bad input, normalise
     spec = get_spec(_BARS)
     rows = _rows(reader.aggregate_current_view(spec, "MAX(date) AS d", ""))
     if rows and rows[0][0] is not None:

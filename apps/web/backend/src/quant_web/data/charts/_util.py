@@ -30,13 +30,22 @@ def table_for_frequency(frequency: str) -> str:
 # the routers never reach into quant_data internals. Every literal is validated /
 # escaped: dates parse through ``date.fromisoformat`` and strings double single
 # quotes, so the assembled GROUP-BY SQL has no injection surface (doc §8.3).
-def date_lit(value) -> str:
-    """``DATE 'YYYY-MM-DD'`` from a date/str; raises a clean ApiError if bad."""
+def parse_date(value) -> dt.date:
+    """A validated ``date`` from a date/str; raises a clean 400 ApiError if bad.
+
+    Use this anywhere a query-param date is turned into a Python ``date`` for
+    comparisons, so a malformed date returns 400 INVALID_PARAMETER like the rest
+    of the chart routes -- never a bare ValueError → 500.
+    """
     try:
-        d = value if isinstance(value, dt.date) else dt.date.fromisoformat(str(value)[:10])
+        return value if isinstance(value, dt.date) else dt.date.fromisoformat(str(value)[:10])
     except ValueError as e:
         raise ApiError("INVALID_PARAMETER", f"非法日期: {value!r}") from e
-    return f"DATE '{d.isoformat()}'"
+
+
+def date_lit(value) -> str:
+    """``DATE 'YYYY-MM-DD'`` from a date/str; raises a clean ApiError if bad."""
+    return f"DATE '{parse_date(value).isoformat()}'"
 
 
 def str_lit(value: str) -> str:

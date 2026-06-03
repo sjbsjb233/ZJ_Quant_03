@@ -12,17 +12,16 @@ Responses carry only business columns -- never ``_batch_id`` / ``_source`` /
 """
 from __future__ import annotations
 
-import datetime as dt
 import math
 from collections import Counter
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends
 
 from quant_data.schemas import get_spec
 
 from ...deps import get_current_user, get_reader
 from ...errors import ApiError
-from ._util import date_lit, quartiles, sym_in_clause
+from ._util import date_lit, parse_date, quartiles, sym_in_clause
 
 router = APIRouter(prefix="/market", tags=["charts:market"])
 
@@ -252,7 +251,7 @@ def mv_distribution(
 def composition(
     as_of: str | None = None, reader=Depends(get_reader), user=Depends(get_current_user),
 ):
-    as_of_d = dt.date.fromisoformat(str(as_of)[:10]) if as_of else None
+    as_of_d = parse_date(as_of) if as_of else None
     rows = reader.read_symbols(active_only=False).to_pylist()
     counter: Counter = Counter()
     total = 0
@@ -293,8 +292,8 @@ def new_listings(
 ):
     if bucket not in ("month", "year"):
         raise ApiError("INVALID_PARAMETER", "bucket 须为 month / year")
-    start_d = dt.date.fromisoformat(start[:10]) if start else None
-    end_d = dt.date.fromisoformat(end[:10]) if end else None
+    start_d = parse_date(start) if start else None
+    end_d = parse_date(end) if end else None
     counter: Counter = Counter()
     for r in reader.read_symbols(active_only=False).to_pylist():
         ld = r.get("list_date")
