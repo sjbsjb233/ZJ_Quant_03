@@ -52,6 +52,13 @@ services:
     # Container-level OOM containment for the read console's big table scans.
     mem_limit: 12g
     memswap_limit: 12g
+    # CPU 上限:防止全表去重排序把宿主所有核打满 → 健康检查/轻请求饿死
+    # (2026-06-01 P0:最轻的 lookup 排队 7.9s)。按宿主核数预留余量调整。
+    cpus: ${WEB_BACKEND_CPUS:-4}
+    # 关闭 core dump:崩溃不再向容器 /app(→ 宿主 /)写出数十 G 的 core,
+    # 从根上切断「崩溃 → 写爆系统盘」这条路径(2026-06-01 P0 直接原因)。
+    ulimits:
+      core: 0
     depends_on:
       - data-keeper
       - factor-api
@@ -112,6 +119,9 @@ services:
     # instead of thrashing. Tunable via env (see .env.example).
     mem_limit: ${DATA_KEEPER_MEM_LIMIT:-8g}
     memswap_limit: ${DATA_KEEPER_MEM_LIMIT:-8g}
+    # 关闭 core dump:崩溃只重启,不向宿主系统盘写出数十 G 的 core (2026-06-01 P0)。
+    ulimits:
+      core: 0
     environment:
       <<: *logging-env
       QUANT_DATA_ROOT: /data
@@ -158,6 +168,9 @@ services:
     # an 8GB core into the unmapped /app layer (2026-06-01 disk-full incident).
     mem_limit: ${FACTOR_API_MEM_LIMIT:-6g}
     memswap_limit: ${FACTOR_API_MEM_LIMIT:-6g}
+    # 关闭 core dump:崩溃只重启,不向宿主系统盘写出数十 G 的 core (2026-06-01 P0)。
+    ulimits:
+      core: 0
     depends_on:
       - data-keeper
     environment:
@@ -191,6 +204,9 @@ services:
     # with FACTOR_CONCURRENCY. Was unbounded → 2026-06-01 core-dumps on "/".
     mem_limit: ${FACTOR_WORKER_MEM_LIMIT:-12g}
     memswap_limit: ${FACTOR_WORKER_MEM_LIMIT:-12g}
+    # 关闭 core dump:崩溃只重启,不向宿主系统盘写出数十 G 的 core (2026-06-01 P0)。
+    ulimits:
+      core: 0
     depends_on:
       - factor-api
     environment:

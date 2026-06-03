@@ -1,6 +1,8 @@
 """FastAPI dependencies: settings, data root, DataReader, current user, RBAC, auditor."""
 from __future__ import annotations
 
+import os
+import threading
 import uuid
 
 from fastapi import Depends, Request
@@ -21,6 +23,27 @@ bearer = HTTPBearer(auto_error=False)
 
 # role hierarchy (doc §9.2): admin ⊃ editor ⊃ viewer
 ROLE_RANK = {"viewer": 0, "editor": 1, "admin": 2}
+
+# ── heavy-scan concurrency gate (P0 2026-06-01) ──────────────────────────────
+# A process-wide bounded semaphore: at most N heavy reads (full-table / range
+# scans behind the viz pages) run at once. The market / industry / explorer pages
+# fan out 5-6 such queries on load; without a cap they pinned all cores + pushed
+# RAM past the cgroup limit → crash + 67G core dumps that filled the host disk.
+# Sync FastAPI endpoints run in a threadpool, so a threading semaphore is the
+# right primitive. Over budget → 503 (let the client retry) instead of melting.
+_HEAVY_SLOTS = int(os.getenv("VIZ_MAX_CONCURRENT_SCANS", "3"))
+_HEAVY_TIMEOUT = float(os.getenv("VIZ_SLOT_TIMEOUT_SEC", "8"))
+_heavy_sema = threading.BoundedSemaphore(_HEAVY_SLOTS)
+
+
+def heavy_query_slot():
+    """Gate a heavy read endpoint; 503 if the gate is saturated past the timeout."""
+    if not _heavy_sema.acquire(timeout=_HEAVY_TIMEOUT):
+        raise ApiError("SERVICE_UNAVAILABLE", "数据服务繁忙,请稍后重试")
+    try:
+        yield
+    finally:
+        _heavy_sema.release()
 
 
 def settings_dep() -> Settings:

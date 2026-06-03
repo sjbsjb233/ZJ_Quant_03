@@ -17,12 +17,13 @@ from fastapi import APIRouter, Depends
 
 from quant_data.schemas import FUNDAMENTALS, get_spec
 
-from ...deps import get_current_user, get_reader
+from ...deps import get_current_user, get_reader, heavy_query_slot
 from ...errors import ApiError
 from . import _industry
 from ._util import date_lit, parse_date, quartiles
 
-router = APIRouter(prefix="/industry", tags=["charts:industry"])
+router = APIRouter(prefix="/industry", tags=["charts:industry"],
+                   dependencies=[Depends(heavy_query_slot)])
 
 _BARS = "raw.bars_daily"
 _FUND_BUSINESS = set(FUNDAMENTALS.business_names())
@@ -55,11 +56,9 @@ def _rows(cursor):
 def _resolve_as_of(reader, as_of) -> str:
     if as_of:
         return parse_date(as_of).isoformat()    # validate → 400 on bad input, normalise
-    spec = get_spec(_BARS)
-    rows = _rows(reader.aggregate_current_view(spec, "MAX(date) AS d", ""))
-    if rows and rows[0][0] is not None:
-        return str(rows[0][0])[:10]
-    return dt.date.today().isoformat()
+    # O(metadata) latest trading day -- no full-table de-dup window scan (P0 2026-06-01).
+    d = reader.latest_date_in_view(_BARS)
+    return d.isoformat() if d is not None else dt.date.today().isoformat()
 
 
 def _bars_values(reader, field: str, as_of: str) -> dict[str, float]:

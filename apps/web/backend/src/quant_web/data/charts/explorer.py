@@ -10,16 +10,19 @@ from quant_data.schemas import RAW_TABLES, REFERENCE_TABLES, get_spec
 
 from ...db.base import get_db
 from ...db.models import ChartTemplate, User
-from ...deps import get_current_user, get_reader
+from ...deps import get_current_user, get_reader, heavy_query_slot
 from ...errors import ApiError
 from ..schemas import ChartTemplateCreate, ExplorerRequest
 
-router = APIRouter(prefix="/explorer", tags=["charts:explorer"])
+router = APIRouter(prefix="/explorer", tags=["charts:explorer"],
+                   dependencies=[Depends(heavy_query_slot)])
 
 _BROWSEABLE = {**RAW_TABLES, **REFERENCE_TABLES}
 _AGG_FN = {"daily_avg": "avg", "weekly_avg": "avg", "monthly_avg": "avg",
            "sum": "sum", "count": "count", "min": "min", "max": "max"}
 _BIN = {"daily_avg": "day", "weekly_avg": "week", "monthly_avg": "month"}
+_RAW_NO_AGG_CAP = 5000     # agg=none materialises row-by-row → tighten detail-preview cap
+_AGG_ROW_CAP = 50000       # aggregated output is itself bounded → cap can be looser
 
 
 def _ident(name: str) -> str:
@@ -52,7 +55,17 @@ def preview(body: ExplorerRequest, reader=Depends(get_reader), user=Depends(get_
     agg = body.aggregation
     xexpr = (f"date_trunc('{_BIN[agg]}', {_ident(body.x_axis)})"
              if agg in _BIN else _ident(body.x_axis))
-    limit = min(body.limit, 200000)
+    # agg=none materialises every row → trivially pulls a whole big table into
+    # memory (the 2026-06 OOM-audit pattern). Refuse unfiltered detail previews of
+    # raw (large) tables, and cap row counts by mode.
+    if agg == "none":
+        if body.table in RAW_TABLES and not where:
+            raise ApiError(
+                "INVALID_PARAMETER",
+                "原始大表的明细预览必须带筛选条件 (filters),或改用聚合模式")
+        limit = min(body.limit, _RAW_NO_AGG_CAP)
+    else:
+        limit = min(body.limit, _AGG_ROW_CAP)
 
     # Aggregate inside the engine over the de-dup current view -- never
     # materialise the whole table into Python (root cause of the explorer OOM).
