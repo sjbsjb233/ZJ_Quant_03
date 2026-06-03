@@ -7,6 +7,7 @@ import { useQuery } from '@tanstack/react-query';
 import { TerminalShell, FSelect } from '../../components/shell';
 import { Kline, SymbolSearch, Loading, Empty, ErrorState } from '../../components/ui';
 import { COMPARE_INDICATOR } from '../../components/ui/charts';
+import { fmtCap } from './vizShared';
 import {
   KlineIndicatorPanel, KlineDrawPanel, KlineExportPanel, Popover,
 } from '../../components/ui/KlineToolPanels';
@@ -58,7 +59,14 @@ const RANGE_OPTIONS = [
   { display: '6M',  months: 6 },
   { display: '1Y',  months: 12 },
   { display: '3Y',  months: 36 },
+  { display: '5Y',  months: 60 },
   { display: 'ALL', months: null },
+];
+
+const MODE_OPTIONS = [
+  { value: 'single', label: '单 symbol' },
+  { value: 'multi',  label: '多 symbol 对比' },
+  { value: 'diff',   label: '源对比' },
 ];
 
 function computeStart(months) {
@@ -110,6 +118,9 @@ export default function KlinePage() {
   // marks (governance transparency — default ON, doc §11.13)
   const [marksEnabled, setMarksEnabled] = useState(true);
 
+  // 市值副图 (VIZ Layer v2 §6.1) — 流通/总市值时序副图, 默认开
+  const [showMktCap, setShowMktCap] = useState(true);
+
   // tool-rail popovers
   const [panel, setPanel] = useState(null); // 'main' | 'sub' | 'draw' | 'export' | 'settings' | null
 
@@ -121,6 +132,15 @@ export default function KlinePage() {
   const isGrid = isMulti && compareMode === 'grid';
   const isOverlay = isMulti && compareMode === 'overlay';
   const diffActive = diffMode && !isMulti;
+
+  // top-bar mode selector (design: 单 symbol / 多 symbol 对比 / 源对比) — a thin
+  // driver over the existing showCompare + diffMode state.
+  const mode = diffMode ? 'diff' : (showCompare || isMulti) ? 'multi' : 'single';
+  const setMode = useCallback((m) => {
+    if (m === 'single') { setShowCompare(false); setDiffMode(false); setSymbols((p) => [p[0]]); }
+    else if (m === 'multi') { setShowCompare(true); setDiffMode(false); }
+    else if (m === 'diff') { setShowCompare(true); setDiffMode(true); }
+  }, []);
 
   useEffect(() => {
     setSearchParams({ symbol }, { replace: true });
@@ -297,6 +317,7 @@ export default function KlinePage() {
     { id: 'sub',      i: '⊟', l: '副图指标', onClick: () => togglePanel('sub') },
     { id: 'draw',     i: '✎', l: '绘图工具', onClick: () => togglePanel('draw') },
     { id: 'marks',    i: '⚑', l: '标记控制', onClick: () => setMarksEnabled((v) => !v), active: marksEnabled },
+    { id: 'mktcap',   i: '¥', l: '市值副图', onClick: () => setShowMktCap((v) => !v), active: showMktCap },
     { id: 'settings', i: '☰', l: '设置',     onClick: () => togglePanel('settings') },
     null,
     { id: 'fs',       i: '⇲', l: '全屏',     onClick: toggleFullscreen },
@@ -375,6 +396,9 @@ export default function KlinePage() {
         {!diffActive && (
           <FSelect label="src" value={source} options={SOURCE_OPTIONS} onChange={setSource} width={130} />
         )}
+        <span style={{ marginRight: 8 }} />
+        <FSelect label="mode" value={mode} options={MODE_OPTIONS}
+          onChange={(m) => { setMode(m); if (m !== 'single') setShowCompare(true); }} width={120} testId="kline-mode-select" />
 
         <span style={{ color: 'var(--fg-mute)', margin: '0 10px' }}>│</span>
 
@@ -405,6 +429,7 @@ export default function KlinePage() {
           {RANGE_OPTIONS.map((r, i) => (
             <button
               key={r.display}
+              data-testid={`kline-range-${r.display}`}
               onClick={() => setRangeIdx(i)}
               style={{
                 height: 26, padding: '0 9px',
@@ -516,6 +541,9 @@ export default function KlinePage() {
           ['LOW',  fmtPrice(lastCandle?.low)],
           ['PREV', fmtPrice(prevClose)],
           ['VOL',  lastCandle?.volume != null ? fmtCompact(lastCandle.volume) : '—'],
+          ['AMT',  lastCandle?.amount != null ? fmtCompact(lastCandle.amount) : '—'],
+          ['TURN', lastCandle?.turnover != null ? `${Number(lastCandle.turnover).toFixed(2)}%` : '—'],
+          ['MKT.CAP', lastCandle?.total_mv != null ? fmtCap(lastCandle.total_mv) : '—'],
         ].map(([k, v]) => (
           <div key={k}>
             <div style={{ fontSize: 9.5, color: 'var(--fg-3)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{k}</div>
@@ -529,7 +557,7 @@ export default function KlinePage() {
           </span>
         )}
         {marksEnabled && batchRevisions.length > 0 && (
-          <span style={{ fontSize: 10, color: 'var(--warn)' }}>
+          <span data-testid="kline-revision-warning" style={{ fontSize: 10, color: 'var(--warn)' }}>
             ⚠ {batchRevisions[0].start?.slice(0, 10)} → {batchRevisions[0].end?.slice(0, 10)} 区间被批次修订
           </span>
         )}
@@ -640,6 +668,7 @@ export default function KlinePage() {
                 marks={marksEnabled && !isMulti && !diffActive ? marksQ.data : null}
                 mainIndicators={mainIndicators}
                 subIndicators={subIndicators}
+                showMktCap={showMktCap && !isMulti && !diffActive}
                 onCrosshair={setHover}
                 onLoadMore={loadMore}
                 onMarkClick={(r) => r?.batch_id && nav(`/data/batches/${r.batch_id}`)}
@@ -670,6 +699,8 @@ export default function KlinePage() {
                     ['low',    fmtPrice(infoCandle.low)],
                     ['close',  fmtPrice(infoCandle.close)],
                     ['volume', fmtCompact(infoCandle.volume)],
+                    ['amount', infoCandle.amount != null ? fmtCompact(infoCandle.amount) : '—'],
+                    ['turn',   infoCandle.turnover != null ? `${Number(infoCandle.turnover).toFixed(2)}%` : '—'],
                     ['date',   fmtTs(infoCandle.timestamp)],
                   ].map(([k, v]) => (
                     <div key={k}>
@@ -684,7 +715,7 @@ export default function KlinePage() {
             </div>
 
             {/* Metadata */}
-            <div style={{ flex: 1, padding: 10, borderRight: '1px solid var(--border)' }}>
+            <div data-testid="kline-hover-meta" style={{ flex: 1, padding: 10, borderRight: '1px solid var(--border)' }}>
               <div style={{
                 fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--fg-3)',
                 textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4,
@@ -705,6 +736,12 @@ export default function KlinePage() {
                     ? <span style={{ color: 'var(--fg)' }}>{infoCandle._source}</span>
                     : <span style={{ color: 'var(--fg-4)' }}>—</span>}
                 </div>
+                <div>
+                  _ingested_at{' '}
+                  {infoCandle?._ingested_at
+                    ? <span style={{ color: 'var(--fg-2)' }}>{String(infoCandle._ingested_at).replace('T', ' ').slice(0, 19)}</span>
+                    : <span style={{ color: 'var(--fg-4)' }}>—</span>}
+                </div>
                 <div style={{ color: 'var(--fg-3)', fontSize: 10 }}>
                   {mainCandles.length} candles · {freq} · {adjust} · {viewMode}
                 </div>
@@ -712,13 +749,14 @@ export default function KlinePage() {
             </div>
 
             {/* Actions */}
-            <div style={{ width: 200, padding: 10, display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <div data-testid="kline-hover-actions" style={{ width: 200, padding: 10, display: 'flex', flexDirection: 'column', gap: 4 }}>
               <div style={{
                 fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--fg-3)',
                 textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4,
               }}>ACTIONS</div>
               <button
                 className="btn ghost sm"
+                data-testid="kline-jump-batch"
                 style={{ fontSize: 10.5, justifyContent: 'flex-start' }}
                 disabled={!infoCandle?._batch_id}
                 onClick={() => infoCandle?._batch_id && nav(`/data/batches/${infoCandle._batch_id}`)}
@@ -730,9 +768,16 @@ export default function KlinePage() {
               >↗ 查看行 lineage</button>
               <button
                 className="btn ghost sm"
+                data-testid="kline-jump-tablebrowser"
                 style={{ fontSize: 10.5, justifyContent: 'flex-start' }}
                 onClick={() => nav('/data/tables/raw.bars_daily')}
               >↗ 在表浏览中打开</button>
+              <button
+                className="btn ghost sm"
+                style={{ fontSize: 10.5, justifyContent: 'flex-start' }}
+                disabled={!infoCandle}
+                onClick={() => infoCandle && navigator.clipboard?.writeText(JSON.stringify(infoCandle, null, 2))}
+              >⎘ 复制行数据</button>
             </div>
           </div>
         </div>

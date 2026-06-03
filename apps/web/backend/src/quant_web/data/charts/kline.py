@@ -29,7 +29,10 @@ def _read_candles(reader, symbol, frequency, adjust, start, end, source, view):
             rows = [r for r in rows if r.get("_source") == source]
         rows = _date_window(rows, table, start, end)
     elif table == "raw.bars_daily":
-        tbl = reader.read_bars_daily(symbols=[symbol], start=start, end=end, adjust=adjust)
+        # surface `turnover` (an _extras field) as a column so the quote-header
+        # TURN cell + hover detail can show it (VIZ Layer v2 §6.1).
+        tbl = reader.read_bars_daily(symbols=[symbol], start=start, end=end, adjust=adjust,
+                                     extras_as_columns={"turnover": "DOUBLE"})
         rows = tbl.to_pylist()
     else:
         tbl = reader.read_bars_minute(symbols=[symbol], start=start, end=end,

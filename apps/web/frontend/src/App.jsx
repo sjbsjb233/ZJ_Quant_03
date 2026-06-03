@@ -18,6 +18,8 @@ import Maintenance from './pages/Maintenance';
 import Audit from './pages/Audit';
 import Settings from './pages/Settings';
 import ChartsHub from './pages/charts/ChartsHub';
+import Market from './pages/charts/Market';
+import Industry from './pages/charts/Industry';
 import Kline from './pages/charts/Kline';
 import Fundamentals from './pages/charts/Fundamentals';
 import Explorer from './pages/charts/Explorer';
@@ -103,6 +105,8 @@ export default function App() {
       <Route path="/factors/logs" element={<Navigate to="/observ/logs?source=factor" replace />} />
 
       <Route path="/data/charts" element={<Protected><ChartsHub /></Protected>} />
+      <Route path="/data/charts/market" element={<Protected><Market /></Protected>} />
+      <Route path="/data/charts/industry" element={<Protected><Industry /></Protected>} />
       <Route path="/data/charts/kline" element={<Protected><Kline /></Protected>} />
       <Route path="/data/charts/fundamentals" element={<Protected><Fundamentals /></Protected>} />
       <Route path="/data/charts/explorer" element={<Protected><Explorer /></Protected>} />

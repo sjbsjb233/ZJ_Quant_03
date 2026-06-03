@@ -5,9 +5,12 @@ from fastapi import APIRouter
 
 from .explorer import router as explorer_router
 from .fundamentals import router as fundamentals_router
+from .industry import router as industry_router
 from .kline import router as kline_router
+from .market import router as market_router
 from .symbols import router as symbols_router
 
 router = APIRouter(prefix="/charts", tags=["charts"])
-for _r in (kline_router, fundamentals_router, explorer_router, symbols_router):
+for _r in (kline_router, fundamentals_router, explorer_router, symbols_router,
+           market_router, industry_router):
     router.include_router(_r)
