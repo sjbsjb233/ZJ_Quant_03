@@ -4,6 +4,7 @@ import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { endpoints, runLogStreamUrl } from '../../lib/api';
+import { smartTs, smartTsParts, absTime } from '../../lib/format';
 import { TerminalShell, FilterBar, FSelect, KpiStrip } from '../../components/shell';
 import { Empty } from '../../components/ui';
 import { DrawerHeader } from './RunConfigDrawer';
@@ -37,6 +38,8 @@ export default function FactorTasks() {
 
   const stats = statsQ.data || {};
   const lanes = stats.lanes || {};
+  // NEXT EVAL 是孤立值: 主值放时间(短, 不换行), 日期放副标题(§ FactorDetail 的正确做法)
+  const nextEval = stats.next_cron_at ? smartTsParts(stats.next_cron_at) : null;
 
   return (
     <TerminalShell
@@ -71,7 +74,9 @@ export default function FactorTasks() {
         { label: 'TODAY FAILED', value: stats.today_failed || 0, sub: '', tone: stats.today_failed ? 'err' : 'neutral' },
         { label: '并发上限', value: stats.concurrency || 4, sub: `预留交互 ${stats.reserve_interactive || 1}` },
         { label: 'AVG WAIT', value: stats.avg_wait_sec != null ? `${stats.avg_wait_sec}s` : '—', sub: 'last hour' },
-        { label: 'NEXT EVAL', value: stats.next_cron_at ? stats.next_cron_at.slice(11, 16) : '—', sub: stats.next_cron_count ? `daily cron · ${stats.next_cron_count} 因子` : '未配置' },
+        { label: 'NEXT EVAL', value: nextEval ? nextEval.time : '—', sub: nextEval
+          ? [nextEval.day || 'daily cron', stats.next_cron_count ? `${stats.next_cron_count} 因子` : null].filter(Boolean).join(' · ')
+          : (stats.next_cron_count ? `daily cron · ${stats.next_cron_count} 因子` : '未配置') },
         { label: 'WORKERS', value: `${stats.workers_busy || 0} / ${stats.workers_total || 0}`, sub: stats.worker_host || 'local', tone: 'ok' },
       ]} />
 
@@ -118,7 +123,7 @@ export default function FactorTasks() {
                         <td style={{ padding: '0 12px', color: 'var(--fg-2)' }}>{t.task_type}</td>
                         <td style={{ padding: '0 12px', color: 'var(--fg-2)' }}>{t.factor_id || '—'}</td>
                         <td style={{ padding: '0 12px', color: t.lane === 'interactive' ? 'var(--info)' : 'var(--fg-3)' }}>{t.lane}</td>
-                        <td style={{ padding: '0 12px', color: 'var(--fg-3)' }}>{t.started_at?.replace('T', ' ').slice(0, 19)}</td>
+                        <td style={{ padding: '0 12px', color: 'var(--fg-3)' }} title={t.started_at ? absTime(t.started_at) : undefined}>{smartTs(t.started_at, { seconds: true })}</td>
                         <td style={{ padding: '0 12px', color: 'var(--fg-2)' }}>{t.runtime_sec ? `${t.runtime_sec}s` : t.started_at && t.finished_at ? `${Math.round((new Date(t.finished_at) - new Date(t.started_at)) / 1000)}s` : '—'}</td>
                         <td style={{ padding: '0 12px' }}>
                           {taskOutcomeBadge(t)}
@@ -240,7 +245,7 @@ function RunningCard({ t, onCancel, onLogs }) {
           }} />
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4, fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-3)' }}>
-          <span>started {t.started_at?.slice(11, 16)} · 已运行 <span style={{ color: 'var(--fg)' }}>{t.runtime_sec ?? 0}s</span></span>
+          <span>started {smartTs(t.started_at)} · 已运行 <span style={{ color: 'var(--fg)' }}>{t.runtime_sec ?? 0}s</span></span>
           <span><span style={{ color: 'var(--fg)' }}>{pct}%</span>{t.remaining_sec != null && <> · 剩余 <span style={{ color: 'var(--fg)' }}>~{t.remaining_sec}s</span></>}</span>
         </div>
       </div>
@@ -273,7 +278,7 @@ function QueuedCard({ t, onBoost, onCancel }) {
         </div>
       </div>
       <span data-testid={`task-${t.task_id}-eta`} style={{ color: 'var(--fg-3)' }}>预计等待 <span style={{ color: 'var(--fg)' }}>~{eta.est_wait_sec ?? '?'}s</span></span>
-      <span style={{ color: 'var(--fg-3)' }}>完成 ~<span style={{ color: 'var(--fg)' }}>{eta.est_finish_at?.slice(11, 16) || '?'}</span></span>
+      <span style={{ color: 'var(--fg-3)' }}>完成 ~<span style={{ color: 'var(--fg)' }}>{eta.est_finish_at ? smartTs(eta.est_finish_at) : '?'}</span></span>
       <div style={{ display: 'flex', gap: 4 }}>
         <button className="btn ghost sm" data-testid={`task-${t.task_id}-boost`} onClick={onBoost} style={{ fontSize: 9.5, height: 18, padding: '0 5px' }}>提升</button>
         <button className="btn ghost sm" data-testid={`task-${t.task_id}-cancel`} onClick={onCancel} style={{ fontSize: 9.5, height: 18, padding: '0 5px', color: 'var(--err)' }}>取消</button>

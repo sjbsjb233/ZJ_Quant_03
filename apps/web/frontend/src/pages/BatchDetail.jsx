@@ -7,7 +7,7 @@ import { StatusChip, StatusGlyph, CopyableId, Loading, ErrorState, Empty, Modal,
 import { endpoints } from '../lib/api';
 import { logger } from '../lib/logger';
 import { useAuth } from '../lib/auth';
-import { fmtCompact, fmtDuration, fmtN, absTime, relTime, statusMeta, toneColor } from '../lib/format';
+import { fmtCompact, fmtDuration, fmtN, absTime, relTime, smartTs, statusMeta, toneColor } from '../lib/format';
 
 const TABS = [
   { id: 'overview', l: '基本信息' },
@@ -104,8 +104,8 @@ export default function BatchDetail() {
     { l: 'ROWS', v: b?.row_count != null ? fmtN(b.row_count) : '—' },
     { l: 'PARTITIONS', v: b?.partition_count ?? '—' },
     { l: 'DURATION', v: fmtDuration(b?.duration_sec) },
-    { l: 'STARTED', v: b?.started_at ? absTime(b.started_at).slice(11) : '—', sub: relTime(b?.started_at) },
-    { l: 'FINISHED', v: b?.finished_at ? absTime(b.finished_at).slice(11) : b?.status === 'running' ? '运行中…' : '—' },
+    { l: 'STARTED', v: b?.started_at ? smartTs(b.started_at, { seconds: true, assumeUtc: false }) : '—', sub: relTime(b?.started_at) },
+    { l: 'FINISHED', v: b?.finished_at ? smartTs(b.finished_at, { seconds: true, assumeUtc: false }) : b?.status === 'running' ? '运行中…' : '—' },
   ];
 
   function copyRerunCommand() {
@@ -496,7 +496,7 @@ function LineageTab({ q, batchId }) {
                   <span style={{ color: toneColor(sm.tone), fontSize: 10, fontFamily: 'var(--font-mono)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                     {sm.sym} {n.status}
                   </span>
-                  <span style={{ color: 'var(--fg-3)', fontSize: 10, fontFamily: 'var(--font-mono)' }}>{absTime(n.started_at).slice(11, 16)}</span>
+                  <span title={absTime(n.started_at)} style={{ color: 'var(--fg-3)', fontSize: 10, fontFamily: 'var(--font-mono)' }}>{smartTs(n.started_at, { assumeUtc: false })}</span>
                 </div>
                 <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, fontWeight: 500, color: 'var(--fg)', wordBreak: 'break-all' }}>
                   {n.batch_id}

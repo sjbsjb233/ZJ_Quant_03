@@ -7,7 +7,8 @@ import { TerminalShell } from '../../components/shell';
 import { Loading, ErrorState } from '../../components/ui';
 import { endpoints } from '../../lib/api';
 import { fmtN } from '../../lib/format';
-import { StackedBars, LvlChip, SrcMark, TraceShort, fmtTsTime } from '../logs/shared';
+import { StackedBars, LvlChip, SrcMark, TraceShort, DayDivider, fmtTs, fmtTsTime } from '../logs/shared';
+import { dayBoundaryLabel } from '../../lib/format';
 import {
   OBS_LAYERS, ObsLayerMark, ObsHealthChip, ObsSev, ObsKap, ObsDrill, ObsLive,
   fmtUptime, agoFrom,
@@ -186,18 +187,24 @@ export default function ObsOverview() {
                           ))}
                         </tr></thead>
                         <tbody>
-                          {(s.recent_errors || []).map((r, i) => (
-                            <tr key={r.id} onClick={() => toTrace(r.trace_id)} style={{ borderBottom: '1px solid var(--border-faint)', height: 25, cursor: 'pointer', background: i % 2 ? 'rgba(0,0,0,0.012)' : 'transparent' }}>
-                              <td style={{ padding: '0 10px', color: 'var(--fg-2)' }}>{fmtTsTime(r.ts)}</td>
-                              <td style={{ padding: '0 10px' }}><LvlChip lvl={r.level} mini /></td>
-                              <td style={{ padding: '0 10px' }}><SrcMark src={r.source} /></td>
-                              <td style={{ padding: '0 10px', color: 'var(--fg)' }}>{r.event}</td>
-                              <td style={{ padding: '0 10px', color: 'var(--fg-2)', maxWidth: 460, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.message || r.exc_message || '—'}</td>
-                              <td style={{ padding: '0 10px', color: 'var(--fg-3)', fontSize: 10.5 }}>{r.route || '—'}</td>
-                              <td style={{ padding: '0 10px', color: r.actor === 'system' ? 'var(--info)' : 'var(--fg-2)' }}>{r.actor || '—'}</td>
-                              <td style={{ padding: '0 10px' }}><TraceShort id={r.trace_id} /></td>
-                            </tr>
-                          ))}
+                          {(s.recent_errors || []).map((r, i) => {
+                            const divider = dayBoundaryLabel(s.recent_errors[i - 1]?.ts, r.ts);
+                            return (
+                              <React.Fragment key={r.id}>
+                                {divider && <DayDivider label={divider} colSpan={8} />}
+                                <tr onClick={() => toTrace(r.trace_id)} style={{ borderBottom: '1px solid var(--border-faint)', height: 25, cursor: 'pointer', background: i % 2 ? 'rgba(0,0,0,0.012)' : 'transparent' }}>
+                                  <td title={fmtTs(r.ts)} style={{ padding: '0 10px', color: 'var(--fg-2)' }}>{fmtTsTime(r.ts)}</td>
+                                  <td style={{ padding: '0 10px' }}><LvlChip lvl={r.level} mini /></td>
+                                  <td style={{ padding: '0 10px' }}><SrcMark src={r.source} /></td>
+                                  <td style={{ padding: '0 10px', color: 'var(--fg)' }}>{r.event}</td>
+                                  <td style={{ padding: '0 10px', color: 'var(--fg-2)', maxWidth: 460, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.message || r.exc_message || '—'}</td>
+                                  <td style={{ padding: '0 10px', color: 'var(--fg-3)', fontSize: 10.5 }}>{r.route || '—'}</td>
+                                  <td style={{ padding: '0 10px', color: r.actor === 'system' ? 'var(--info)' : 'var(--fg-2)' }}>{r.actor || '—'}</td>
+                                  <td style={{ padding: '0 10px' }}><TraceShort id={r.trace_id} /></td>
+                                </tr>
+                              </React.Fragment>
+                            );
+                          })}
                           {!s.recent_errors?.length && <tr><td colSpan={8} style={{ padding: 20, textAlign: 'center', color: 'var(--fg-3)' }}>近期无 ERROR 🎉</td></tr>}
                         </tbody>
                       </table>
