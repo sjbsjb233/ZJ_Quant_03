@@ -1,7 +1,7 @@
 export { Sparkline } from './Sparkline';
 export { DataTable } from './DataTable';
 export { EChart, Kline } from './charts';
-export { SymbolSearch } from './SymbolSearch';
+export { SymbolSearch, SymbolMultiSelect } from './SymbolSearch';
 export { ZjLogo } from './Logo';
 export {
   StatusChip, StatusGlyph, CopyableId, RelTime, Loading, Empty, ErrorState,

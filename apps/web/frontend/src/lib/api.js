@@ -120,6 +120,7 @@ export const endpoints = {
   // tables
   tables: () => get('/data/tables'),
   tableSchema: (name) => get(`/data/tables/${name}/schema`),
+  tableEnum: (name, field) => get(`/data/tables/${name}/enum/${field}`),
   tableExtrasKeys: (name) => get(`/data/tables/${name}/extras-keys`),
   tableRows: (name, params) => get(`/data/tables/${name}/rows`, params),
   tableRowsAll: (name, params) => get(`/data/tables/${name}/rows/all`, params),

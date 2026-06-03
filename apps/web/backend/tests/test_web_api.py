@@ -138,10 +138,140 @@ def test_tables_rows_and_lineage(client, admin):
     assert "history" in lin and "diff_columns" in lin
 
 
+def test_schema_capability_contract_raw(client, admin):
+    """raw.bars_daily schema declares batch lineage + symbols/date_range/adjust
+    filters (方案 §2.1)."""
+    s = client.get("/api/v1/data/tables/raw.bars_daily/schema", headers=admin).json()
+    assert s["mutable"] is False
+    assert s["supports_lineage"] is True and s["lineage_kind"] == "batch"
+    assert s["has_symbol"] is True and s["time_col"] == "date"
+    assert s["require_filter"] is True
+    kinds = {f["kind"] for f in s["filters"]}
+    assert {"symbols", "date_range", "adjust"} <= kinds
+
+
+def test_schema_capability_contract_reference_sectors(client, admin):
+    """reference.sectors: mutable, no batch lineage, no symbols/date filters --
+    only classification_system (enum) + level (int) (方案 §2.2)."""
+    s = client.get("/api/v1/data/tables/reference.sectors/schema", headers=admin).json()
+    assert s["mutable"] is True
+    assert s["supports_lineage"] is False and s["lineage_kind"] == "reference"
+    assert s["has_symbol"] is False and s["time_col"] is None
+    assert s["require_filter"] is False
+    keys = {f["key"] for f in s["filters"]}
+    assert keys == {"classification_system", "level"}
+    assert "symbols" not in keys and "date" not in keys
+    enum_f = next(f for f in s["filters"] if f["kind"] == "enum")
+    assert enum_f["options_endpoint"] == "/tables/reference.sectors/enum/classification_system"
+
+
+def test_reference_symbols_lineage_no_longer_500(client, admin):
+    """Regression for 方案 §0.3: reference.symbols row lineage used to raise a
+    DuckDB binder error (_batch_id missing) -> INTERNAL_ERROR 500. It must now
+    return a clean 200 provenance payload."""
+    r = client.get("/api/v1/data/tables/reference.symbols/rows/lineage", headers=admin,
+                   params={"symbol": "600519.SH"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["lineage_kind"] == "reference" and body["mutable"] is True
+    assert body["history"] == []
+    assert body["current"] is not None
+    assert body["current"]["values"]["name"] == "贵州茅台"
+    assert body["current"]["source"] is not None
+
+
+def test_reference_sectors_lineage_provenance(client, admin):
+    r = client.get("/api/v1/data/tables/reference.sectors/rows/lineage", headers=admin,
+                   params={"code": "801120", "classification_system": "sw"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["lineage_kind"] == "reference"
+    assert body["current"]["values"]["name"] == "食品饮料"
+
+
+def test_enum_values_whitelist_blocks_symbol(client, admin):
+    """enum endpoint must reject a high-cardinality column like symbol (方案 §4.2):
+    the symbol dimension goes through typeahead, never a full-table DISTINCT."""
+    r = client.get("/api/v1/data/tables/raw.bars_daily/enum/symbol", headers=admin)
+    assert r.status_code == 400 and r.json()["error"]["code"] == "INVALID_PARAMETER"
+
+
+def test_enum_values_returns_distinct(client, admin):
+    r = client.get("/api/v1/data/tables/reference.symbols/enum/exchange", headers=admin)
+    assert r.status_code == 200
+    vals = r.json()["values"]
+    assert "SH" in vals and "SZ" in vals
+    # reference.sectors classification_system enum
+    cs = client.get("/api/v1/data/tables/reference.sectors/enum/classification_system",
+                    headers=admin).json()["values"]
+    assert "sw" in cs
+
+
+def test_enum_values_unknown_field_400(client, admin):
+    r = client.get("/api/v1/data/tables/reference.symbols/enum/nope", headers=admin)
+    assert r.status_code == 400
+
+
 def test_full_view_has_status_column(client, admin):
     fv = client.get("/api/v1/data/tables/raw.bars_daily/rows/all", headers=admin,
                     params={"symbols": "600519.SH"}).json()
     assert any(c["name"] == "_status" for c in fv["columns"])
+
+
+def test_rows_all_pagination_pushed_down(client, admin):
+    """/rows/all must page in SQL (count_full_view + read_full_view limit/offset)
+    so a large symbol set never materialises the whole physical table into Python
+    dicts. Regression for the +8.3GB OOM the one-off perf probe found: the page
+    is bounded by `limit`, `total` reflects the full filtered set, and
+    page1 ++ page2 == a single double-size page (stable PK+_batch_id order)."""
+    base = {"symbols": "600519.SH"}
+    full = client.get("/api/v1/data/tables/raw.bars_daily/rows/all", headers=admin,
+                      params={**base, "limit": 10, "offset": 0}).json()
+    assert full["page_size"] == 10 and full["page"] == 1
+    assert len(full["items"]) <= 10           # bounded by limit, not full-table
+    assert full["total"] >= len(full["items"])
+    half = max(2, full["total"] // 2)
+    p1 = client.get("/api/v1/data/tables/raw.bars_daily/rows/all", headers=admin,
+                    params={**base, "limit": half, "offset": 0}).json()
+    p2 = client.get("/api/v1/data/tables/raw.bars_daily/rows/all", headers=admin,
+                    params={**base, "limit": half, "offset": half}).json()
+    big = client.get("/api/v1/data/tables/raw.bars_daily/rows/all", headers=admin,
+                     params={**base, "limit": half * 2, "offset": 0}).json()
+    assert p1["total"] == p2["total"] == big["total"]
+    assert (p1["items"] + p2["items"]) == big["items"]
+
+
+def test_rows_malformed_date_is_400_not_500(client, admin):
+    """A malformed start/end must map to a clean 400 INVALID_PARAMETER, not
+    escape the date-literal builder as a generic 500 (independent-review nit)."""
+    r = client.get("/api/v1/data/tables/raw.bars_daily/rows", headers=admin,
+                   params={"symbols": "600519.SH", "start": "not-a-date"})
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "INVALID_PARAMETER"
+
+
+def test_rows_all_requires_bounding_filter(client, admin):
+    """Unfiltered /rows/all on a high-cardinality raw table is rejected (the
+    require-filter guard for the unbounded full-view export path)."""
+    r = client.get("/api/v1/data/tables/raw.bars_daily/rows/all", headers=admin)
+    assert r.status_code == 400 and r.json()["error"]["code"] == "MISSING_PARAMETER"
+
+
+def test_rows_all_applies_enum_filter(client, admin):
+    """The 全量(含作废) view must honour table-specific enum filters
+    (period_type/action_type/market) the same way the current view does --
+    they're shared URL-persisted controls, so switching views must not silently
+    drop the selection (independent-review finding)."""
+    sym = "600519.SH"
+    allp = client.get("/api/v1/data/tables/raw.fundamentals/rows/all", headers=admin,
+                      params={"symbols": sym, "limit": 1000}).json()
+    types = {r["period_type"] for r in allp["items"]}
+    assert len(types) >= 2, "seed should have multiple period_types for the symbol"
+    q1 = client.get("/api/v1/data/tables/raw.fundamentals/rows/all", headers=admin,
+                    params={"symbols": sym, "period_type": "Q1", "limit": 1000}).json()
+    assert q1["items"], "expected Q1 rows in the full view"
+    assert all(r["period_type"] == "Q1" for r in q1["items"])
+    assert q1["total"] < allp["total"]
 
 
 def test_rows_requires_filter_for_large_tables(client, admin):

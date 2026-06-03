@@ -82,3 +82,36 @@ def test_sectors_multi_classification(root, reader):
     ], root=root)
     assert reader.read_sectors("sw").column("name").to_pylist() == ["农林牧渔"]
     assert reader.read_sectors("citics").num_rows == 1
+
+
+# --- reference provenance lineage + enum distinct (方案 §2.3 / §5) -----------
+def test_reference_provenance_lineage(root, reader):
+    """Mutable reference tables have no batch chain -- read_row_lineage must
+    return a provenance payload (current value + _updated_at/_source), not run
+    the batch-lineage SQL that references _batch_id/_ingested_at (方案 §5.1)."""
+    ingest.ingest_symbols([{"symbol": "000001.SZ", "name": "平安银行", "exchange": "SZ",
+                            "currency": "CNY", "is_active": True}],
+                          source="tushare", root=root)
+    lin = reader.read_row_lineage("reference.symbols", {"symbol": "000001.SZ"})
+    assert lin["lineage_kind"] == "reference" and lin["mutable"] is True
+    assert lin["history"] == [] and lin["diff_columns"] == []
+    assert lin["current"]["values"]["name"] == "平安银行"
+    assert lin["current"]["source"] == "tushare"
+    assert lin["current"]["updated_at"] is not None
+
+
+def test_reference_provenance_missing_row(root, reader):
+    ingest.ingest_symbols([{"symbol": "000001.SZ", "name": "n", "exchange": "SZ",
+                            "currency": "CNY", "is_active": True}], root=root)
+    lin = reader.read_row_lineage("reference.symbols", {"symbol": "999999.SZ"})
+    assert lin["lineage_kind"] == "reference" and lin["current"] is None
+
+
+def test_distinct_values_reference_and_raw(root, reader):
+    ingest.ingest_symbols([
+        {"symbol": "000001.SZ", "name": "a", "exchange": "SZ", "currency": "CNY", "is_active": True},
+        {"symbol": "600000.SH", "name": "b", "exchange": "SH", "currency": "CNY", "is_active": True},
+    ], root=root)
+    assert reader.distinct_values("reference.symbols", "exchange") == ["SH", "SZ"]
+    # empty/absent raw table -> [] (no scan to blow up on)
+    assert reader.distinct_values("raw.corporate_actions", "action_type") == []

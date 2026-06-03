@@ -673,12 +673,19 @@ class DataReader:
         return int(self._con.execute(q, [files]).fetchone()[0])
 
     def read_full_view(
-        self, table: str, filters: list[str] | None = None, order_by: str | None = None
+        self, table: str, filters: list[str] | None = None, order_by: str | None = None,
+        limit: int | None = None, offset: int = 0,
     ) -> pa.Table:
         """All physical rows incl. failed/invalidated/superseded (doc §7.5).
 
         Appends ``_status`` / ``_invalidated_at`` / ``_superseded_by`` so the
         audit ("全量视图") can show which rows are no longer effective.
+
+        ``limit`` / ``offset`` push pagination into SQL so the export/browse path
+        materialises one page instead of the whole table. Unlike the current
+        view this keeps EVERY physical row (no dedup), so a large symbol set used
+        to blow the Python heap (~8GB at 3000 symbols) even though only a page
+        was shown; the page-stable order (PK + _batch_id) makes paging safe here.
         """
         spec = get_spec(table)
         files = storage.list_data_files(spec, self.root)
@@ -692,14 +699,34 @@ class DataReader:
             f" EXCLUDE ({', '.join(_ident(c) for c in excludes)})" if excludes else ""
         )
         order_sql = f" ORDER BY {order_by}" if order_by else ""
+        # LIMIT/OFFSET literals validated as ints -> no injection risk.
+        page_sql = f" LIMIT {int(limit)} OFFSET {int(offset)}" if limit is not None else ""
         sql = f"""
         SELECT t.*{except_sql},
                b._status, b._invalidated_at, b._superseded_by
         FROM read_parquet(?, hive_partitioning=true, union_by_name=true) t
         LEFT JOIN _all_batches b ON t._batch_id = b.batch_id
-        WHERE {where}{order_sql}
+        WHERE {where}{order_sql}{page_sql}
         """
         return con.execute(sql, [files]).to_arrow_table()
+
+    def count_full_view(self, table: str, filters: list[str] | None = None) -> int:
+        """Count physical rows the full view would return (for the paged total).
+
+        Mirrors read_full_view's WHERE without the batch-ledger join (filters
+        never reference it) so the ``total`` is filled without materialising the
+        rows -- same count+page discipline the current view uses.
+        """
+        spec = get_spec(table)
+        files = storage.list_data_files(spec, self.root)
+        if not files:
+            return 0
+        where = " AND ".join(filters) if filters else "1 = 1"
+        sql = (
+            "SELECT COUNT(*) FROM read_parquet(?, hive_partitioning=true, "
+            f"union_by_name=true) t WHERE {where}"
+        )
+        return int(self._con.execute(sql, [files]).fetchone()[0])
 
     def list_extras_keys(self, table: str) -> list[str]:
         """Distinct keys ever seen in a table's ``_extras`` MAP (doc §7.6)."""
@@ -723,18 +750,59 @@ class DataReader:
         params = [files] if not spec.mutable else []
         return [r[0] for r in self._con.execute(sql, params).fetchall()]
 
+    def distinct_values(self, table: str, field: str) -> list:
+        """Distinct values of a single (low-cardinality) column, sorted.
+
+        Backs the table browser's enum filter dropdowns (exchange / market /
+        classification_system / action_type / period_type / …). Only ever called
+        for columns the route has white-listed as enum filters -- never for
+        high-cardinality columns like ``symbol`` -- so this is a cheap
+        single-column scan, not a full-table materialise. Reference tables read
+        their single file; raw tables push ``DISTINCT`` into DuckDB over the
+        parquet set (columnar, one column only).
+        """
+        spec = get_spec(table)
+        col = _ident(field)
+        if spec.mutable:
+            path = storage.single_file_path(spec, self.root)
+            if not path.exists():
+                return []
+            sql = (
+                f"SELECT DISTINCT {col} AS v FROM read_parquet({_str_lit(str(path))}) "
+                f"WHERE {col} IS NOT NULL ORDER BY v"
+            )
+            return [r[0] for r in self._con.execute(sql).fetchall()]
+        files = storage.list_data_files(spec, self.root)
+        if not files:
+            return []
+        sql = (
+            f"SELECT DISTINCT {col} AS v "
+            f"FROM read_parquet(?, hive_partitioning=true, union_by_name=true) "
+            f"WHERE {col} IS NOT NULL ORDER BY v"
+        )
+        return [r[0] for r in self._con.execute(sql, [files]).fetchall()]
+
     def read_row_lineage(self, table: str, pk_values: dict) -> dict:
         """Every historical write of one primary key, across all batches (doc §7.8).
 
         Returns the currently-effective record (replaying the current-view dedup
         rule), the full write history newest-first, and the columns whose values
         diverge across writes.
+
+        Mutable reference/metadata tables are single-file, upsert-in-place and
+        carry no batch/invalidation chain -- there is no append-only history to
+        replay. For them we return a provenance payload (current effective value
+        + ``_updated_at`` / ``_source`` / ``_extras``) instead of forcing the
+        batch-lineage SQL, which would reference ``_batch_id`` / ``_ingested_at``
+        columns these tables don't have (the reference.symbols INTERNAL_ERROR).
         """
         spec = get_spec(table)
         missing = [k for k in spec.primary_key if k not in pk_values]
         if missing:
             raise ValueError(f"{table} lineage needs PK columns {list(spec.primary_key)}; "
                              f"missing {missing}")
+        if spec.mutable:
+            return self._read_reference_provenance(spec, pk_values)
         files = storage.list_data_files(spec, self.root)
         empty = {"pk": dict(pk_values), "current": None, "history": [], "diff_columns": []}
         if not files:
@@ -816,4 +884,48 @@ class DataReader:
             "current": current,
             "history": history,
             "diff_columns": diff_columns,
+            "lineage_kind": "batch",
+            "mutable": False,
         }
+
+    def _read_reference_provenance(self, spec: TableSpec, pk_values: dict) -> dict:
+        """Provenance for a single mutable (upsert-in-place) reference row.
+
+        No batch/invalidation chain exists for these tables, so the payload
+        stays shape-compatible with batch lineage (``pk`` / ``current`` /
+        ``history`` / ``diff_columns``) but ``current`` carries the live values
+        plus ``_updated_at`` / ``_source`` / ``_extras`` and ``history`` is empty.
+        """
+        base = {
+            "pk": dict(pk_values), "current": None, "history": [],
+            "diff_columns": [], "lineage_kind": "reference", "mutable": True,
+        }
+        path = storage.single_file_path(spec, self.root)
+        if not path.exists():
+            return base
+        where = " AND ".join(
+            f"{_ident(k)} = {self._pk_literal(spec, k, pk_values[k])}"
+            for k in spec.primary_key
+        )
+        rows = self._con.execute(
+            f"SELECT * FROM read_parquet({_str_lit(str(path))}) WHERE {where} LIMIT 1"
+        ).to_arrow_table().to_pylist()
+        if not rows:
+            return base
+        r = rows[0]
+        base["current"] = {
+            "values": {c: r.get(c) for c in spec.business_names()},
+            "updated_at": r.get("_updated_at"),
+            "source": r.get("_source"),
+            "extras": r.get("_extras") if spec.has_extras() else None,
+        }
+        return base
+
+    @staticmethod
+    def _pk_literal(spec: TableSpec, col: str, value) -> str:
+        typ = spec.type_of(col)
+        if typ == DATE:
+            return _date_lit(value)
+        if typ == TS:
+            return _ts_lit(value)
+        return _str_lit(value)

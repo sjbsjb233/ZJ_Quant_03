@@ -1,6 +1,9 @@
 """Table browser routes (doc §4.5 / §5.2.4) -- raw rows, full view, row lineage."""
 from __future__ import annotations
 
+import time
+
+import duckdb
 from fastapi import APIRouter, Depends, Query
 
 from quant_data import table_stats
@@ -34,6 +37,95 @@ _NOTES = {
     "raw.calendar": "交易日历", "raw.corporate_actions": "公司行动",
     "reference.symbols": "证券字典", "reference.sectors": "行业体系",
 }
+
+
+# --- declarative filter capability contract (方案 §2.1 / §2.2) ---------------
+# The backend already supports every one of these params (see _split_filters /
+# _current_view_table); this table just *declares* the capability so the
+# frontend can render the right control per table instead of hard-coding three
+# special cases. ``kind`` drives which control renders (方案 §2.1).
+def _symbols() -> dict:
+    return {"key": "symbols", "kind": "symbols", "label": "symbols"}
+
+
+def _date_range(time_col: str = "date") -> dict:
+    return {"key": time_col, "kind": "date_range", "label": "日期范围",
+            "time_col": time_col}
+
+
+def _adjust() -> dict:
+    return {"key": "adjust", "kind": "adjust", "label": "复权"}
+
+
+def _freq() -> dict:
+    return {"key": "frequency", "kind": "freq", "label": "频率"}
+
+
+def _as_of() -> dict:
+    return {"key": "as_of_date", "kind": "as_of", "label": "as_of_date"}
+
+
+def _enum(field: str, label: str) -> dict:
+    return {"key": field, "kind": "enum", "label": label}
+
+
+def _bool(field: str, label: str) -> dict:
+    return {"key": field, "kind": "bool", "label": label}
+
+
+def _int(field: str, label: str) -> dict:
+    return {"key": field, "kind": "int", "label": label, "min": 1}
+
+
+_FILTER_SPECS: dict[str, list[dict]] = {
+    "raw.bars_daily":        [_symbols(), _date_range("date"), _adjust()],
+    "raw.bars_minute":       [_symbols(), _date_range("datetime"), _freq(), _adjust()],
+    "raw.universe":          [_symbols(), _date_range("date")],
+    "raw.fundamentals":      [_symbols(), _as_of(), _enum("period_type", "报告期类型")],
+    "raw.calendar":          [_date_range("date"), _enum("market", "市场")],
+    "raw.corporate_actions": [_symbols(), _date_range("action_date"),
+                              _enum("action_type", "行动类型")],
+    "reference.symbols":     [_symbols(), _enum("exchange", "交易所"),
+                              _bool("active_only", "仅在市")],
+    "reference.sectors":     [_enum("classification_system", "分类体系"),
+                              _int("level", "层级")],
+}
+
+
+def _filters_with_endpoints(name: str) -> list[dict]:
+    """Filter specs for ``name``, injecting the enum options endpoint per field."""
+    out = []
+    for f in _FILTER_SPECS.get(name, []):
+        f = dict(f)
+        if f["kind"] == "enum":
+            f["options_endpoint"] = f"/tables/{name}/enum/{f['key']}"
+        out.append(f)
+    return out
+
+
+def _enum_fields(name: str) -> set[str]:
+    """White-listed enum columns for ``name`` -- the only columns ``/enum`` will
+    run DISTINCT on. Keeps ``symbol`` (high cardinality) off the enum path; the
+    symbol dimension is served by the typeahead search endpoint instead."""
+    return {f["key"] for f in _FILTER_SPECS.get(name, []) if f["kind"] == "enum"}
+
+
+# Process-local TTL cache for enum DISTINCT values (方案 §2.3). Low-cardinality
+# columns change rarely; a short TTL keeps typeahead/dropdowns near-zero-IO
+# without the staleness of a permanent cache.
+_ENUM_TTL_S = 60.0
+_enum_cache: dict[tuple[str, str], tuple[float, list]] = {}
+
+
+def _cached_distinct(reader, name: str, field: str) -> list:
+    key = (name, field)
+    now = time.monotonic()
+    hit = _enum_cache.get(key)
+    if hit and now - hit[0] < _ENUM_TTL_S:
+        return hit[1]
+    values = reader.distinct_values(name, field)
+    _enum_cache[key] = (now, values)
+    return values
 
 
 def _spec_or_404(name: str):
@@ -88,13 +180,42 @@ def schema(name: str, user=Depends(get_current_user)):
             "is_meta": n not in business,
             "is_pk": n in spec.primary_key,
         })
+    time_col = next(
+        (c for c in ("date", "datetime", "action_date") if c in business), None
+    )
     return {
         "name": name, "kind": spec.kind,
         "primary_key": list(spec.primary_key),
         "partition": [p.name for p in spec.partition],
         "has_extras": spec.has_extras(),
         "columns": cols,
+        # ── capability contract (方案 §2.1) — additive, drives the FE renderer ──
+        "mutable": spec.mutable,
+        "supports_lineage": not spec.mutable,  # only append-only raw has batch lineage
+        "lineage_kind": "reference" if spec.mutable else "batch",
+        "has_symbol": "symbol" in business,
+        "time_col": time_col,
+        "require_filter": name in _REQUIRE_FILTER,
+        "filters": _filters_with_endpoints(name),
     }
+
+
+@router.get("/{name}/enum/{field}")
+def enum_values(name: str, field: str,
+                reader=Depends(get_reader), user=Depends(get_current_user)):
+    """Distinct values for a white-listed low-cardinality enum filter column.
+
+    Guarded two ways so it can never be turned into a full-table DISTINCT scan
+    of a high-cardinality column (e.g. ``symbol`` on bars): the field must be a
+    business column AND must be declared as an ``enum`` filter for this table.
+    The symbol dimension is served by the typeahead search endpoint instead.
+    """
+    spec = _spec_or_404(name)
+    if field not in set(spec.business_names()):
+        raise ApiError("INVALID_PARAMETER", f"{name} 无字段 {field}")
+    if field not in _enum_fields(name):
+        raise ApiError("INVALID_PARAMETER", f"{field} 不是 {name} 的可枚举筛选列")
+    return {"values": _cached_distinct(reader, name, field)}
 
 
 @router.get("/{name}/extras-keys")
@@ -340,11 +461,13 @@ def rows(name: str, p: dict = Depends(_all_query_params),
 
     offset = max(0, int(p.get("offset") or 0))
     limit = max(1, min(int(p.get("limit") or 100), 1000))
-    pre, post = _split_filters(spec, name, p)
-    extras = _parse_extras(p.get("extras_as_columns"))
     dedup_order = _FUNDAMENTALS_DEDUP if name == "raw.fundamentals" else None
     order_by = ", ".join(spec.primary_key)
     try:
+        # Inside the try so a malformed start/end/as_of_date (ValueError from the
+        # date literal builders) maps to a clean 400, not a generic 500.
+        pre, post = _split_filters(spec, name, p)
+        extras = _parse_extras(p.get("extras_as_columns"))
         total = reader.count_current_view(
             spec, filters=pre or None, post_filters=post or None,
             dedup_order=dedup_order,
@@ -373,11 +496,27 @@ def rows_all(name: str, p: dict = Depends(_all_query_params),
         tbl = _current_view_table(name, reader, p)
         columns, items = table_payload(tbl)
         return _post_filter_and_page(columns, items, p)
+    # SQL-pushdown count + page: read_full_view keeps every physical row (no
+    # dedup), so even a filtered-but-large symbol set used to materialise the
+    # whole result into Python dicts (~8GB at 3000 symbols) before slicing one
+    # page. _build_sql_filters already pushes symbol/date/source/batch into SQL,
+    # so the page is fully filtered; order by PK + _batch_id is a stable total
+    # order across the multiple physical rows a key can have.
+    offset = max(0, int(p.get("offset") or 0))
+    limit = max(1, min(int(p.get("limit") or 100), 1000))
     filters = _build_sql_filters(spec, p)
-    order = ", ".join(spec.primary_key)
-    tbl = reader.read_full_view(name, filters=filters or None, order_by=order)
+    order = ", ".join(spec.primary_key) + ", _batch_id"
+    try:
+        total = reader.count_full_view(name, filters=filters or None)
+        tbl = reader.read_full_view(name, filters=filters or None, order_by=order,
+                                    limit=limit, offset=offset)
+    except ValueError as e:
+        raise ApiError("INVALID_PARAMETER", str(e)) from e
     columns, items = table_payload(tbl)
-    return _post_filter_and_page(columns, items, p)
+    return {
+        "columns": columns, "items": items, "total": total,
+        "page": offset // limit + 1, "page_size": limit,
+    }
 
 
 def _build_sql_filters(spec, p: dict) -> list[str]:
@@ -401,6 +540,16 @@ def _build_sql_filters(spec, p: dict) -> list[str]:
         srcs = [s for s in p["source"].split(",") if s]
         if srcs:
             filters.append("t._source IN (" + ",".join(_str_lit(s) for s in srcs) + ")")
+    # Table-specific enum filters surfaced as first-class controls (方案 §2.2):
+    # mirror _split_filters so the "全量(含作废)" view honours the same enum
+    # selection the current view does -- otherwise switching views silently
+    # drops e.g. period_type / action_type / market.
+    if spec.name == "raw.fundamentals" and p.get("period_type"):
+        filters.append(f"t.period_type = {_str_lit(p['period_type'])}")
+    if spec.name == "raw.calendar" and p.get("market"):
+        filters.append(f"t.market = {_str_lit(p['market'])}")
+    if spec.name == "raw.corporate_actions" and p.get("action_type"):
+        filters.append(f"t.action_type = {_str_lit(p['action_type'])}")
     return filters
 
 
@@ -429,6 +578,11 @@ def row_lineage(name: str,
         result = reader.read_row_lineage(name, pk)
     except ValueError as e:
         raise ApiError("INVALID_PARAMETER", str(e)) from e
+    except duckdb.Error as e:
+        # A binder/column error (e.g. a table without _batch_id/_ingested_at)
+        # must surface as a readable 4xx, not bubble to the catch-all 500
+        # handler -- that was the reference.symbols INTERNAL_ERROR (方案 §0.3 / §5.2).
+        raise ApiError("INVALID_PARAMETER", f"{name} 不支持该血缘查询: {e}") from e
     return _serialize_lineage(result)
 
 
@@ -440,4 +594,6 @@ def _serialize_lineage(result: dict) -> dict:
         "current": jsonify(result["current"]),
         "history": [jsonify(r) for r in result["history"]],
         "diff_columns": result["diff_columns"],
+        "lineage_kind": result.get("lineage_kind", "batch"),
+        "mutable": result.get("mutable", False),
     }
