@@ -673,12 +673,19 @@ class DataReader:
         return int(self._con.execute(q, [files]).fetchone()[0])
 
     def read_full_view(
-        self, table: str, filters: list[str] | None = None, order_by: str | None = None
+        self, table: str, filters: list[str] | None = None, order_by: str | None = None,
+        limit: int | None = None, offset: int = 0,
     ) -> pa.Table:
         """All physical rows incl. failed/invalidated/superseded (doc §7.5).
 
         Appends ``_status`` / ``_invalidated_at`` / ``_superseded_by`` so the
         audit ("全量视图") can show which rows are no longer effective.
+
+        ``limit`` / ``offset`` push pagination into SQL so the export/browse path
+        materialises one page instead of the whole table. Unlike the current
+        view this keeps EVERY physical row (no dedup), so a large symbol set used
+        to blow the Python heap (~8GB at 3000 symbols) even though only a page
+        was shown; the page-stable order (PK + _batch_id) makes paging safe here.
         """
         spec = get_spec(table)
         files = storage.list_data_files(spec, self.root)
@@ -692,14 +699,34 @@ class DataReader:
             f" EXCLUDE ({', '.join(_ident(c) for c in excludes)})" if excludes else ""
         )
         order_sql = f" ORDER BY {order_by}" if order_by else ""
+        # LIMIT/OFFSET literals validated as ints -> no injection risk.
+        page_sql = f" LIMIT {int(limit)} OFFSET {int(offset)}" if limit is not None else ""
         sql = f"""
         SELECT t.*{except_sql},
                b._status, b._invalidated_at, b._superseded_by
         FROM read_parquet(?, hive_partitioning=true, union_by_name=true) t
         LEFT JOIN _all_batches b ON t._batch_id = b.batch_id
-        WHERE {where}{order_sql}
+        WHERE {where}{order_sql}{page_sql}
         """
         return con.execute(sql, [files]).to_arrow_table()
+
+    def count_full_view(self, table: str, filters: list[str] | None = None) -> int:
+        """Count physical rows the full view would return (for the paged total).
+
+        Mirrors read_full_view's WHERE without the batch-ledger join (filters
+        never reference it) so the ``total`` is filled without materialising the
+        rows -- same count+page discipline the current view uses.
+        """
+        spec = get_spec(table)
+        files = storage.list_data_files(spec, self.root)
+        if not files:
+            return 0
+        where = " AND ".join(filters) if filters else "1 = 1"
+        sql = (
+            "SELECT COUNT(*) FROM read_parquet(?, hive_partitioning=true, "
+            f"union_by_name=true) t WHERE {where}"
+        )
+        return int(self._con.execute(sql, [files]).fetchone()[0])
 
     def list_extras_keys(self, table: str) -> list[str]:
         """Distinct keys ever seen in a table's ``_extras`` MAP (doc §7.6)."""

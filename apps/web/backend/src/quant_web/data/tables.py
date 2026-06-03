@@ -494,11 +494,27 @@ def rows_all(name: str, p: dict = Depends(_all_query_params),
         tbl = _current_view_table(name, reader, p)
         columns, items = table_payload(tbl)
         return _post_filter_and_page(columns, items, p)
+    # SQL-pushdown count + page: read_full_view keeps every physical row (no
+    # dedup), so even a filtered-but-large symbol set used to materialise the
+    # whole result into Python dicts (~8GB at 3000 symbols) before slicing one
+    # page. _build_sql_filters already pushes symbol/date/source/batch into SQL,
+    # so the page is fully filtered; order by PK + _batch_id is a stable total
+    # order across the multiple physical rows a key can have.
+    offset = max(0, int(p.get("offset") or 0))
+    limit = max(1, min(int(p.get("limit") or 100), 1000))
     filters = _build_sql_filters(spec, p)
-    order = ", ".join(spec.primary_key)
-    tbl = reader.read_full_view(name, filters=filters or None, order_by=order)
+    order = ", ".join(spec.primary_key) + ", _batch_id"
+    try:
+        total = reader.count_full_view(name, filters=filters or None)
+        tbl = reader.read_full_view(name, filters=filters or None, order_by=order,
+                                    limit=limit, offset=offset)
+    except ValueError as e:
+        raise ApiError("INVALID_PARAMETER", str(e)) from e
     columns, items = table_payload(tbl)
-    return _post_filter_and_page(columns, items, p)
+    return {
+        "columns": columns, "items": items, "total": total,
+        "page": offset // limit + 1, "page_size": limit,
+    }
 
 
 def _build_sql_filters(spec, p: dict) -> list[str]:

@@ -215,3 +215,35 @@ def test_read_batch_no_limit_unchanged(root, reader):
     res = ingest.ingest_bars_daily(records=rows, apply_mapping=False, root=root)
     tbl = reader.read_batch(res.batch_id, "raw.bars_daily")
     assert tbl.num_rows == 7
+
+
+# --- §full-view pagination (one-off OOM follow-up) -------------------------
+def test_read_full_view_paged_concat_and_count(root, reader):
+    """read_full_view must page in SQL + count_full_view match the row count,
+    so the '全量(含作废)' export never materialises the whole physical table
+    (the +8.3GB /rows/all OOM the perf probe found)."""
+    n = _ingest_daily_grid(root, n_symbols=4, n_days=8)  # 32 physical rows
+    spec = get_spec("raw.bars_daily")
+    order = ", ".join(spec.primary_key) + ", _batch_id"
+
+    assert reader.count_full_view("raw.bars_daily") == n
+    full = reader.read_full_view("raw.bars_daily", order_by=order).to_pylist()
+    assert len(full) == n
+
+    page = 5
+    pages, offset = [], 0
+    while offset < n:
+        p = reader.read_full_view(
+            "raw.bars_daily", order_by=order, limit=page, offset=offset
+        ).to_pylist()
+        if not p:
+            break
+        pages.extend(p)
+        offset += page
+    assert pages == full, "paged full-view concat must reproduce the unpaged read"
+
+
+def test_count_full_view_respects_filters(root, reader):
+    _ingest_daily_grid(root, n_symbols=4, n_days=8)
+    one = reader.count_full_view("raw.bars_daily", filters=["t.symbol = '600100.SH'"])
+    assert one == 8

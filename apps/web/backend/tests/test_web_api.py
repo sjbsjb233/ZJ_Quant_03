@@ -218,6 +218,36 @@ def test_full_view_has_status_column(client, admin):
     assert any(c["name"] == "_status" for c in fv["columns"])
 
 
+def test_rows_all_pagination_pushed_down(client, admin):
+    """/rows/all must page in SQL (count_full_view + read_full_view limit/offset)
+    so a large symbol set never materialises the whole physical table into Python
+    dicts. Regression for the +8.3GB OOM the one-off perf probe found: the page
+    is bounded by `limit`, `total` reflects the full filtered set, and
+    page1 ++ page2 == a single double-size page (stable PK+_batch_id order)."""
+    base = {"symbols": "600519.SH"}
+    full = client.get("/api/v1/data/tables/raw.bars_daily/rows/all", headers=admin,
+                      params={**base, "limit": 10, "offset": 0}).json()
+    assert full["page_size"] == 10 and full["page"] == 1
+    assert len(full["items"]) <= 10           # bounded by limit, not full-table
+    assert full["total"] >= len(full["items"])
+    half = max(2, full["total"] // 2)
+    p1 = client.get("/api/v1/data/tables/raw.bars_daily/rows/all", headers=admin,
+                    params={**base, "limit": half, "offset": 0}).json()
+    p2 = client.get("/api/v1/data/tables/raw.bars_daily/rows/all", headers=admin,
+                    params={**base, "limit": half, "offset": half}).json()
+    big = client.get("/api/v1/data/tables/raw.bars_daily/rows/all", headers=admin,
+                     params={**base, "limit": half * 2, "offset": 0}).json()
+    assert p1["total"] == p2["total"] == big["total"]
+    assert (p1["items"] + p2["items"]) == big["items"]
+
+
+def test_rows_all_requires_bounding_filter(client, admin):
+    """Unfiltered /rows/all on a high-cardinality raw table is rejected (the
+    require-filter guard for the unbounded full-view export path)."""
+    r = client.get("/api/v1/data/tables/raw.bars_daily/rows/all", headers=admin)
+    assert r.status_code == 400 and r.json()["error"]["code"] == "MISSING_PARAMETER"
+
+
 def test_rows_requires_filter_for_large_tables(client, admin):
     """Browsing bars_daily / bars_minute / universe without symbols or a date
     window must 400 -- not silently scan the whole table (the 2026-05-23 OOM)."""
