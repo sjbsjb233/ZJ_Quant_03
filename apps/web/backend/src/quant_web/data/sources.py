@@ -16,6 +16,10 @@ from .schemas import DiffRequest, SourceCreate, SourceUpdate
 
 router = APIRouter(prefix="/sources", tags=["sources"])
 
+# Tables whose cross-source diff must be bounded by a date window before it runs
+# (a full-source diff materialises both sources in memory).
+_DIFF_REQUIRE_WINDOW = {"raw.bars_daily", "raw.bars_minute", "raw.universe"}
+
 
 def _to_dict(s: dict) -> dict:
     fm = s.get("field_mapping")
@@ -51,6 +55,14 @@ def diff(body: DiffRequest, root: str = Depends(get_root), user=Depends(get_curr
         raise ApiError("SOURCE_NOT_FOUND", f"source {body.source_b} 不存在")
     if not a["is_active"] or not b["is_active"]:
         raise ApiError("INVALID_PARAMETER", "跨源对比要求两个源均为 active")
+    # High-cardinality tables: a diff materialises BOTH sources' rows into Python
+    # (governance.diff_sources -> to_pylist), so without a date window it pulls an
+    # entire source (18M+ rows) into the web backend and OOM-kills it. The 90-day
+    # cap below previously only applied when start+end were *both* supplied, so
+    # omitting dates skipped the guard entirely -- require the window for big
+    # tables and enforce the cap unconditionally.
+    if body.table in _DIFF_REQUIRE_WINDOW and not (body.start and body.end):
+        raise ApiError("MISSING_PARAMETER", f"大表 {body.table} 跨源对比必须指定 start+end 日期范围")
     if body.start and body.end and (body.end - body.start).days > 90:
         raise ApiError("INVALID_DATE_RANGE", "时间范围不能超过 90 天")
     result = governance.diff_sources(

@@ -14,6 +14,7 @@ Scope decisions:
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 
 from . import config, storage
@@ -21,10 +22,36 @@ from .metadata import batches as batches_mod
 from .metadata import field_registry as fr_mod
 from .metadata import sources as sources_mod
 from .reader import DataReader
-from .schemas import BATCHES, FIELD_REGISTRY, RAW_TABLES, SOURCES
+from .schemas import BATCHES, FIELD_REGISTRY, RAW_TABLES, SOURCES, get_spec
 
 FATAL = "FATAL"
 WARN = "WARN"
+
+# check_all/_Ctx load every table's full current view into memory at once (and
+# _viol materialises each query result via to_pylist), so on production-scale
+# raw tables it OOM-kills a memory-limited container before any check runs. The
+# sweep has no production caller today; this guard makes accidental wiring fail
+# fast with a clear message instead of triggering a multi-table OOM. Properly
+# enabling it needs a streaming / COUNT(*)+sample rewrite of _Ctx and _viol.
+_MAX_INVARIANT_ROWS = int(os.environ.get("QUANT_INVARIANTS_MAX_ROWS", "2000000"))
+_INVARIANT_BIG_TABLES = (
+    "raw.bars_daily", "raw.universe", "raw.fundamentals", "raw.corporate_actions",
+)
+
+
+def _guard_dataset_size(reader: DataReader) -> None:
+    if os.environ.get("QUANT_INVARIANTS_ALLOW_LARGE", "").lower() in ("1", "true", "yes"):
+        return
+    for table in _INVARIANT_BIG_TABLES:
+        n = reader.count_current_view(get_spec(table))
+        if n > _MAX_INVARIANT_ROWS:
+            raise RuntimeError(
+                f"invariants.check_all would materialise {table} ({n:,} rows > "
+                f"{_MAX_INVARIANT_ROWS:,}) into memory and OOM a memory-limited "
+                "container. This sweep is not production-wired; rewrite _Ctx/_viol "
+                "for streaming/COUNT+sample before enabling it, or set "
+                "QUANT_INVARIANTS_ALLOW_LARGE=1 to override deliberately."
+            )
 
 
 @dataclass
@@ -54,6 +81,7 @@ class _Ctx:
         self.root = root
         self.con = config.connect_duckdb()
         rd = DataReader(root=root)
+        _guard_dataset_size(rd)
         self._reg("bd", rd.read_bars_daily())
         self._reg("fd", rd.current_view("raw.fundamentals"))
         self._reg("un", rd.read_universe())
