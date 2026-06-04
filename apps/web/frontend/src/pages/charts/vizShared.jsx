@@ -210,9 +210,29 @@ export function VizPanel({ n, title, en, tag, badge, controls, footer, minHeight
 }
 
 // Decide which 5-state placeholder (if any) a panel should show.
+// A *disabled* query (enabled:false — e.g. waiting on an upstream selection) is
+// `isPending` but its fetchStatus is 'idle', NOT fetching. It must read as 'idle'
+// (waiting), never a perpetual 'loading' spinner — that was the 行业视图 ②④
+// "一直加载中" bug: when ① / ③ failed, the dependent panels stayed disabled and
+// span forever. Only a genuinely in-flight first fetch (`isLoading`) is 'loading'.
 export function panelStateOf(query) {
   if (!query) return null;
-  if (query.isLoading || query.isPending) return 'loading';
   if (query.error) return 'error';
+  if (query.isLoading) return 'loading';   // enabled + first fetch in flight
+  if (query.isPending) return 'idle';      // pending but idle => disabled / waiting
   return null;
+}
+
+// Full <PanelState> props for a query's non-data state (or null when it has data).
+// Surfaces the backend's error message instead of a generic "后端返回错误", and
+// renders an *expected* data gap (DATA_UNAVAILABLE, e.g. market-cap not yet
+// ingested) as a calm "数据未入库" notice rather than a red error.
+export function panelStateProps(query, opts = {}) {
+  const kind = panelStateOf(query);
+  if (!kind) return null;
+  if (kind === 'idle') return { kind: 'idle', title: opts.idleTitle, hint: opts.idleHint };
+  if (kind === 'loading') return { kind: 'loading' };
+  const e = query?.error?.apiError;
+  if (e?.code === 'DATA_UNAVAILABLE') return { kind: 'empty', title: '数据未入库', hint: e.message };
+  return { kind: 'error', hint: e?.message };
 }

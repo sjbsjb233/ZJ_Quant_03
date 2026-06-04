@@ -6,7 +6,7 @@ import { endpoints } from '../../lib/api';
 import { TerminalShell, TPanel, FilterBar, FInput, FSelect, KpiStrip } from '../../components/shell';
 import { Empty, Loading } from '../../components/ui';
 import { DrawerHeader } from './RunConfigDrawer';
-import { MiniEmpty, MiniLoading, PRESET_UNI } from './shared';
+import { MiniEmpty, MiniError, MiniLoading, PRESET_UNI } from './shared';
 
 export default function UniverseManager() {
   const qc = useQueryClient();
@@ -66,9 +66,11 @@ export default function UniverseManager() {
       <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
         <div style={{ flex: 1.4, minWidth: 0, borderRight: editingUid || previewUid ? '1px solid var(--border)' : 'none', display: 'flex', flexDirection: 'column' }}>
           <Section title="PRESET · 系统预设" meta="不可编辑 · 不可删除 · 成分股动态">
-            {uniQ.isLoading ? <MiniLoading /> : presets.length ? (
-              <PoolTable pools={presets} editingUid={editingUid} onPreview={(uid) => { setPreviewUid(uid); setEditingUid(null); }} />
-            ) : <MiniEmpty label="预设池未就绪 (factor.db 尚未 seed)" />}
+            {uniQ.isLoading ? <MiniLoading />
+              : uniQ.isError ? <MiniError error={uniQ.error} onRetry={() => uniQ.refetch()} label="加载股票池失败" />
+              : presets.length ? (
+                <PoolTable pools={presets} editingUid={editingUid} onPreview={(uid) => { setPreviewUid(uid); setEditingUid(null); }} />
+              ) : <MiniEmpty label="预设池未就绪 (factor.db 尚未 seed)" />}
           </Section>
           <Section title="CUSTOM · 自定义池" meta="可编辑 · 可删除">
             {customs.length ? (
@@ -80,7 +82,7 @@ export default function UniverseManager() {
                     endpoints.deleteUniverse(uid).then(() => qc.invalidateQueries({ queryKey: ['universes'] }));
                   }
                 }} />
-            ) : <MiniEmpty label="还没有自定义池 — 「+ 新建自定义池」开始" />}
+            ) : !uniQ.isError && !uniQ.isLoading && <MiniEmpty label="还没有自定义池 — 「+ 新建自定义池」开始" />}
           </Section>
 
           {previewUid && (
@@ -186,6 +188,7 @@ function PoolPreview({ uid, date, onDate, onClose }) {
         </>
       }>
       {q.isLoading && <MiniLoading />}
+      {q.isError && <MiniError error={q.error} onRetry={() => q.refetch()} label="加载成分股失败" />}
       {q.data && (
         <>
           <div data-testid="pool-preview-funnel" style={{

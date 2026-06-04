@@ -83,6 +83,26 @@ export function MiniLoading({ label = '加载中…' }) {
   );
 }
 
+// Compact error state — surfaces the backend's error envelope (code + message)
+// so a failed/unreachable backend reads as an ERROR, never as empty data.
+export function MiniError({ error, onRetry, label = '加载失败' }) {
+  const e = error?.apiError || {};
+  return (
+    <div style={{
+      padding: 24, color: 'var(--err)', fontFamily: 'var(--font-mono)',
+      fontSize: 11, textAlign: 'center',
+    }}>
+      <div>✕ {label}{e.code ? ` · ${e.code}` : ''}</div>
+      <div style={{ color: 'var(--fg-2)', marginTop: 4 }}>
+        {e.message || String(error?.message || error || '')}
+      </div>
+      {onRetry && (
+        <button className="btn ghost sm" style={{ marginTop: 8 }} onClick={onRetry}>↻ 重试</button>
+      )}
+    </div>
+  );
+}
+
 // ─── 受控降级展示 (设计 §11) ────────────────────────────────────────────────
 // Severity → label + color. Keep in sync with the engine's catalogue (§14).
 export const SEVERITY_META = {

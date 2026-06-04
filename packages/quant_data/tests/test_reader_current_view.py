@@ -3,8 +3,11 @@ from __future__ import annotations
 
 import datetime as dt
 
-from quant_data import ingest
+import pytest
+
+from quant_data import ColumnNotInViewError, ingest
 from quant_data.metadata import batches, sources
+from quant_data.schemas import get_spec
 
 from .conftest import daily_bar
 
@@ -107,3 +110,25 @@ def test_latest_date_in_view_on_or_before(root, reader):
     ingest.ingest_bars_daily(records=[daily_bar(d2, close=11.0)], root=root)
     assert reader.latest_date_in_view("raw.bars_daily", on_or_before=dt.date(2025, 11, 5)) == d1
     assert reader.latest_date_in_view("raw.bars_daily", on_or_before=dt.date(2000, 1, 1)) is None
+
+
+def test_aggregate_missing_column_raises_typed_error(root, reader):
+    """A projection referencing a column the parquet data lacks (e.g. market-cap
+    on legacy bars) surfaces ColumnNotInViewError -- not a raw BinderException --
+    so the API can degrade gracefully instead of 500ing."""
+    ingest.ingest_bars_daily(records=[daily_bar(D, close=10.0)], root=root)
+    spec = get_spec("raw.bars_daily")
+    with pytest.raises(ColumnNotInViewError) as ei:
+        reader.aggregate_current_view(
+            spec, "symbol, last(nonexistent_col ORDER BY date) AS v", "GROUP BY symbol")
+    assert ei.value.column == "nonexistent_col"
+    assert ei.value.table == "raw.bars_daily"
+
+
+def test_aggregate_existing_column_does_not_raise(root, reader):
+    """Sanity: a present column still aggregates normally (no over-eager catch)."""
+    ingest.ingest_bars_daily(records=[daily_bar(D, close=10.0)], root=root)
+    spec = get_spec("raw.bars_daily")
+    rows = reader.aggregate_current_view(
+        spec, "symbol, last(close ORDER BY date) AS v", "GROUP BY symbol").fetchall()
+    assert rows == [("000001.SZ", 10.0)]

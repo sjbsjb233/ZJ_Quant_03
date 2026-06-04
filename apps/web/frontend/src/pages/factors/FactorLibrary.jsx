@@ -5,7 +5,7 @@ import { useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { endpoints } from '../../lib/api';
 import { TerminalShell, FilterBar, FInput, FSelect, FChip, KpiStrip } from '../../components/shell';
-import { Empty, Loading } from '../../components/ui';
+import { Empty, ErrorState, Loading } from '../../components/ui';
 import { MiniBars } from './charts';
 import { FACTOR_CATEGORIES, catLabel, fmtNum, fmtPct, tone } from './shared';
 import RunConfigDrawer from './RunConfigDrawer';
@@ -144,10 +144,13 @@ export default function FactorLibrary() {
 
       <div className="scroll" style={{ flex: 1, minHeight: 0 }} data-testid="factor-lib-table">
         {qry.isLoading && <Loading label="加载因子列表…" />}
-        {!qry.isLoading && items.length === 0 && (
+        {!qry.isLoading && qry.isError && (
+          <ErrorState error={qry.error} onRetry={() => qry.refetch()} />
+        )}
+        {!qry.isLoading && !qry.isError && items.length === 0 && (
           <Empty label="还没有因子" hint="去『因子导入』或先启用内置因子" />
         )}
-        {!qry.isLoading && items.length > 0 && (
+        {!qry.isLoading && !qry.isError && items.length > 0 && (
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
             <thead style={{ position: 'sticky', top: 0, background: 'var(--surface)', zIndex: 1 }}>
               <tr style={{ borderBottom: '1px solid var(--border-strong)' }}>

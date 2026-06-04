@@ -4,7 +4,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { endpoints } from '../../lib/api';
 import { TerminalShell, TPanel } from '../../components/shell';
-import { Empty, Loading } from '../../components/ui';
+import { Empty, ErrorState, Loading } from '../../components/ui';
 import RunConfigDrawer from './RunConfigDrawer';
 import RunScopeTab from './RunScopeTab';
 import { BarChart, ICChart, LineChart } from './charts';
@@ -72,7 +72,10 @@ export default function FactorDetail() {
       )}
     >
       {factorQ.isLoading && <Loading label="加载因子…" />}
-      {!factorQ.isLoading && !factor && <Empty label="未找到该因子" />}
+      {!factorQ.isLoading && factorQ.isError && (
+        <ErrorState error={factorQ.error} onRetry={() => factorQ.refetch()} />
+      )}
+      {!factorQ.isLoading && !factorQ.isError && !factor && <Empty label="未找到该因子" />}
 
       {factor && (
         <>

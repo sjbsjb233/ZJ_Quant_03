@@ -10,7 +10,7 @@ import { Empty } from '../../components/ui';
 import { DrawerHeader } from './RunConfigDrawer';
 import RunConfigDrawer from './RunConfigDrawer';
 import LogPanel from '../logs/LogPanel';
-import { RunStatusBadge } from './shared';
+import { RunStatusBadge, MiniError } from './shared';
 
 export default function FactorTasks() {
   const nav = useNavigate();
@@ -82,8 +82,11 @@ export default function FactorTasks() {
 
       <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
         <div className="scroll" style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+          {tasksQ.isError && (
+            <MiniError error={tasksQ.error} onRetry={() => tasksQ.refetch()} label="加载任务队列失败" />
+          )}
           <Section title="RUNNING · 正在执行" count={running.length} accent="info">
-            {running.length === 0 && <PlainEmpty label="当前无运行任务" />}
+            {running.length === 0 && !tasksQ.isError && <PlainEmpty label="当前无运行任务" />}
             {running.map((t) => (
               <RunningCard key={t.task_id} t={t}
                 onCancel={() => endpoints.cancelTask(t.task_id).then(() => qc.invalidateQueries({ queryKey: ['tasks.list'] }))}
@@ -91,7 +94,7 @@ export default function FactorTasks() {
             ))}
           </Section>
           <Section title="QUEUED · 交互车道" count={queuedI.length} accent="info" meta="优先 · 用户手动发起">
-            {queuedI.length === 0 && <PlainEmpty label="交互车道无排队" />}
+            {queuedI.length === 0 && !tasksQ.isError && <PlainEmpty label="交互车道无排队" />}
             {queuedI.map((t) => (
               <QueuedCard key={t.task_id} t={t}
                 onBoost={() => endpoints.boostTask(t.task_id).then(() => qc.invalidateQueries({ queryKey: ['tasks.list'] }))}
@@ -99,7 +102,7 @@ export default function FactorTasks() {
             ))}
           </Section>
           <Section title="QUEUED · 日常车道" count={queuedD.length} meta="后台慢跑 · 不抢资源">
-            {queuedD.length === 0 && <PlainEmpty label="日常车道无排队" />}
+            {queuedD.length === 0 && !tasksQ.isError && <PlainEmpty label="日常车道无排队" />}
             {queuedD.map((t) => (
               <QueuedCard key={t.task_id} t={t}
                 onBoost={() => endpoints.boostTask(t.task_id).then(() => qc.invalidateQueries({ queryKey: ['tasks.list'] }))}
@@ -107,7 +110,7 @@ export default function FactorTasks() {
             ))}
           </Section>
           <Section title="COMPLETED · 已完成" count={recent.length}>
-            {recent.length === 0 && <PlainEmpty label="今日尚无完成的任务" />}
+            {recent.length === 0 && !tasksQ.isError && <PlainEmpty label="今日尚无完成的任务" />}
             {recent.length > 0 && (
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11, fontFamily: 'var(--font-mono)' }}>
                 <thead><tr style={{ borderBottom: '1px solid var(--border-strong)' }}>

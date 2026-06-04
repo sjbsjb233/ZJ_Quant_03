@@ -17,6 +17,7 @@ from collections import Counter
 
 from fastapi import APIRouter, Depends
 
+from quant_data import ColumnNotInViewError
 from quant_data.schemas import get_spec
 
 from ...deps import get_current_user, get_reader, heavy_query_slot
@@ -217,7 +218,15 @@ def mv_distribution(
         f"quantile_cont({field}, 0.1) AS p10, quantile_cont({field}, 0.5) AS p50, "
         f"quantile_cont({field}, 0.9) AS p90"
     )
-    _, srows = _rows(reader.aggregate_current_view(spec, stat_proj, "", filt))
+    try:
+        _, srows = _rows(reader.aggregate_current_view(spec, stat_proj, "", filt))
+    except ColumnNotInViewError:
+        # 整个面板就是市值分布;市值列未入库时没有可降级的内容,给明确提示而非 500。
+        raise ApiError(
+            "DATA_UNAVAILABLE",
+            f"市值数据暂未入库（{_BARS} 缺少 {field} 列),请补采市值数据后重试",
+            details={"metric": field, "table": _BARS},
+        ) from None
     total, cnt, lo, hi, p10, p50, p90 = srows[0] if srows else (0, 0, None, None, None, None, None)
     total, cnt = int(total or 0), int(cnt or 0)
     coverage = {"covered": cnt, "total": total}

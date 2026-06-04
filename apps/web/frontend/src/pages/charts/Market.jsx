@@ -10,7 +10,7 @@ import { endpoints } from '../../lib/api';
 import { downloadDataURL } from '../../lib/download';
 import {
   CoverageBadge, SnapshotTag, TimeseriesTag, PanelState, MiniToggle, RangeButtons,
-  VizPanel, VIZ_UP, VIZ_DOWN, VIZ_SERIES, fmtCap, fmtNum, panelStateOf,
+  VizPanel, VIZ_UP, VIZ_DOWN, VIZ_SERIES, fmtCap, fmtNum, panelStateProps,
 } from './vizShared';
 
 const RECENT_KEY = 'zjq_recent_charts';
@@ -209,8 +209,8 @@ export default function MarketPage() {
   // position across the page's many query-driven re-renders instead of remounting.
   const renderBody = ({ query, option, id, name, empty }) => {
     const pt = `market-panel-${id}`;
-    const st = panelStateOf(query);
-    if (st) return <PanelState kind={st} testId={`${pt}-${st}`} onAction={() => query.refetch()} />;
+    const ps = panelStateProps(query);
+    if (ps) return <PanelState {...ps} testId={`${pt}-${ps.kind}`} onAction={() => query.refetch()} />;
     if (!option) return <PanelState kind="empty" testId={`${pt}-empty`} hint={empty} />;
     return (
       <div data-testid={`${pt}-chart`} style={{ flex: 1, minHeight: 0, position: 'relative' }}

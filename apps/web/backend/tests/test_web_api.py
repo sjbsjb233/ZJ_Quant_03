@@ -466,16 +466,15 @@ def test_stub_501(client, admin):
 
 
 def test_factors_proxy_attempts_upstream(client, admin, monkeypatch):
-    """Without a running factor-api, the proxy returns a clean INTERNAL error
-    wrapped in our standard envelope (not raw 500/503)."""
+    """Without a running factor-api, the proxy returns a clean SERVICE_UNAVAILABLE
+    (503) wrapped in our standard envelope — a real error the frontend renders as
+    such, NOT a 400/empty that collapses into a misleading "无因子数据"."""
     monkeypatch.setenv("FACTOR_API_BASE", "http://127.0.0.1:1")  # unreachable
     r = client.get("/api/v1/factors", headers=admin)
-    assert r.status_code in (400, 500, 502, 503)
+    assert r.status_code == 503
     body = r.json()
-    assert "error" in body and body["error"]["code"] in (
-        "INTERNAL",
-        "PROXY_ERROR",
-    )
+    assert body["error"]["code"] == "SERVICE_UNAVAILABLE"
+    assert "因子服务" in body["error"]["message"]
     assert body["error"]["trace_id"]
 
 
@@ -1074,3 +1073,94 @@ def test_explorer_aggregate_pushdown(client, admin):
     body = r.json()
     assert "x" in body and "series" in body
     assert body["series"] and len(body["series"][0]["data"]) == len(body["x"])
+
+
+# ── 行业视图: graceful degradation when market-cap (total_mv) isn't ingested ──
+# On warehouses where the市值/股本 backfill hasn't run, the column is physically
+# absent and DuckDB raises a BinderException -> ColumnNotInViewError. The endpoints
+# must turn that into a clear, actionable response, never a 500 / endless spinner.
+def _patch_bars_unavailable(monkeypatch):
+    from quant_data import ColumnNotInViewError
+    from quant_web.data.charts import industry
+
+    def _boom(reader, field, as_of):
+        raise ColumnNotInViewError(field, "raw.bars_daily")
+
+    monkeypatch.setattr(industry, "_bars_values", _boom)
+
+
+def test_industry_tree_happy_path_keeps_mv(client, admin):
+    """When the column exists, sizing by市值 is served normally (no false notice)."""
+    r = client.get("/api/v1/data/charts/industry/tree", headers=admin,
+                   params={"system": "sw", "size_by": "mv"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["size_by"] == "mv"
+    assert body["notice"] is None
+    assert body["nodes"]
+
+
+def test_industry_tree_degrades_to_count_when_mv_absent(client, admin, monkeypatch):
+    _patch_bars_unavailable(monkeypatch)
+    r = client.get("/api/v1/data/charts/industry/tree", headers=admin,
+                   params={"system": "sw", "size_by": "mv"})
+    assert r.status_code == 200, r.text          # not a 500
+    body = r.json()
+    assert body["size_by"] == "count"            # degraded so the tree still renders
+    assert body["nodes"]                         # tree structure intact
+    assert body["notice"] and "总市值" in body["notice"]
+
+
+def test_industry_aggregates_data_unavailable_when_mv_absent(client, admin, monkeypatch):
+    _patch_bars_unavailable(monkeypatch)
+    r = client.get("/api/v1/data/charts/industry/aggregates", headers=admin,
+                   params={"system": "sw", "level": 1, "metric": "total_mv"})
+    assert r.status_code == 422                   # clean structured error, not 500
+    err = r.json()["error"]
+    assert err["code"] == "DATA_UNAVAILABLE"
+    assert "总市值" in err["message"]
+    assert err["details"]["metric"] == "total_mv"
+
+
+def test_industry_composition_degrades_keeping_members_when_mv_absent(client, admin, monkeypatch):
+    _patch_bars_unavailable(monkeypatch)
+    r = client.get("/api/v1/data/charts/industry/composition", headers=admin,
+                   params={"system": "sw", "level": 1, "code": "801120"})
+    assert r.status_code == 200, r.text          # member list survives the missing column
+    body = r.json()
+    assert body["count"] >= 1                     # 食品饮料 has seeded members
+    assert all(m["mv"] is None for m in body["members"])   # mv column degraded to null
+    assert body["notice"] and "总市值" in body["notice"]
+
+
+def _patch_aggregate_unavailable(monkeypatch, column="total_mv"):
+    """Force every engine aggregation to behave as if `column` isn't in the data —
+    covers market/explorer which call reader.aggregate_current_view directly."""
+    from quant_data import ColumnNotInViewError
+    from quant_data.reader import DataReader
+
+    def _boom(self, *a, **k):
+        raise ColumnNotInViewError(column, "raw.bars_daily")
+
+    monkeypatch.setattr(DataReader, "aggregate_current_view", _boom)
+
+
+def test_market_mv_distribution_data_unavailable_when_mv_absent(client, admin, monkeypatch):
+    _patch_aggregate_unavailable(monkeypatch)
+    r = client.get("/api/v1/data/charts/market/mv-distribution", headers=admin,
+                   params={"field": "total_mv"})
+    assert r.status_code == 422                   # clear notice, not an opaque 500
+    err = r.json()["error"]
+    assert err["code"] == "DATA_UNAVAILABLE"
+    assert err["details"]["metric"] == "total_mv"
+
+
+def test_explorer_data_unavailable_when_column_absent(client, admin, monkeypatch):
+    _patch_aggregate_unavailable(monkeypatch, column="total_mv")
+    r = client.post("/api/v1/data/charts/explorer/preview", headers=admin, json={
+        "table": "raw.bars_daily", "x_axis": "date", "y_axes": ["total_mv"],
+        "aggregation": "monthly_avg", "chart_type": "line"})
+    assert r.status_code == 422                   # not a 500 from a schema-vs-data gap
+    err = r.json()["error"]
+    assert err["code"] == "DATA_UNAVAILABLE"
+    assert err["details"]["column"] == "total_mv"

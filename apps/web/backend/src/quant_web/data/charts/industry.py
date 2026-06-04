@@ -15,6 +15,7 @@ import datetime as dt
 
 from fastapi import APIRouter, Depends
 
+from quant_data import ColumnNotInViewError
 from quant_data.schemas import FUNDAMENTALS, get_spec
 
 from ...deps import get_current_user, get_reader, heavy_query_slot
@@ -129,6 +130,20 @@ def _symbol_metric(reader, metric: str, as_of: str) -> dict[str, float]:
     raise ApiError("INVALID_PARAMETER", f"未知指标: {metric}")
 
 
+def _unavailable_hint(field: str) -> str:
+    """User-facing reason a bars-sourced metric/column can't be served.
+
+    Bars market-cap / share columns (``total_mv`` …) are declared in the schema
+    but only land in ``raw.bars_daily`` once a market-cap source is ingested. On
+    warehouses where that backfill hasn't run, the column is physically absent
+    and the query raises :class:`ColumnNotInViewError`. We surface this calm,
+    actionable hint instead of a 500 / endless spinner.
+    """
+    label = _METRIC_LABEL.get(field, field)
+    return (f"{label}数据暂未入库（{_BARS} 缺少 {field} 列）。"
+            f"请在「数据管理」补采市值/股本数据（tushare daily_basic / akshare），或切换为其它指标。")
+
+
 def _symbol_rows(reader):
     return reader.read_symbols(active_only=False).to_pylist()
 
@@ -144,8 +159,14 @@ def tree(
     st = _industry.load_tree(reader, system)
     syms = _symbol_rows(reader)
     value_of: dict[str, float]
+    notice: str | None = None
     if size_by == "mv":
-        value_of = _bars_values(reader, "total_mv", _resolve_as_of(reader, as_of))
+        try:
+            value_of = _bars_values(reader, "total_mv", _resolve_as_of(reader, as_of))
+        except ColumnNotInViewError:
+            # market-cap not ingested -> keep the tree usable by sizing on家数
+            # and tell the user why, rather than failing the whole panel.
+            size_by, value_of, notice = "count", {}, _unavailable_hint("total_mv")
     else:
         value_of = {}
 
@@ -171,6 +192,7 @@ def tree(
         "system": system, "system_label": _SYSTEM_LABEL.get(system, system),
         "size_by": size_by, "nodes": nodes, "levels": st.levels_summary(),
         "coverage": {"covered": covered, "total": len(syms)},
+        "notice": notice,
     }
 
 
@@ -193,7 +215,12 @@ def composition(
     # scan (the 2026-06 OOM-audit pattern). ``members or [None]`` keeps an empty
     # industry from falling back to "all symbols".
     member_filter = members or ["__none__"]
-    mv = {s: v for s, v in _bars_values(reader, "total_mv", as_of).items() if s in mset}
+    notice: str | None = None
+    try:
+        mv = {s: v for s, v in _bars_values(reader, "total_mv", as_of).items() if s in mset}
+    except ColumnNotInViewError:
+        # 市值未入库：成分股名单 / PE / ROE 仍可用，市值列降级为空并给出提示。
+        mv, notice = {}, _unavailable_hint("total_mv")
     pe = _fund_point_values(reader, "pe_ttm", as_of, member_filter)
     roe = _fund_point_values(reader, "roe", as_of, member_filter)
 
@@ -207,6 +234,7 @@ def composition(
         "industry": {"code": code, "name": st.name(code), "level": level},
         "members": out, "count": len(out), "as_of": as_of,
         "coverage": {"covered": len(mv), "total": len(out)},
+        "notice": notice,
     }
 
 
@@ -225,7 +253,13 @@ def aggregates(
     st = _industry.load_tree(reader, system)
     syms = _symbol_rows(reader)
     name_of = {r["symbol"]: r.get("name") for r in syms}
-    values = _symbol_metric(reader, metric, as_of)
+    try:
+        values = _symbol_metric(reader, metric, as_of)
+    except ColumnNotInViewError:
+        # 该指标列尚未入库：横向对比 / 行业内分布无可呈现数据 -> 明确的 422 提示，
+        # 而不是 500 或前端无限 loading。
+        raise ApiError("DATA_UNAVAILABLE", _unavailable_hint(metric),
+                       details={"metric": metric, "table": _BARS}) from None
     industry_of, covered, total = _industry.rollup_symbols(st, syms, level)
     meta = {"metric": metric, "metric_label": _METRIC_LABEL.get(metric, metric),
             "level": level, "as_of": as_of,
