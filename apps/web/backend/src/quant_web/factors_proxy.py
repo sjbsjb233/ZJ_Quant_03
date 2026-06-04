@@ -160,9 +160,13 @@ async def _do_proxy(path: str, request: Request, user) -> Response:
             media_type=r.headers.get("content-type"),
         )
     except httpx.RequestError as e:
+        # Upstream unreachable is a 503, not a 400 — "INTERNAL" isn't in
+        # ERROR_STATUS so it silently fell back to 400 (looked like a client
+        # error). Match keeper_proxy: a clean SERVICE_UNAVAILABLE envelope the
+        # frontend can render as an error instead of "无因子数据".
         _log.error("factor-api proxy error: %s -> %s", url, e)
         raise ApiError(
-            "INTERNAL",
+            "SERVICE_UNAVAILABLE",
             f"无法连接因子服务: {e}",
             {"upstream": _factor_api_base()},
         )

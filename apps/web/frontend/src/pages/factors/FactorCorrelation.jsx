@@ -5,7 +5,7 @@ import { endpoints } from '../../lib/api';
 import { TerminalShell, TPanel } from '../../components/shell';
 import { Empty, Loading } from '../../components/ui';
 import { Heatmap } from './charts';
-import { fmtNum, useUniverses } from './shared';
+import { fmtNum, useUniverses, MiniError } from './shared';
 
 export default function FactorCorrelation() {
   const qc = useQueryClient();
@@ -90,6 +90,7 @@ export default function FactorCorrelation() {
                 <details>
                   <summary data-testid="corr-add-factor" style={{ color: 'var(--info)', fontFamily: 'var(--font-mono)', fontSize: 10.5, cursor: 'pointer' }}>+ 添加</summary>
                   <div style={{ marginTop: 6, maxHeight: 220, overflow: 'auto', border: '1px solid var(--border)', borderRadius: 3 }}>
+                    {factorsQ.isError && <MiniError error={factorsQ.error} onRetry={() => factorsQ.refetch()} label="加载因子列表失败" />}
                     {(factorsQ.data?.items || []).map((f) => (
                       <div key={f.factor_id} onClick={() => toggle(f.factor_id)} style={{
                         padding: '4px 10px', display: 'grid', gridTemplateColumns: '20px 130px 1fr',

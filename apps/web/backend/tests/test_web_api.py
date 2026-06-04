@@ -466,16 +466,15 @@ def test_stub_501(client, admin):
 
 
 def test_factors_proxy_attempts_upstream(client, admin, monkeypatch):
-    """Without a running factor-api, the proxy returns a clean INTERNAL error
-    wrapped in our standard envelope (not raw 500/503)."""
+    """Without a running factor-api, the proxy returns a clean SERVICE_UNAVAILABLE
+    (503) wrapped in our standard envelope — a real error the frontend renders as
+    such, NOT a 400/empty that collapses into a misleading "无因子数据"."""
     monkeypatch.setenv("FACTOR_API_BASE", "http://127.0.0.1:1")  # unreachable
     r = client.get("/api/v1/factors", headers=admin)
-    assert r.status_code in (400, 500, 502, 503)
+    assert r.status_code == 503
     body = r.json()
-    assert "error" in body and body["error"]["code"] in (
-        "INTERNAL",
-        "PROXY_ERROR",
-    )
+    assert body["error"]["code"] == "SERVICE_UNAVAILABLE"
+    assert "因子服务" in body["error"]["message"]
     assert body["error"]["trace_id"]
 
 
