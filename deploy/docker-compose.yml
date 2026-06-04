@@ -39,7 +39,9 @@ services:
     ports:
       - "${WEB_PORT:-80}:80"
     depends_on:
+      # nginx /obs/ 反代 obs-sentinel:8400 (状态帧 SSE); /api/ 反代 web-backend。
       - web-backend
+      - obs-sentinel
     restart: unless-stopped
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
@@ -94,11 +96,26 @@ services:
       LAYER_SILENCE_MIN: ${LAYER_SILENCE_MIN:-data=20,factor=30,backend=15}
       LOG_ALERT_WEBHOOK: ${LOG_ALERT_WEBHOOK:-}                          # opt-in 钉钉/企业微信 robot
       MONITOR_ALERT_MIN_LEVEL: ${MONITOR_ALERT_MIN_LEVEL:-error}
+      # 哨兵新检测器阈值 (规则页渲染默认值, 与哨兵 env 同名同步, §6.5/§9.2)
+      DISK_WARN_PCT: ${DISK_WARN_PCT:-85}
+      DISK_CRIT_PCT: ${DISK_CRIT_PCT:-95}
+      CPU_SAT_PCT: ${CPU_SAT_PCT:-90}
+      CPU_SAT_FOR_SEC: ${CPU_SAT_FOR_SEC:-120}
+      CORE_DUMP_RW_GB: ${CORE_DUMP_RW_GB:-2}
+      LIVENESS_PROBE_TIMEOUT_SEC: ${LIVENESS_PROBE_TIMEOUT_SEC:-2}
+      # 哨兵 conditions 新鲜度门 (盲时停喂, §6.5)
+      SIGNAL_FRESH_SEC: ${SIGNAL_FRESH_SEC:-120}
+      # JSONL → app_log 回填自愈 (§8.3②): 启动后扫描各层本地 JSONL 补齐宕机缺口。
+      # /backfill 是各层 ./logs 的只读挂入 (见 volumes); log_file_dir(/state/logs) 总会扫。
+      LOG_BACKFILL_ON_START: ${LOG_BACKFILL_ON_START:-true}
+      LOG_BACKFILL_DIRS: ${LOG_BACKFILL_DIRS:-/backfill/keeper;/backfill/factor;/backfill/sentinel}
+      LOG_BACKFILL_SINCE_HOURS: ${LOG_BACKFILL_SINCE_HOURS:-48}
       NO_PROXY: "localhost,127.0.0.1"
       no_proxy: "localhost,127.0.0.1"
     volumes:
       - ./data:/data:ro          # 读控制台,只读 (写者唯一)
       - ./state:/state           # app_log/audit/duck temp/日志 JSONL (可写)
+      - ./logs:/backfill:ro      # 各层本地 JSONL 只读挂入, 供回填自愈扫描 (§8.3②)
     healthcheck:
       test: ["CMD", "python", "-c",
              "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health').read()"]
@@ -230,30 +247,69 @@ services:
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
 
-  # ── 进程哨兵 / 外部观察 (旁路, 可观测层重构方案 §4.6) ──────────
-  # 只读挂 docker.sock,巡检本项目容器 (OOM/重启/健康/内存),把原始观测 POST 给
-  # web-backend /monitor/signals,并把 D1/D2/D4 命中以 source=monitor ship 到日志中枢。
-  # 把 socket 给 web-backend 不安全,故单独成最小权限容器。
+  # ── 第一层 · 心跳/基建哨兵 (外置, 可观测层重构方案 §5 / §9.1) ──────────────
+  # 「看门狗住在屋外」: 只读挂 docker.sock + 宿主分区, 自主检测 L0 存活 / D1–D4 / D7 /
+  # D13 磁盘 / D14 CPU / D15 core-dump, 并:
+  #   ① POST /monitor/signals (v2: containers + infra + conditions) 喂后端台账;
+  #   ② 暴露 :8400 只读 HTTP/SSE 状态帧, 经 nginx /obs/ 直推前端 (绕开 backend);
+  #   ③ 命中先写本地 JSONL (本地优先, backend 宕机也不丢) 再 ship source=monitor 日志。
+  # 谁崩它都活: 不再 depends_on web-backend (哨兵须独立于被观测者)。最小权限: 只读、无命令面。
   obs-sentinel:
     image: ${OBS_SENTINEL_IMAGE:-ghcr.io/OWNER/REPO/obs-sentinel:latest}
     container_name: zj-quant-obs-sentinel
     restart: unless-stopped
     mem_limit: 256m
     memswap_limit: 256m
+    # 与全栈一致: 关 core dump (哨兵自身崩溃也不写爆系统盘, 2026-06-01 P0)。
+    ulimits:
+      core: 0
+    expose:
+      - "8400"                                          # 仅供 web-frontend 反代, 不发布到宿主/公网
     environment:
       <<: *logging-env                                  # 复用 LOG_INGEST_URL / TOKEN
       MONITOR_SIGNALS_URL: http://web-backend:8000/api/v1/monitor/signals
       MONITOR_SIGNALS_TOKEN: ${LOG_INGEST_TOKEN:-change-me-log-token}
-      SENTINEL_INTERVAL_SEC: ${SENTINEL_INTERVAL_SEC:-30}
+      SENTINEL_INTERVAL_SEC: ${SENTINEL_INTERVAL_SEC:-30}        # 深扫 (stats/size) 节拍
+      OBS_LIVENESS_INTERVAL_SEC: ${OBS_LIVENESS_INTERVAL_SEC:-2}  # L0 存活快扫 → AC-1 ≤3s 变红
       SENTINEL_LABEL_FILTER: "com.docker.compose.project=zj-quant"
+      # D1–D4 阈值 (哨兵带时间窗/持续态自检)
       RESTART_STORM_COUNT: ${RESTART_STORM_COUNT:-3}
       RESTART_STORM_WINDOW_MIN: ${RESTART_STORM_WINDOW_MIN:-10}
+      UNHEALTHY_FOR_SEC: ${UNHEALTHY_FOR_SEC:-90}
       MEM_PRESSURE_PCT: ${MEM_PRESSURE_PCT:-90}
+      MEM_PRESSURE_FOR_SEC: ${MEM_PRESSURE_FOR_SEC:-120}
+      # 第一层新检测器阈值 (§9.2)
+      DISK_WARN_PCT: ${DISK_WARN_PCT:-85}
+      DISK_CRIT_PCT: ${DISK_CRIT_PCT:-95}
+      CPU_SAT_PCT: ${CPU_SAT_PCT:-90}
+      CPU_SAT_FOR_SEC: ${CPU_SAT_FOR_SEC:-120}
+      CORE_DUMP_RW_GB: ${CORE_DUMP_RW_GB:-2}
+      LIVENESS_PROBE_TIMEOUT_SEC: ${LIVENESS_PROBE_TIMEOUT_SEC:-2}
+      DEADMAN_HOURS: ${DEADMAN_HOURS:-25}
+      # D13 磁盘: 容器内 statvfs 路径 (宿主分区 :ro 挂在这里); 缺失的挂载自动跳过。
+      OBS_DISK_MOUNTS: ${OBS_DISK_MOUNTS:-/=/host-root,/mnt/sdb=/host-sdb}
+      # L0 死人开关直采 keeper /health (不再经 backend)
+      KEEPER_HEALTH_URL: http://data-keeper:8300/health
+      # 状态帧 HTTP/SSE 服务
+      OBS_HTTP_PORT: ${OBS_HTTP_PORT:-8400}
+      OBS_STATUS_PUSH_SEC: ${OBS_STATUS_PUSH_SEC:-10}
+      OBS_JSONL_DIR: /logs                              # 本地 JSONL 兜底落点
+      # 状态帧 JWT 本地校验 (与 backend 同密钥, 哨兵不回调 backend)
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-prod}
       TZ: Asia/Shanghai
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro    # 只读
-    depends_on:
-      - web-backend
+      - /var/run/docker.sock:/var/run/docker.sock:ro    # 只读, 绝不外泄到 /obs/
+      - /:/host-root:ro                                 # D13 系统盘水位 (2026-06-01 P0 受害盘)
+      # 数据盘 (可选, 按部署放开): 监控大盘 /mnt/sdb 水位 (core-dump 落点)。
+      # - /mnt/sdb:/host-sdb:ro
+      - ./logs/sentinel:/logs                           # 哨兵自身告警本地 JSONL (回填自愈源)
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8400/obs/v1/health').read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
 

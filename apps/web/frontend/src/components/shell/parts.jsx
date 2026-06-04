@@ -4,7 +4,8 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../lib/auth';
 import { useTheme } from '../../lib/theme';
 import { getLastTraceId } from '../../lib/logger';
-import { useSystemHealth } from '../../lib/health';
+import { useObsStatus } from '../../lib/obsStatus';
+import { ObsRealtime } from '../../pages/observability/shared';
 import { DATA_NAV, FACTOR_NAV, MODULES, NavGlyph, OBSERV_NAV, VIZ_NAV } from './nav';
 
 export function ModuleStrip({ current, env = 'PROD' }) {
@@ -63,6 +64,10 @@ export function TerminalSidebar({ module = 'data', current }) {
   const moduleLabel =
     module === 'viz' ? '数据可视化' : module === 'factor' ? '因子管理'
       : module === 'observ' ? '可观测' : '数据管理';
+  // 总览 / 拓扑 在哨兵 SSE 实时在线时点亮 LIVE 徽标 (可观测层重构方案 §7A.7)。
+  // shared singleton, so the extra subscription is free (StatusBar already uses it).
+  const { source } = useObsStatus();
+  const liveBadge = module === 'observ' && source === 'live';
   return (
     <aside style={{
       width: 184, background: 'var(--surface-2)', borderRight: '1px solid var(--border)',
@@ -76,6 +81,8 @@ export function TerminalSidebar({ module = 'data', current }) {
       <nav style={{ padding: '6px', flex: 1 }}>
         {nav.map((it) => {
           const isCur = it.id === current;
+          // dynamic LIVE badge on 总览/拓扑 when the sentinel SSE frame is live
+          const badge = it.badge || (liveBadge && (it.id === 'overview' || it.id === 'topology') ? 'LIVE' : null);
           return (
             <Link key={it.id} to={it.to} data-testid={`sidebar-item-${it.id}`} style={{
               display: 'flex', alignItems: 'center', gap: 8, padding: '5px 8px', margin: '1px 0',
@@ -87,16 +94,16 @@ export function TerminalSidebar({ module = 'data', current }) {
               {isCur && <span style={{ position: 'absolute', left: -6, top: 6, bottom: 6, width: 2, background: 'var(--fg)' }} />}
               <NavGlyph id={it.id} />
               <span style={{ flex: 1 }}>{it.label}</span>
-              {it.badge && (
+              {badge && (
                 <span style={{
                   fontFamily: 'var(--font-mono)', fontSize: 8.5,
-                  color: it.badge === 'NEW' ? 'var(--ok)' : 'var(--info)', letterSpacing: '0.05em',
-                }}>{it.badge}</span>
+                  color: badge === 'NEW' ? 'var(--ok)' : 'var(--info)', letterSpacing: '0.05em',
+                }}>{badge}</span>
               )}
-              {!it.badge && it.hot && (
+              {!badge && it.hot && (
                 <span style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, color: 'var(--info)', letterSpacing: '0.05em' }}>HOT</span>
               )}
-              {!it.badge && !it.hot && it.warn && (
+              {!badge && !it.hot && it.warn && (
                 <span style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, color: 'var(--warn)' }}>!</span>
               )}
             </Link>
@@ -201,23 +208,25 @@ export function SubToolbar({ path = [], fkeys = [], right }) {
   );
 }
 
-// 右上角系统状态标识 (可观测层重构方案 §7.5): 替换硬编码 `● live`，按「最差层级状态」
-// 渲染 live / degraded / alert 三态,点进可观测页。任一层出问题立刻在每个页面右上角可见。
+// 右上角系统状态标识 (可观测层重构方案 §7.5 / §7A.0②): 双源合流裁决 (哨兵存活/基建优先,
+// 后端叠加告警明细)。按「最差层级状态」渲染 live / degraded / alert 三态,点进可观测页。
+// 两路皆断时整体置 down 并提示「实时观测中断」,绝不伪绿。
 export function SystemStatusPill() {
   const nav = useNavigate();
-  const { data, isError } = useSystemHealth();
-  const status = isError ? 'down' : (data?.status || 'ok');
-  const firing = data?.alerts?.firing || 0;
+  const { status, firing, source } = useObsStatus();
   const map = {
-    ok: { c: 'var(--ok)', txt: '正常', en: 'live', glyph: '●' },
-    degraded: { c: 'var(--warn)', txt: '降级', en: firing ? `· ${firing}` : '', glyph: '▲' },
-    down: { c: 'var(--err)', txt: '故障', en: firing ? `· ${firing}` : '', glyph: '■' },
+    ok: { c: 'var(--ok)', txt: '正常', en: source === 'delayed' ? '轮询' : 'live' },
+    degraded: { c: 'var(--warn)', txt: '降级', en: firing ? `· ${firing}` : '' },
+    down: { c: 'var(--err)', txt: source === 'stale' ? '观测中断' : '故障', en: firing ? `· ${firing}` : '' },
   };
   const m = map[status] || map.ok;
   const to = status === 'ok' ? '/observ/overview' : '/observ/alerts';
+  const title = source === 'stale' ? '实时观测中断 · 哨兵与后端均不可达 · 点击进入可观测'
+    : source === 'delayed' ? '系统状态 (SSE 断, 轮询回退) · 点击进入可观测'
+      : '系统状态 (哨兵实时裁决) · 点击进入可观测';
   return (
-    <span data-testid="system-status-pill" data-state={status}
-      onClick={() => nav(to)} title="系统状态 (监控层裁决) · 点击进入可观测"
+    <span data-testid="system-status-pill" data-state={status} data-source={source}
+      onClick={() => nav(to)} title={title}
       style={{
         display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer',
         padding: '1px 9px', borderRadius: 10, lineHeight: '15px',
@@ -287,63 +296,65 @@ function TraceChip() {
 
 // A single health point. state ∈ 'ok' | 'warn' | 'error' | undefined(加载/未知).
 // data-testid / data-state are e2e hooks so assertions don't depend on copy.
-function CompDot({ label, state, title }) {
+function CompDot({ label, state, title, pulse }) {
   const cls = state === 'ok' ? 'ok' : state === 'warn' ? 'warn'
             : state === 'error' ? 'err' : 'running';
   const txt = state === 'ok' ? 'ok' : state === 'warn' ? 'degraded'
             : state === 'error' ? 'down' : '…';
   return (
     <span data-testid={`status-${label}`} data-state={state || 'loading'} title={title}>
-      <span className={`dot ${cls}`} /> {label}: {txt}
+      <span className={`dot ${cls}`} style={pulse ? { animation: 'pulse 1.4s ease-in-out infinite' } : undefined} /> {label}: {txt}
     </span>
   );
 }
 
-// 监控层 state (ok|degraded|down) → CompDot state (ok|warn|error)。
-const _MON_STATE = { ok: 'ok', degraded: 'warn', down: 'error' };
-
 export function StatusBar({ middle, right }) {
   const nav = useNavigate();
-  // 状态栏数据源：监控层裁决 (可观测层重构方案 §7.4) —— /monitor/health，含 uptime /
-  // 重启数 / 上次成功 / 活跃告警。某层即便 /health 回 200,只要有活跃告警仍渲染为红。
-  const { data, isError, isLoading } = useSystemHealth();
-  const layers = data?.layers || {};
-  const comp = data?.components || {};
-  const firing = data?.alerts?.firing || 0;
-  const fail = (s) => (isError ? 'error' : s);
-  const layerState = (k) => (isError ? 'error' : _MON_STATE[layers[k]?.state]);
+  // 状态栏数据源：双源合流 (可观测层重构方案 §7.2/§7A.0②) —— 首选哨兵 SSE 实时帧 (存活/
+  // 基建真相, 绕开 backend), 回退 /monitor/health 轮询。某层 reachable=false 立即染红,
+  // backend 在线时叠加告警明细。两路皆断 ⇒ 整体 down + 「实时观测中断」, 绝不伪绿。
+  const { layers, health, firing, source, sentinelOnline } = useObsStatus();
+  const comp = health?.components || {};
+  const compState = (s) => (source === 'stale' ? 'error' : s);
 
-  // hover 即见根因线索 (uptime / 重启数 / 上次成功)。
+  // hover 即见根因线索 (reachable / cpu / uptime / 重启 / 上次成功)。
+  const reach = (k) => (layers[k]?.reachable === false ? '不可达' : layers[k]?.reachable === true ? '可达' : '—');
+  const beTip = (() => {
+    const b = layers.backend || {};
+    return `后端 (web-backend) — 探测 ${reach('backend')}${b.cpu_pct != null ? ` · cpu ${b.cpu_pct}%` : ''}`;
+  })();
   const dataTip = (() => {
-    const d = layers.data || {};
-    const bits = [];
-    if (d.uptime_s != null) bits.push(`uptime ${Math.round(d.uptime_s / 60)}m`);
+    const d = layers.data || {}; const hd = d.health || {};
+    const bits = [`探测 ${reach('data')}`];
+    if (hd.uptime_s != null) bits.push(`uptime ${Math.round(hd.uptime_s / 60)}m`);
     if (d.restart_count) bits.push(`重启 ×${d.restart_count}`);
     if (d.oom_killed) bits.push('OOM');
-    if (d.last_job_success_at) bits.push(`上次成功 ${String(d.last_job_success_at).slice(0, 16)}`);
+    if (hd.last_job_success_at) bits.push(`上次成功 ${String(hd.last_job_success_at).slice(0, 16)}`);
+    if (d.cpu_pct != null) bits.push(`cpu ${d.cpu_pct}%`);
     if (d.mem_pct != null) bits.push(`mem ${d.mem_pct}%`);
-    return '数据层 (data-keeper) ' + (bits.join(' · ') || '');
+    return `数据层 (data-keeper) ${bits.join(' · ')}`;
   })();
-  const monTip = (() => {
-    const m = layers.monitor || {};
-    return `监控层 — sentinel: ${m.sentinel_last_seen ? '在线' : '离线/未上线'} · eval: ${m.eval_last_run ? '在线' : '—'}`;
-  })();
+  const monTip = `监控层 — 哨兵: ${sentinelOnline ? '在线' : '离线/未上线'} · 实时: ${source === 'live' ? '哨兵 SSE' : source === 'delayed' ? '轮询回退' : '中断'}`;
 
-  const label = isLoading ? '…'
-    : `${data?.cluster || '—'}${data?.environment ? ' · ' + data.environment : ''}`;
+  const label = `${health?.cluster || '—'}${health?.environment ? ` · ${health.environment}` : ''}`;
 
   return (
     <footer data-testid="status-bar" style={{
       height: 22, background: 'var(--surface-2)', borderTop: '1px solid var(--border)',
-      padding: '0 14px', display: 'flex', alignItems: 'center', gap: 14,
+      padding: '0 14px', display: 'flex', alignItems: 'center', gap: 13,
       fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-3)', flexShrink: 0,
     }}>
-      <CompDot label="db" state={fail(comp.db?.state)} title="web-backend 元数据库 (审计 + app_log)" />
-      <CompDot label="warehouse" state={fail(comp.warehouse?.state)} title="parquet 数据湖 /data (所有数据读取)" />
-      <CompDot label="data" state={layerState('data')} title={dataTip} />
-      <CompDot label="factor" state={layerState('factor')}
-        title={`因子层 — worker: ${layers.factor?.worker || '—'} · mem: ${layers.factor?.mem_pct ?? '—'}%`} />
-      <CompDot label="monitor" state={layerState('monitor')} title={monTip} />
+      {/* 5 层存活/裁决点 (哨兵真相 + 后端叠加) */}
+      <CompDot label="frontend" state={layers.frontend?.state} title={`前端 — 探测 ${reach('frontend')}`} />
+      <CompDot label="backend" state={layers.backend?.state} title={beTip} pulse={layers.backend?.reachable === false} />
+      <CompDot label="data" state={layers.data?.state} title={dataTip} pulse={layers.data?.reachable === false} />
+      <CompDot label="factor" state={layers.factor?.state}
+        title={`因子层 — 探测 ${reach('factor')}${layers.factor?.cpu_pct != null ? ` · cpu ${layers.factor.cpu_pct}%` : ''} · mem ${layers.factor?.mem_pct ?? '—'}%`} />
+      <CompDot label="monitor" state={layers.monitor?.state} title={monTip} />
+      <span style={{ color: 'var(--fg-mute)' }}>│</span>
+      {/* 子组件 (元数据库 / 数据湖) */}
+      <CompDot label="db" state={compState(comp.db?.state)} title="web-backend 元数据库 (审计 + app_log)" />
+      <CompDot label="warehouse" state={compState(comp.warehouse?.state)} title="parquet 数据湖 /data (所有数据读取)" />
       <span style={{ color: 'var(--fg-mute)' }}>│</span>
       <span data-testid="status-cluster">{label}</span>
       {middle && (<><span style={{ color: 'var(--fg-mute)' }}>│</span>{middle}</>)}
@@ -358,6 +369,8 @@ export function StatusBar({ middle, right }) {
           }}>⚠ {firing}</span>
       )}
       <TraceChip />
+      <span style={{ color: 'var(--fg-mute)' }}>│</span>
+      <ObsRealtime state={source} mini />
       {right || (
         <>
           <span className="kbd">?</span>

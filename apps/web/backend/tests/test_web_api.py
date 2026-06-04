@@ -740,9 +740,18 @@ def test_monitor_rules_list_and_admin_override(client, admin, editor, viewer):
     r = client.get("/api/v1/monitor/rules", headers=viewer)
     assert r.status_code == 200
     items = r.json()["items"]
-    assert len(items) == 12
+    # L0 + D1–D15 (可观测层重构方案 §6.5: 注册表扩到 16 条)
+    assert len(items) == 16
     ids = {it["id"] for it in items}
-    assert {"D1.oom_killed", "D2.restart_storm", "D7.deadman", "D12.sentinel_offline"} <= ids
+    assert {"L0.unreachable", "D1.oom_killed", "D2.restart_storm", "D7.deadman",
+            "D12.sentinel_offline", "D13.disk", "D14.cpu_saturation", "D15.core_dump"} <= ids
+    # every rule carries a detector_owner; the new infra rules are sentinel-owned.
+    by_id = {it["id"]: it for it in items}
+    assert all("detector_owner" in it for it in items)
+    assert by_id["D13.disk"]["detector_owner"] == "sentinel"
+    assert by_id["D13.disk"]["target_kind"] == "host"
+    assert by_id["D7.deadman"]["detector_owner"] == "sentinel"
+    assert by_id["D8.error_rate"]["detector_owner"] == "backend"
 
     # admin overrides a threshold → persisted + reflected
     up = client.put("/api/v1/monitor/rules/D2.restart_storm",
@@ -776,38 +785,66 @@ def test_monitor_signals_requires_service_token(client):
     assert ok.status_code == 200 and ok.json()["accepted"] == 1
 
 
-def test_monitor_oom_signal_creates_alert_and_marks_layer_down(client, admin):
+def test_monitor_oom_condition_creates_alert_and_marks_layer_down(client, admin):
+    """评估器瘦身后 (§6.1): 检测在哨兵, 后端只消费哨兵上报的 conditions 进同一台账。
+    哨兵 v2 信号带 containers (喂拓扑/状态) + conditions (喂告警生命周期)。"""
     from quant_web.monitor import routes as monitor_routes
 
-    sig = {"observed_at": "2026-06-02T02:00:00Z",
+    sig = {"v": 2, "observed_at": "2026-06-02T02:00:00Z",
            "containers": [{"name": "zj-quant-data-keeper", "status": "running",
                            "oom_killed": True, "restart_count": 91, "health": "none",
-                           "mem_usage": 8_589_934_592, "mem_limit": 8_589_934_592}]}
+                           "reachable": True, "cpu_pct": 12.5,
+                           "mem_usage": 8_589_934_592, "mem_limit": 8_589_934_592}],
+           "infra": {"disk": [{"mount": "/", "used_pct": 96}]},
+           "conditions": [{"code": "D1.oom_killed", "severity": "critical", "layer": "data",
+                           "target": "zj-quant-data-keeper", "title": "data-keeper 被内核 OOM 强杀",
+                           "detail": {"container": "zj-quant-data-keeper"}}]}
     client.post("/api/v1/monitor/signals", json=sig,
                 headers={"X-Log-Token": "test-log-token"})
 
-    # topology reflects the raw observation (mem 100% + OOM flag)
+    # topology reflects the raw observation (mem 100% + OOM + cpu); host disk surfaces
     topo = client.get("/api/v1/monitor/topology", headers=admin).json()
     keeper = next(c for c in topo["containers"] if c["layer"] == "data")
-    assert keeper["oom_killed"] is True and keeper["mem_pct"] == 100
+    assert keeper["oom_killed"] is True and keeper["mem_pct"] == 100 and keeper["cpu_pct"] == 12.5
+    assert any(d["mount"] == "/" and d["state"] == "error" for d in topo["infra"]["disk"])
 
-    # drive one evaluation pass → D1 fires
+    # drive one evaluation pass → the sentinel-judged D1 condition enters the ledger
     client.app.state.monitor_evaluator._tick()
     alerts = client.get("/api/v1/monitor/alerts",
                         params={"status": "firing"}, headers=admin).json()
     oom = [a for a in alerts["items"] if a["rule_id"] == "D1.oom_killed"]
     assert oom and oom[0]["layer"] == "data" and oom[0]["severity"] == "critical"
 
-    # the monitor layer's verdict overrides liveness: data.state == down
+    # the monitor layer's verdict overrides liveness: data.state == down; infra surfaced
     monitor_routes._health_cache["data"] = None
     health = client.get("/api/v1/monitor/health", headers=admin).json()
     assert health["layers"]["data"]["state"] == "down"
+    assert health["layers"]["data"]["cpu_pct"] == 12.5
+    assert health["layers"]["data"]["reachable"] is True
+    assert any(d["mount"] == "/" and d["state"] == "error" for d in health["infra"]["disk"])
     assert health["alerts"]["firing"] >= 1
 
     # ack then resolve the alert
     aid = oom[0]["id"]
     assert client.post(f"/api/v1/monitor/alerts/{aid}/ack", headers=admin).json()["status"] == "acked"
     assert client.post(f"/api/v1/monitor/alerts/{aid}/resolve", headers=admin).json()["status"] == "resolved"
+
+
+def test_monitor_stale_conditions_are_dropped(client, admin):
+    """哨兵盲时 (conditions 超期) 不再臆断: SignalState.conditions 返回 [], 评估器停喂 →
+    现有 auto_resolve 关闭它们 (D12 兜底盲点), 可观测层重构方案 §6.5。"""
+    from quant_web.monitor.store import get_signal_state
+
+    sig = {"v": 2, "observed_at": "2026-06-02T03:00:00Z",
+           "containers": [{"name": "zj-quant-factor-stale", "status": "running",
+                           "restart_count": 0, "mem_usage": 1e9, "mem_limit": 8e9}],
+           "conditions": [{"code": "D15.core_dump", "severity": "critical", "layer": "factor",
+                           "target": "zj-quant-factor-stale", "title": "stale dump"}]}
+    client.post("/api/v1/monitor/signals", json=sig, headers={"X-Log-Token": "test-log-token"})
+    # force the conditions to look ancient → freshness gate must drop them
+    st = get_signal_state()
+    st._conditions_at = st._conditions_at.replace(year=2000)
+    assert st.conditions(120) == []
 
 
 def test_monitor_logs_ingest_accepts_monitor_source(client, admin):
@@ -825,19 +862,120 @@ def test_monitor_logs_ingest_accepts_monitor_source(client, admin):
 
 
 def test_monitor_restart_storm_fires_d2(client, admin):
-    """重启风暴 D2 — the detector that turns the last OOM crash loop from '10h
-    无人发现' into '重启第 3 次即 CRITICAL'. Two observations build the window."""
+    """重启风暴 D2 — now detected by the sentinel (绕开 backend) and reported as a
+    condition; the evaluator just feeds it into the same ledger (§6.5)."""
     name = "zj-quant-data-keeper-stormtest"
-    for rc in (0, 5):                               # ΔRestartCount = 5 ≥ N(3)
-        client.post("/api/v1/monitor/signals",
-                    json={"containers": [{"name": name, "status": "running",
-                                          "restart_count": rc, "mem_usage": 1e9, "mem_limit": 8e9}]},
-                    headers={"X-Log-Token": "test-log-token"})
+    client.post("/api/v1/monitor/signals",
+                json={"v": 2, "containers": [{"name": name, "status": "running",
+                                              "restart_count": 5, "mem_usage": 1e9, "mem_limit": 8e9}],
+                      "conditions": [{"code": "D2.restart_storm", "severity": "critical",
+                                      "layer": "data", "target": name,
+                                      "title": f"{name} 在 10m 内重启 5 次",
+                                      "detail": {"restart_delta": 5}}]},
+                headers={"X-Log-Token": "test-log-token"})
     client.app.state.monitor_evaluator._tick()
     al = client.get("/api/v1/monitor/alerts", params={"status": "firing"}, headers=admin).json()
     storm = [a for a in al["items"] if a["rule_id"] == "D2.restart_storm" and a["target"] == name]
     assert storm and storm[0]["severity"] == "critical"
     assert storm[0]["detail"]["restart_delta"] == 5
+
+
+def test_monitor_disabled_sentinel_rule_is_muted(client, admin):
+    """admin 关掉某哨兵规则 → 即便哨兵仍上报该 condition, 评估器也不入台账 (静音)。"""
+    name = "zj-quant-data-muted"
+    client.put("/api/v1/monitor/rules/D15.core_dump", json={"enabled": False}, headers=admin)
+    try:
+        client.post("/api/v1/monitor/signals",
+                    json={"v": 2, "containers": [{"name": name, "status": "running",
+                                                  "mem_usage": 1e9, "mem_limit": 8e9}],
+                          "conditions": [{"code": "D15.core_dump", "severity": "critical",
+                                          "layer": "data", "target": name, "title": "muted dump"}]},
+                    headers={"X-Log-Token": "test-log-token"})
+        client.app.state.monitor_evaluator._tick()
+        al = client.get("/api/v1/monitor/alerts", params={"status": "firing", "page_size": 200},
+                        headers=admin).json()
+        assert not any(a["rule_id"] == "D15.core_dump" and a["target"] == name for a in al["items"])
+    finally:
+        client.put("/api/v1/monitor/rules/D15.core_dump", json={"enabled": True}, headers=admin)
+
+
+def test_monitor_unknown_condition_code_ignored(client, admin):
+    """DET-17: a forward-compatible / malformed condition code is ignored, never
+    injected into the ledger as an arbitrary rule_id (and the tick doesn't crash)."""
+    name = "zj-quant-data-bogus"
+    client.post("/api/v1/monitor/signals",
+                json={"v": 2, "containers": [{"name": name, "status": "running",
+                                              "mem_usage": 1e9, "mem_limit": 8e9}],
+                      "conditions": [{"code": "ZZ.not_a_real_rule", "severity": "critical",
+                                      "layer": "data", "target": name, "title": "bogus"}]},
+                headers={"X-Log-Token": "test-log-token"})
+    client.app.state.monitor_evaluator._tick()
+    al = client.get("/api/v1/monitor/alerts", params={"status": "firing", "page_size": 200},
+                    headers=admin).json()
+    assert not any(a["rule_id"] == "ZZ.not_a_real_rule" for a in al["items"])
+
+
+def test_monitor_duplicate_condition_dedupes_to_one_alert(client, admin):
+    """DET-18: the same condition seen across many ticks stays ONE firing alert
+    (de-dup key (rule_id,layer,target)), count bumps rather than rows multiply."""
+    name = "zj-quant-data-dupe"
+    sig = {"v": 2, "containers": [{"name": name, "status": "running", "mem_usage": 1e9, "mem_limit": 8e9}],
+           "conditions": [{"code": "D1.oom_killed", "severity": "critical", "layer": "data",
+                           "target": name, "title": "dupe oom"}]}
+    client.post("/api/v1/monitor/signals", json=sig, headers={"X-Log-Token": "test-log-token"})
+    client.app.state.monitor_evaluator._tick()
+    client.post("/api/v1/monitor/signals", json=sig, headers={"X-Log-Token": "test-log-token"})
+    client.app.state.monitor_evaluator._tick()
+    al = client.get("/api/v1/monitor/alerts", params={"page_size": 200}, headers=admin).json()
+    rows = [a for a in al["items"] if a["rule_id"] == "D1.oom_killed" and a["target"] == name]
+    assert len(rows) == 1 and rows[0]["count"] >= 2
+
+
+def test_log_backfill_heals_central_store(client, admin, tmp_path):
+    """JSONL → app_log 回填自愈 (§8.3②): backend 宕机窗口只落了本地 JSONL → 扫描后按
+    (trace_id,ts,event) 去重补齐中枢。"""
+    import datetime as _dt
+    import json as _json
+
+    from quant_web.db.base import SessionLocal
+    from quant_web.logging.backfill import run_backfill
+
+    ts = _dt.datetime.utcnow().isoformat() + "Z"
+    rec = {"ts": ts, "source": "monitor", "level": "CRITICAL", "logger": "monitor.sentinel",
+           "event": "monitor.D13.disk", "message": "/ 磁盘 96%", "trace_id": "t_backfill1"}
+    (tmp_path / "monitor.jsonl").write_text(_json.dumps(rec) + "\n", encoding="utf-8")
+
+    res = run_backfill(SessionLocal, [str(tmp_path)], since_hours=48)
+    assert res["inserted"] == 1
+    # idempotent — a second run inserts nothing (dedup by trace_id/ts/event/message)
+    assert run_backfill(SessionLocal, [str(tmp_path)], since_hours=48)["inserted"] == 0
+    _flush_logs(client)
+    rows = client.get("/api/v1/logs", params={"source": "monitor", "search": "磁盘"},
+                      headers=admin).json()
+    assert any(x["event"] == "monitor.D13.disk" for x in rows["items"])
+
+
+def test_log_backfill_message_disambiguates_same_second(tmp_path):
+    """Review fix M3: two monitor records sharing ts-second + source + event but with
+    different messages (different targets, no trace_id) must BOTH insert — message is
+    part of the dedup key so the second isn't dropped as a false duplicate."""
+    import datetime as _dt
+    import json as _json
+
+    from quant_web.db.base import SessionLocal
+    from quant_web.logging.backfill import run_backfill
+
+    ts = _dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    recs = [
+        {"ts": ts, "source": "monitor", "level": "ERROR", "logger": "monitor.sentinel",
+         "event": "monitor.D13.disk", "message": "/ 磁盘 96%"},
+        {"ts": ts, "source": "monitor", "level": "ERROR", "logger": "monitor.sentinel",
+         "event": "monitor.D13.disk", "message": "/mnt/sdb 磁盘 91%"},
+    ]
+    (tmp_path / "monitor.jsonl").write_text(
+        "\n".join(_json.dumps(r) for r in recs) + "\n", encoding="utf-8")
+    res = run_backfill(SessionLocal, [str(tmp_path)], since_hours=48)
+    assert res["inserted"] == 2          # both distinct messages land, not deduped to 1
 
 
 def test_monitor_tasks_degrades_without_keeper(client, admin):

@@ -7,7 +7,7 @@ import { TerminalShell } from '../../components/shell';
 import { Loading, ErrorState, Empty } from '../../components/ui';
 import { endpoints } from '../../lib/api';
 import { fmtTs } from '../logs/shared';
-import { ObsJobChip, ObsKap, ObsLive, agoFrom } from './shared';
+import { ObsJobChip, ObsKap, ObsLive, ObsDetector, agoFrom } from './shared';
 
 // 调度任务展示名 (真实任务名 crawl/quality/maintenance, §7.3⑦注)
 const TASK_META = {
@@ -55,6 +55,13 @@ export default function ObsTasks() {
             </div>
           ) : (
             <div className="scroll" style={{ flex: 1, minHeight: 0, overflow: 'auto', background: 'var(--bg)' }}>
+              {/* 存活检测归属说明 (§7A.6): D7 死人开关的检测已移到哨兵直采 keeper /health;
+                  本页任务台账 / 历史仍读 backend /monitor/tasks (keeper 数据), 展示不变。 */}
+              <div style={{ padding: '10px 14px 0', display: 'flex', alignItems: 'center', gap: 8, fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--fg-3)' }}>
+                <ObsDetector kind="external" mini />
+                <span>存活检测 (死人开关) 由哨兵直采 keeper 负责;本页台账/历史仍读后端 (keeper 数据)。</span>
+              </div>
+
               {/* scheduled-task cards */}
               <div style={{ padding: '14px 14px 6px' }}>
                 <div style={{ marginBottom: 10 }}><ObsKap>定时任务 · 死人开关 ({'>'}{deadman}h 无成功即超期)</ObsKap></div>

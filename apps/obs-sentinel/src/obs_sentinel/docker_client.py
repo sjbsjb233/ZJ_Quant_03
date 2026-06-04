@@ -52,8 +52,13 @@ class DockerClient:
             path += "&filters=" + urllib.parse.quote(filt)
         return self._get(path) or []
 
-    def inspect(self, cid: str) -> dict:
-        return self._get(f"/containers/{cid}/json") or {}
+    def inspect(self, cid: str, size: bool = False) -> dict:
+        # size=true returns SizeRw (可写层大小) — used for D15 core-dump detection.
+        # It is *expensive* on the daemon, so callers opt in only when needed.
+        path = f"/containers/{cid}/json"
+        if size:
+            path += "?size=true"
+        return self._get(path) or {}
 
     def stats(self, cid: str) -> dict:
         # one-shot, non-streaming snapshot
@@ -72,3 +77,47 @@ def memory_used_and_limit(stats: dict) -> tuple[int | None, int | None]:
     inactive = detail.get("inactive_file", detail.get("total_inactive_file", 0)) or 0
     used = usage - inactive if usage >= inactive else usage
     return int(used), (int(limit) if limit else None)
+
+
+def _online_cpus(cpu: dict) -> int:
+    return cpu.get("online_cpus") or len((cpu.get("cpu_usage") or {}).get("percpu_usage") or []) or 1
+
+
+def cpu_percent(stats: dict) -> float | None:
+    """Per-container CPU% from one stats snapshot's cpu/precpu deltas — the exact
+    formula `docker stats` uses (D14 饱和度). Returns None when the deltas aren't
+    computable yet (first sample / paused container).
+
+    NOTE: a ``one-shot=true`` stats read zeroes ``precpu_stats`` (system becomes
+    None), so this returns None against the live daemon — the sentinel instead
+    uses :func:`cpu_totals` + its own previous sample (see Sentinel._cpu_delta)."""
+    s = stats or {}
+    cpu = s.get("cpu_stats") or {}
+    pre = s.get("precpu_stats") or {}
+    cur_usage = (cpu.get("cpu_usage") or {}).get("total_usage")
+    pre_usage = (pre.get("cpu_usage") or {}).get("total_usage")
+    sys_cur = cpu.get("system_cpu_usage")
+    sys_pre = pre.get("system_cpu_usage")
+    if None in (cur_usage, pre_usage, sys_cur, sys_pre):
+        return None
+    cpu_delta = cur_usage - pre_usage
+    sys_delta = sys_cur - sys_pre
+    if sys_delta <= 0 or cpu_delta < 0:
+        return None
+    return round((cpu_delta / sys_delta) * _online_cpus(cpu) * 100.0, 1)
+
+
+def cpu_totals(stats: dict) -> tuple[int, int, int] | None:
+    """Extract (container_cpu_ns, system_cpu_ns, online_cpus) from a stats read.
+
+    These cumulative counters ARE populated even with ``one-shot=true`` (unlike
+    precpu), so the sentinel can diff them against its own previous sample to get
+    an accurate CPU% over the deep-scan interval — no 1s-per-container blocking
+    second read on the daemon."""
+    s = stats or {}
+    cpu = s.get("cpu_stats") or {}
+    total = (cpu.get("cpu_usage") or {}).get("total_usage")
+    system = cpu.get("system_cpu_usage")
+    if total is None or system is None:
+        return None
+    return int(total), int(system), _online_cpus(cpu)
