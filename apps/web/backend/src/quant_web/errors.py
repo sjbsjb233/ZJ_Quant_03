@@ -39,6 +39,7 @@ ERROR_STATUS = {
     "DUPLICATE_RESOURCE": 409,
     "INVALID_NEW_BATCH": 409,
     "UNPROCESSABLE_ENTITY": 422,
+    "DATA_UNAVAILABLE": 422,           # requested metric/column not yet ingested
     "INTERNAL_ERROR": 500,
     "NOT_IMPLEMENTED": 501,
     "SERVICE_UNAVAILABLE": 503,

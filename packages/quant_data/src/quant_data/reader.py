@@ -12,8 +12,10 @@ that:
 from __future__ import annotations
 
 import datetime as dt
+import re
 import time
 
+import duckdb
 import pyarrow as pa
 import pyarrow.parquet as pq
 
@@ -24,6 +26,28 @@ from .schemas import ARROW_TYPE_BY_NAME, DATE, TS, TableSpec, get_spec
 
 _PRICE_COLS = ("open", "high", "low", "close", "pre_close", "vwap")
 _log = get_logger("quant_data.reader")
+
+# DuckDB's binder phrasing for "you asked for a column the parquet files don't
+# have": ``Referenced column "total_mv" not found in FROM clause!``.
+_MISSING_COL_RE = re.compile(r'Referenced column "([^"]+)" not found')
+
+
+class ColumnNotInViewError(ValueError):
+    """A projection/filter named a column that isn't in the current view's data.
+
+    Raised (instead of leaking a raw ``duckdb.BinderException``) when a query
+    references a column the underlying parquet files don't carry -- e.g.
+    ``total_mv`` on bars ingested before the market-cap columns were added to the
+    schema. Carries the offending ``column``/``table`` so the API layer can turn
+    it into a precise "<指标>数据暂未入库" message and degrade gracefully rather
+    than 500. Subclasses ``ValueError`` to stay compatible with callers that
+    already treat bad-column requests as value errors.
+    """
+
+    def __init__(self, column: str, table: str):
+        self.column = column
+        self.table = table
+        super().__init__(f"列 {column!r} 不在 {table} 的当前视图中（数据尚未包含该列）")
 
 
 def _hashable(v):
@@ -327,7 +351,17 @@ class DataReader:
         )
         SELECT {projection} FROM cv {tail}
         """
-        return con.execute(sql, [files])
+        try:
+            return con.execute(sql, [files])
+        except duckdb.BinderException as e:
+            # A referenced column simply isn't in the data (e.g. market-cap on
+            # legacy bars). Surface a typed error so the API can give a precise
+            # "数据暂未入库" hint instead of an opaque 500. Re-raise anything else
+            # (a genuine malformed projection) untouched.
+            m = _MISSING_COL_RE.search(str(e))
+            if m:
+                raise ColumnNotInViewError(m.group(1), spec.name) from e
+            raise
 
     def latest_date_in_view(self, table_name: str, on_or_before=None,
                             time_col: str = "date") -> dt.date | None:

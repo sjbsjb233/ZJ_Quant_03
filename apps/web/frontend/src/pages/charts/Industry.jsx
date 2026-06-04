@@ -9,7 +9,7 @@ import { TerminalShell, FSelect } from '../../components/shell';
 import { EChart, SymbolSearch, DataTable } from '../../components/ui';
 import { endpoints } from '../../lib/api';
 import {
-  CoverageBadge, PanelState, MiniToggle, VizPanel, fmtCap, fmtNum, panelStateOf,
+  CoverageBadge, PanelState, MiniToggle, VizPanel, fmtCap, fmtNum, panelStateProps,
 } from './vizShared';
 
 const RECENT_KEY = 'zjq_recent_charts';
@@ -38,6 +38,22 @@ function median(arr) {
   if (!v.length) return null;
   const m = Math.floor(v.length / 2);
   return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
+}
+
+// thin amber strip explaining a degraded panel (e.g. 市值未入库 -> 按家数显示).
+function NoticeBar({ text, testId }) {
+  return (
+    <div data-testid={testId} style={{
+      display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0,
+      padding: '4px 10px', background: 'var(--warn-bg)',
+      borderBottom: '1px solid var(--border-faint)',
+      fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--warn)',
+      lineHeight: 1.4,
+    }}>
+      <span style={{ flexShrink: 0 }}>⚠</span>
+      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{text}</span>
+    </div>
+  );
 }
 
 // ── tree (nested from flat nodes) ────────────────────────────────────────────
@@ -161,6 +177,14 @@ export default function IndustryPage() {
   const breakdownQ = useQuery({ queryKey: ['ind-bd', system, level, metric, selectedCode], queryFn: () => endpoints.industryAggregates({ system, level, metric, breakdown: 'symbol', code: selectedCode }), enabled: !!system && !!selectedCode });
   const lookupQ = useQuery({ queryKey: ['ind-lookup', lookupSym, system], queryFn: () => endpoints.industryLookup({ symbol: lookupSym, system }), enabled: !!lookupSym && !!system });
 
+  // Non-data panel states (loading / idle-waiting / error / 数据未入库). ②④ are
+  // disabled until an industry is selected -> they show an 'idle' hint, never an
+  // endless spinner; a DATA_UNAVAILABLE response renders as a calm "数据未入库".
+  const treeState = panelStateProps(treeQ);
+  const aggState = panelStateProps(aggQ);
+  const compState = panelStateProps(compQ, { idleHint: '请先在左侧行业树或上方对比图中选择行业' });
+  const breakdownState = panelStateProps(breakdownQ, { idleHint: '请先选择行业以查看行业内分布' });
+
   const industries = aggQ.data?.industries || [];
   // keep a valid selection: default to the largest industry at this level.
   useEffect(() => {
@@ -282,13 +306,14 @@ export default function IndustryPage() {
         <aside style={{ width: 248, flexShrink: 0, borderRight: '1px solid var(--border)', background: 'var(--surface)', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
           <header style={{ padding: '6px 10px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
             <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg)' }}>① 行业树</span>
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--fg-4)' }}>节点大小={sizeBy === 'mv' ? '总市值' : '家数'}</span>
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--fg-4)' }}>节点大小={(treeQ.data?.size_by || sizeBy) === 'mv' ? '总市值' : '家数'}</span>
             <div style={{ flex: 1 }} />
             {treeQ.data && <CoverageBadge testId="industry-tree-coverage" covered={treeQ.data.coverage?.covered || 0} total={treeQ.data.coverage?.total || 0} />}
           </header>
+          {treeQ.data?.notice && <NoticeBar testId="industry-tree-notice" text={treeQ.data.notice} />}
           <div className="scroll" data-testid="industry-tree" style={{ flex: 1, minHeight: 0, padding: '4px 0' }}>
-            {panelStateOf(treeQ)
-              ? <PanelState kind={panelStateOf(treeQ)} onAction={() => treeQ.refetch()} />
+            {treeState
+              ? <PanelState {...treeState} onAction={() => treeQ.refetch()} />
               : <IndustryTree nodes={treeQ.data?.nodes} sizeBy={treeQ.data?.size_by} selected={selectedCode} onSelect={selectNode} />}
           </div>
         </aside>
@@ -323,8 +348,8 @@ export default function IndustryPage() {
               badge={aggQ.data && <CoverageBadge covered={aggQ.data.coverage?.covered || 0} total={aggQ.data.coverage?.total || 0} />}>
               <div style={{ padding: '3px 12px', fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--fg-3)', borderBottom: '1px solid var(--border-faint)', flexShrink: 0 }}>中位数 ● · 25–75% 分布区间 ▬ · 点行选中</div>
               <div className="scroll" style={{ flex: 1, minHeight: 0, padding: '6px 0' }}>
-                {panelStateOf(aggQ)
-                  ? <PanelState kind={panelStateOf(aggQ)} onAction={() => aggQ.refetch()} />
+                {aggState
+                  ? <PanelState {...aggState} onAction={() => aggQ.refetch()} />
                   : industries.length
                     ? <DistBars rows={industries} metric={metric} selected={selectedCode} onSelect={setSelectedCode} />
                     : <PanelState kind="empty" hint="该层级 / 指标下无行业数据" />}
@@ -337,8 +362,8 @@ export default function IndustryPage() {
               badge={breakdownQ.data && <CoverageBadge covered={(breakdownQ.data.breakdown || []).length} total={header.count} />}>
               <div style={{ padding: '3px 12px', fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--fg-3)', borderBottom: '1px solid var(--border-faint)', flexShrink: 0 }}>选中行业成分股 · {metricLabel}</div>
               <div className="scroll" style={{ flex: 1, minHeight: 0 }}>
-                {panelStateOf(breakdownQ)
-                  ? <PanelState kind={panelStateOf(breakdownQ)} onAction={() => breakdownQ.refetch()} />
+                {breakdownState
+                  ? <PanelState {...breakdownState} onAction={() => breakdownQ.refetch()} />
                   : !(breakdownQ.data?.breakdown || []).length
                     ? <PanelState kind="empty" hint="选中行业内无该指标数据" />
                     : withinMode === 'rank'
@@ -353,9 +378,10 @@ export default function IndustryPage() {
           <VizPanel testId="industry-panel-constituents" n="②" title="行业成分" en={`constituents of ${selName} · 点击行跳转`} minHeight={0}
             style={{ flex: 1.1, border: 'none', borderRadius: 0 }}
             badge={compQ.data && <CoverageBadge covered={compQ.data.coverage?.covered || 0} total={compQ.data.coverage?.total || 0} />}>
+            {compQ.data?.notice && <NoticeBar testId="industry-comp-notice" text={compQ.data.notice} />}
             <div className="scroll" style={{ flex: 1, minHeight: 0 }}>
-              {panelStateOf(compQ)
-                ? <PanelState kind={panelStateOf(compQ)} onAction={() => compQ.refetch()} />
+              {compState
+                ? <PanelState {...compState} onAction={() => compQ.refetch()} />
                 : <DataTable columns={memberCols} rows={members} rowKey={(r) => r.symbol}
                     rowTestId={(r) => `industry-constituent-row-${r.symbol}`}
                     onRowClick={(r) => nav(`/data/charts/kline?symbol=${r.symbol}`)} emptyLabel="选中行业暂无成分股" />}

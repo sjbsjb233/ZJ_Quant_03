@@ -1074,3 +1074,61 @@ def test_explorer_aggregate_pushdown(client, admin):
     body = r.json()
     assert "x" in body and "series" in body
     assert body["series"] and len(body["series"][0]["data"]) == len(body["x"])
+
+
+# ── 行业视图: graceful degradation when market-cap (total_mv) isn't ingested ──
+# On warehouses where the市值/股本 backfill hasn't run, the column is physically
+# absent and DuckDB raises a BinderException -> ColumnNotInViewError. The endpoints
+# must turn that into a clear, actionable response, never a 500 / endless spinner.
+def _patch_bars_unavailable(monkeypatch):
+    from quant_data import ColumnNotInViewError
+    from quant_web.data.charts import industry
+
+    def _boom(reader, field, as_of):
+        raise ColumnNotInViewError(field, "raw.bars_daily")
+
+    monkeypatch.setattr(industry, "_bars_values", _boom)
+
+
+def test_industry_tree_happy_path_keeps_mv(client, admin):
+    """When the column exists, sizing by市值 is served normally (no false notice)."""
+    r = client.get("/api/v1/data/charts/industry/tree", headers=admin,
+                   params={"system": "sw", "size_by": "mv"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["size_by"] == "mv"
+    assert body["notice"] is None
+    assert body["nodes"]
+
+
+def test_industry_tree_degrades_to_count_when_mv_absent(client, admin, monkeypatch):
+    _patch_bars_unavailable(monkeypatch)
+    r = client.get("/api/v1/data/charts/industry/tree", headers=admin,
+                   params={"system": "sw", "size_by": "mv"})
+    assert r.status_code == 200, r.text          # not a 500
+    body = r.json()
+    assert body["size_by"] == "count"            # degraded so the tree still renders
+    assert body["nodes"]                         # tree structure intact
+    assert body["notice"] and "总市值" in body["notice"]
+
+
+def test_industry_aggregates_data_unavailable_when_mv_absent(client, admin, monkeypatch):
+    _patch_bars_unavailable(monkeypatch)
+    r = client.get("/api/v1/data/charts/industry/aggregates", headers=admin,
+                   params={"system": "sw", "level": 1, "metric": "total_mv"})
+    assert r.status_code == 422                   # clean structured error, not 500
+    err = r.json()["error"]
+    assert err["code"] == "DATA_UNAVAILABLE"
+    assert "总市值" in err["message"]
+    assert err["details"]["metric"] == "total_mv"
+
+
+def test_industry_composition_degrades_keeping_members_when_mv_absent(client, admin, monkeypatch):
+    _patch_bars_unavailable(monkeypatch)
+    r = client.get("/api/v1/data/charts/industry/composition", headers=admin,
+                   params={"system": "sw", "level": 1, "code": "801120"})
+    assert r.status_code == 200, r.text          # member list survives the missing column
+    body = r.json()
+    assert body["count"] >= 1                     # 食品饮料 has seeded members
+    assert all(m["mv"] is None for m in body["members"])   # mv column degraded to null
+    assert body["notice"] and "总市值" in body["notice"]

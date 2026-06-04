@@ -30,11 +30,12 @@ from . import (
 )
 from .bootstrap import bootstrap
 from .log_shipper import HttpLogShipper
-from .reader import DataReader
+from .reader import ColumnNotInViewError, DataReader
 
 __all__ = [
     "bootstrap",
     "DataReader",
+    "ColumnNotInViewError",
     "HttpLogShipper",
     "log_shipper",
     "ingest",
