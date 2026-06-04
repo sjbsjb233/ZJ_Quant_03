@@ -6,6 +6,7 @@ import datetime as dt
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
+from quant_data import ColumnNotInViewError
 from quant_data.schemas import RAW_TABLES, REFERENCE_TABLES, get_spec
 
 from ...db.base import get_db
@@ -33,6 +34,18 @@ def _safe(v):
     if isinstance(v, (dt.date, dt.datetime)):
         return v.isoformat()
     return v
+
+
+def _unavailable(e: ColumnNotInViewError) -> ApiError:
+    # Columns are validated against the *schema* (spec.all_names), which can
+    # declare a column the warehouse data doesn't physically carry yet (e.g.
+    # market-cap). That surfaces here as ColumnNotInViewError — turn it into a
+    # clear 422 instead of an opaque 500.
+    return ApiError(
+        "DATA_UNAVAILABLE",
+        f"所选列 {e.column} 在当前数据中尚未入库(表 {e.table} 无该列数据),请更换列或补采数据后重试",
+        details={"column": e.column, "table": e.table},
+    )
 
 
 @router.post("/preview")
@@ -80,7 +93,10 @@ def preview(body: ExplorerRequest, reader=Depends(get_reader), user=Depends(get_
         else:
             projection = f"{xexpr} AS x, {gcol} AS g, {_AGG_FN[agg]}({y}) AS v"
             tail = f"{where_sql} GROUP BY x, g ORDER BY x LIMIT {limit}"
-        rows = reader.aggregate_current_view(spec, projection, tail).fetchall()
+        try:
+            rows = reader.aggregate_current_view(spec, projection, tail).fetchall()
+        except ColumnNotInViewError as e:
+            raise _unavailable(e) from None
         xs, seen = [], set()
         for r in rows:
             if r[0] not in seen:
@@ -101,7 +117,10 @@ def preview(body: ExplorerRequest, reader=Depends(get_reader), user=Depends(get_
             cols = ", ".join(f"{_AGG_FN[agg]}({_ident(y)}) AS {_ident(y)}" for y in body.y_axes)
             projection = f"{xexpr} AS x, {cols}"
             tail = f"{where_sql} GROUP BY x ORDER BY x LIMIT {limit}"
-        cur = reader.aggregate_current_view(spec, projection, tail)
+        try:
+            cur = reader.aggregate_current_view(spec, projection, tail)
+        except ColumnNotInViewError as e:
+            raise _unavailable(e) from None
         names = [d[0] for d in cur.description]
         rows = cur.fetchall()
         x_out = [_safe(r[0]) for r in rows]

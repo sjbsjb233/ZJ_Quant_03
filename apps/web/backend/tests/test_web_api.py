@@ -1131,3 +1131,36 @@ def test_industry_composition_degrades_keeping_members_when_mv_absent(client, ad
     assert body["count"] >= 1                     # 食品饮料 has seeded members
     assert all(m["mv"] is None for m in body["members"])   # mv column degraded to null
     assert body["notice"] and "总市值" in body["notice"]
+
+
+def _patch_aggregate_unavailable(monkeypatch, column="total_mv"):
+    """Force every engine aggregation to behave as if `column` isn't in the data —
+    covers market/explorer which call reader.aggregate_current_view directly."""
+    from quant_data import ColumnNotInViewError
+    from quant_data.reader import DataReader
+
+    def _boom(self, *a, **k):
+        raise ColumnNotInViewError(column, "raw.bars_daily")
+
+    monkeypatch.setattr(DataReader, "aggregate_current_view", _boom)
+
+
+def test_market_mv_distribution_data_unavailable_when_mv_absent(client, admin, monkeypatch):
+    _patch_aggregate_unavailable(monkeypatch)
+    r = client.get("/api/v1/data/charts/market/mv-distribution", headers=admin,
+                   params={"field": "total_mv"})
+    assert r.status_code == 422                   # clear notice, not an opaque 500
+    err = r.json()["error"]
+    assert err["code"] == "DATA_UNAVAILABLE"
+    assert err["details"]["metric"] == "total_mv"
+
+
+def test_explorer_data_unavailable_when_column_absent(client, admin, monkeypatch):
+    _patch_aggregate_unavailable(monkeypatch, column="total_mv")
+    r = client.post("/api/v1/data/charts/explorer/preview", headers=admin, json={
+        "table": "raw.bars_daily", "x_axis": "date", "y_axes": ["total_mv"],
+        "aggregation": "monthly_avg", "chart_type": "line"})
+    assert r.status_code == 422                   # not a 500 from a schema-vs-data gap
+    err = r.json()["error"]
+    assert err["code"] == "DATA_UNAVAILABLE"
+    assert err["details"]["column"] == "total_mv"
