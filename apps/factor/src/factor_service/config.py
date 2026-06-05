@@ -36,7 +36,11 @@ class Settings(BaseSettings):
     # surfaced as "worker lost (stale heartbeat)" and failed the basket run.
     # This caps how many *heavy* (data-reading) tasks run concurrently,
     # independent of FACTOR_CONCURRENCY which still parallelises light tasks.
-    factor_heavy_concurrency: int = 2
+    # Default 1 (serialise heavy tasks): a single eval already peaks at ~5.4GB
+    # of the 12GB cap and the host runs under memory pressure (see
+    # project_incident_20260604_hang), so 2 concurrent would leave almost no
+    # headroom. Ops with a bigger box can raise it via FACTOR_HEAVY_CONCURRENCY.
+    factor_heavy_concurrency: int = 1
     factor_reserve_interactive: int = 1
     factor_poll_interval_ms: int = 1000
     factor_stale_seconds: int = 120

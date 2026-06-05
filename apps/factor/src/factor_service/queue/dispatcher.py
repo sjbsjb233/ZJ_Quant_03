@@ -170,7 +170,11 @@ def main() -> None:
     pool = ThreadPoolExecutor(max_workers=conc, thread_name_prefix="factor-worker")
     inflight: dict[Future, str] = {}
     # Subset of `inflight` whose task is a HEAVY_TASK_TYPES (data-reading) job —
-    # the count drives the memory-aware admission gate below.
+    # the count drives the memory-aware admission gate below. NB: this gate is
+    # per-process; it assumes the single-worker deployment (compose pins
+    # container_name, so no --scale). If factor-worker is ever replicated, N
+    # workers would each admit heavy_cap heavies → N×cap total, re-opening the
+    # OOM — make the gate count running heavy tasks in the DB instead.
     inflight_heavy: set[Future] = set()
 
     db = _db_base.SessionLocal()

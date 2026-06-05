@@ -240,7 +240,8 @@ services:
       FACTOR_ROLE: worker
       FACTOR_CONCURRENCY: ${FACTOR_CONCURRENCY:-4}
       # Memory-aware admission gate (修复 worker OOM crash-loop, 2026-06-05).
-      FACTOR_HEAVY_CONCURRENCY: ${FACTOR_HEAVY_CONCURRENCY:-2}
+      # 1 = 重评估串行(单评估峰值 ~5.4GB,12GB 上限留不出两份的余量);宿主内存富裕可调高。
+      FACTOR_HEAVY_CONCURRENCY: ${FACTOR_HEAVY_CONCURRENCY:-1}
       FACTOR_RESERVE_INTERACTIVE: ${FACTOR_RESERVE_INTERACTIVE:-1}
       FACTOR_POLL_INTERVAL_MS: ${FACTOR_POLL_INTERVAL_MS:-1000}
       JWT_SECRET: ${JWT_SECRET:-change-me-in-prod}

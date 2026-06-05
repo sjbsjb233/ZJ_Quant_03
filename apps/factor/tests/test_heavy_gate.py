@@ -90,3 +90,20 @@ def test_gate_closed_with_only_heavy_returns_none(db_setup):
 
         t = store.claim_next_filtered(db, "w1", allow_routine=True, allow_heavy=False)
         assert t is None
+
+
+def test_gate_filters_heavy_in_routine_lane(db_setup):
+    """The heavy filter applies to the routine lane too (tracking ticks ride
+    routine): a routine heavy task is skipped while a routine light one is
+    claimed when the gate is closed."""
+    from factor_service.queue import store
+
+    with db_setup.SessionLocal() as db:
+        heavy = store.enqueue(db, task_type="basket_eval", payload={"x": 1}, lane="routine")
+        light = store.enqueue(db, task_type="import_validate", payload={"y": 2}, lane="routine")
+
+        t = store.claim_next_filtered(db, "w1", allow_routine=True, allow_heavy=False)
+        assert t is not None
+        assert t.task_id == light.task_id
+        db.refresh(heavy)
+        assert heavy.status == "queued"
