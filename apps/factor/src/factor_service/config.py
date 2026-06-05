@@ -36,6 +36,19 @@ class Settings(BaseSettings):
     preflight_enabled: bool = True
     degradation_policy_profile: str = "strict"
 
+    # ── 因子篮子 (因子层重构 §14.1) ─────────────────────────────────────────
+    # Master flag for the basket subsystem (P1/P2 isolation). When off, the
+    # basket routers are not mounted and the worker's tick/orphan sweep is a
+    # no-op — existing single-factor flows are untouched.
+    factor_basket_enabled: bool = True
+
+    # ── 测试专用时间旅行 (因子层验证 SCH/追踪) ───────────────────────────────
+    # factor_fake_today: when set to an ISO date (optionally `YYYY-MM-DD[THH:MM]`),
+    # the basket scheduler/runner believe "today" is that date — so tests can
+    # advance the trading day deterministically. EMPTY = real clock (production).
+    # Honored only when non-empty; never affects prod unless explicitly set.
+    factor_fake_today: str = ""
+
     # ── 运行透视 / Run Trace 采集 (设计 §2.6) ───────────────────────────
     # trace_enabled: master switch — off ⇒ evaluator builds no trace, no埋点,
     #   no artifact, and the endpoint returns available:false (behaviour exactly
@@ -64,6 +77,37 @@ class Settings(BaseSettings):
     @property
     def origins(self) -> list[str]:
         return [o.strip() for o in self.allowed_origins.split(",") if o.strip()]
+
+    @property
+    def fake_today_date(self):
+        """Parsed FACTOR_FAKE_TODAY (date) or None (= real clock). Test hook."""
+        import datetime as _dt
+
+        s = (self.factor_fake_today or "").strip()
+        if not s:
+            return None
+        try:
+            return _dt.date.fromisoformat(s[:10])
+        except ValueError:
+            return None
+
+    @property
+    def fake_now_dt(self):
+        """FACTOR_FAKE_TODAY as a datetime. Defaults to 23:59 so the scheduler's
+        tick-time gate (hour:minute) always passes unless an explicit T-time is
+        given (`YYYY-MM-DDTHH:MM`)."""
+        import datetime as _dt
+
+        d = self.fake_today_date
+        if d is None:
+            return None
+        s = (self.factor_fake_today or "").strip()
+        if "T" in s:
+            try:
+                return _dt.datetime.fromisoformat(s)
+            except ValueError:
+                pass
+        return _dt.datetime.combine(d, _dt.time(23, 59))
 
     @property
     def evaluations_dir(self) -> str:

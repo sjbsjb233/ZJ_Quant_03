@@ -132,6 +132,39 @@ async def proxy_queue(path: str, request: Request, user=Depends(get_current_user
     return await _do_proxy("/queue" + path, request, user)
 
 
+# ── 因子篮子 (因子层重构 §12) — top-level REST prefixes on factor-api ─────────
+@factors_proxy_router.api_route(
+    "/baskets{path:path}",
+    methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
+)
+async def proxy_baskets(path: str, request: Request, user=Depends(get_current_user)):
+    return await _do_proxy("/baskets" + path, request, user)
+
+
+@factors_proxy_router.api_route(
+    "/selections{path:path}",
+    methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
+)
+async def proxy_selections(path: str, request: Request, user=Depends(get_current_user)):
+    return await _do_proxy("/selections" + path, request, user)
+
+
+@factors_proxy_router.api_route(
+    "/screening{path:path}",
+    methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
+)
+async def proxy_screening(path: str, request: Request, user=Depends(get_current_user)):
+    return await _do_proxy("/screening" + path, request, user)
+
+
+@factors_proxy_router.api_route(
+    "/screen-presets{path:path}",
+    methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
+)
+async def proxy_presets(path: str, request: Request, user=Depends(get_current_user)):
+    return await _do_proxy("/screen-presets" + path, request, user)
+
+
 async def _do_proxy(path: str, request: Request, user) -> Response:
     base = _factor_api_base()
     url = base.rstrip("/") + path

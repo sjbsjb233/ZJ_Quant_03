@@ -11,6 +11,7 @@ import { DrawerHeader } from './RunConfigDrawer';
 import RunConfigDrawer from './RunConfigDrawer';
 import LogPanel from '../logs/LogPanel';
 import { RunStatusBadge, MiniError } from './shared';
+import { Badge } from './baskets/kit';
 
 export default function FactorTasks() {
   const nav = useNavigate();
@@ -21,7 +22,9 @@ export default function FactorTasks() {
 
   const tasksQ = useQuery({
     queryKey: ['tasks.list', laneFilter, statusFilter],
-    queryFn: () => endpoints.tasks({ lane: laneFilter || undefined, status: statusFilter || undefined, limit: 100 }),
+    // standalone:true → basket-child tasks are excluded server-side (they show in
+    // the grouped cards), so the flat list isn't crowded out of the recent-N window.
+    queryFn: () => endpoints.tasks({ lane: laneFilter || undefined, status: statusFilter || undefined, standalone: true, limit: 100 }),
     refetchInterval: 3000,
   });
   const statsQ = useQuery({
@@ -30,7 +33,17 @@ export default function FactorTasks() {
     refetchInterval: 5000,
   });
 
-  const tasks = tasksQ.data?.items || [];
+  // 因子层重构 §6.6/§10.4 — grouped view surfaces basket runs as group cards.
+  const groupedQ = useQuery({
+    queryKey: ['tasks.grouped'],
+    queryFn: () => endpoints.tasks({ view: 'grouped' }),
+    refetchInterval: 3000,
+  });
+  const groups = groupedQ.data?.groups || [];
+
+  // Flat sections show ONLY standalone tasks — basket children render inside
+  // their group card (filter out anything with a brun_id).
+  const tasks = (tasksQ.data?.items || []).filter((t) => !t.brun_id);
   const running = tasks.filter((t) => t.status === 'running');
   const queuedI = tasks.filter((t) => t.status === 'queued' && t.lane === 'interactive');
   const queuedD = tasks.filter((t) => t.status === 'queued' && t.lane === 'routine');
@@ -84,6 +97,11 @@ export default function FactorTasks() {
         <div className="scroll" style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
           {tasksQ.isError && (
             <MiniError error={tasksQ.error} onRetry={() => tasksQ.refetch()} label="加载任务队列失败" />
+          )}
+          {groups.length > 0 && (
+            <Section title="篮子运行 · BASKET RUNS" count={groups.length} accent="info" meta="多级任务 · 点开看子任务">
+              {groups.map((g) => <GroupCard key={g.brun_id} g={g} nav={nav} />)}
+            </Section>
           )}
           <Section title="RUNNING · 正在执行" count={running.length} accent="info">
             {running.length === 0 && !tasksQ.isError && <PlainEmpty label="当前无运行任务" />}
@@ -219,6 +237,48 @@ function Section({ title, count, meta, accent, children }) {
 
 function PlainEmpty({ label }) {
   return <div style={{ padding: '14px 16px', color: 'var(--fg-3)', fontFamily: 'var(--font-mono)', fontSize: 10.5 }}>{label}</div>;
+}
+
+// 篮子运行分组卡片 (因子层重构 §10.4) — aggregate progress + expandable children.
+function GroupCard({ g, nav }) {
+  const [open, setOpen] = React.useState(g.status_raw === 'running');
+  const pct = g.total ? Math.round((g.done / g.total) * 100) : 0;
+  return (
+    <div style={{ borderBottom: '1px solid var(--border-faint)' }}>
+      <div onClick={() => setOpen((o) => !o)} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 16px', cursor: 'pointer' }}>
+        <span style={{ color: 'var(--fg-3)', fontFamily: 'var(--font-mono)', width: 12 }}>{open ? '▾' : '▸'}</span>
+        <span style={{ fontWeight: 500, color: 'var(--fg)', minWidth: 130 }}>{g.basket_name}</span>
+        <Badge group="mode" value={g.mode} sm />
+        <Badge group="trigger" value={g.trigger} sm />
+        <Badge group="run" value={g.status} sm />
+        <div style={{ flex: 1, height: 6, background: 'var(--surface-3)', borderRadius: 3, overflow: 'hidden', maxWidth: 220 }}>
+          <div style={{ width: `${pct}%`, height: '100%', background: 'var(--info)' }} />
+        </div>
+        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--fg-3)' }}>{g.done}/{g.total}</span>
+        {g.est_total_sec > 0 && g.status_raw === 'running' && (
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--fg-3)' }}>~{Math.round(g.est_total_sec)}s</span>
+        )}
+        <button className="btn ghost sm" onClick={(e) => { e.stopPropagation(); nav(`/factors/baskets/${g.basket_id}/runs/${g.brun_id}`); }}>详情</button>
+      </div>
+      {open && (
+        <div style={{ padding: '0 16px 8px 38px' }}>
+          {(g.children || []).map((c) => (
+            <div key={c.task_id || c.i} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '3px 0', fontFamily: 'var(--font-mono)', fontSize: 10.5 }}>
+              <span style={{ color: 'var(--fg-4)', width: 24 }}>{c.type === 'corr' ? '∑' : `#${c.i}`}</span>
+              <span style={{ minWidth: 130, color: 'var(--fg-2)', cursor: c.item_id ? 'pointer' : 'default' }}
+                onClick={() => c.item_id && nav(`/factors/baskets/${g.basket_id}/items/${c.item_id}`)}>{c.label}</span>
+              {c.gate === 'waiting'
+                ? <Badge group="wait" value="等待全部评估完成" sm />
+                : <Badge group="run" value={c.status} sm />}
+              {c.degrade && c.degrade !== 'none' && <Badge group="degrade" value={c.degrade === 'severe' ? '严重' : '部分'} sm />}
+              <span style={{ flex: 1 }} />
+              <span style={{ color: 'var(--fg-4)' }}>{c.used || c.remain || ''}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function RunningCard({ t, onCancel, onLogs }) {

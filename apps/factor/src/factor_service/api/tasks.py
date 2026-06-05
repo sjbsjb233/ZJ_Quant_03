@@ -44,6 +44,9 @@ def _serialize_task(t: Task, *, with_eta: bool = False, db: Session | None = Non
         "status": t.status,
         "run_id": t.run_id,
         "factor_id": t.factor_id,
+        "brun_id": getattr(t, "brun_id", None),
+        "seq_no": getattr(t, "seq_no", 0),
+        "gate": getattr(t, "gate", "ready"),
         "progress_current": t.progress_current,
         "progress_total": t.progress_total,
         "est_duration_sec": t.est_duration_sec,
@@ -85,11 +88,21 @@ def list_tasks(
     status: str | None = None,
     factor_id: str | None = None,
     initiated_by: str | None = None,
+    view: str | None = None,
+    standalone: bool = False,
     limit: int = 100,
     db: Session = Depends(get_db),
     user=Depends(current_user),
 ) -> dict:
+    # 组合视图 (因子层重构 §6.6): basket runs as group cards + standalone tasks.
+    if view == "grouped":
+        return _grouped_view(db)
     q = db.query(Task)
+    # standalone=true → exclude basket-child tasks SERVER-SIDE so they don't crowd
+    # the recent-N window out from under a client-side filter (live-stack regression:
+    # basket_eval children buried the seeded standalone tasks in the queue's flat list).
+    if standalone:
+        q = q.filter(Task.brun_id.is_(None))
     if lane:
         q = q.filter(Task.lane == lane)
     if status:
@@ -165,3 +178,57 @@ def queue_stats(
     db: Session = Depends(get_db), user=Depends(current_user)
 ) -> dict:
     return estimator.queue_stats(db)
+
+
+# ─── grouped view (因子层重构 §6.6) ──────────────────────────────────────────
+def _grouped_view(db: Session) -> dict:
+    from ..api.baskets import _serialize_run  # reuse child serialization
+    from ..db.models import Basket, BasketRun
+
+    runs = (
+        db.query(BasketRun)
+        .filter(BasketRun.status.in_(["queued", "running"]))
+        .order_by(BasketRun.created_at.desc())
+        .limit(40)  # cap so a large backlog can't make the grouped view O(backlog)
+        .all()
+    )
+    done_runs = (
+        db.query(BasketRun)
+        .filter(BasketRun.status.in_(["success", "degraded", "partial", "failed", "canceled"]))
+        .order_by(BasketRun.finished_at.desc())
+        .limit(12)
+        .all()
+    )
+    name_cache: dict[str, str] = {}
+
+    def _grp(run: BasketRun, *, children: bool) -> dict:
+        if run.basket_id not in name_cache:
+            b = db.get(Basket, run.basket_id)
+            name_cache[run.basket_id] = b.name if b else run.basket_id
+        d = _serialize_run(db, run, with_children=children)
+        d["basket_name"] = name_cache[run.basket_id]
+        d["kind"] = "basket"
+        d["lane"] = "daily" if run.trigger in ("tracking", "data_refingerprint") else "interactive"
+        return d
+
+    # Active groups carry children (the dashboard renders live per-item progress);
+    # DONE groups do NOT — the UI only consumes `groups`, and `_children` is an
+    # N+1 (~8 queries/group) that this polled endpoint pays every cycle for nothing.
+    # Loading children for 12 finished runs every poll is what pushed the grouped
+    # view's p95 to ~2.4s under concurrency (single-process factor-api). A done
+    # group's children stay reachable on demand via GET /baskets/{id}/runs/{rid}.
+    groups = [_grp(r, children=True) for r in runs]
+    done_groups = [_grp(r, children=False) for r in done_runs]
+
+    standalone_rows = (
+        db.query(Task)
+        .filter(Task.brun_id.is_(None))
+        .order_by(Task.created_at.desc())
+        .limit(60)
+        .all()
+    )
+    run_info = _run_info_map(db, [t.run_id for t in standalone_rows])
+    standalone = [_serialize_task(t, with_eta=True, db=db, run_info=run_info)
+                  for t in standalone_rows]
+    return {"groups": groups, "done_groups": done_groups, "standalone": standalone,
+            "stats": estimator.queue_stats(db)}

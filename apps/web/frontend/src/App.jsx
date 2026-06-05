@@ -42,6 +42,17 @@ import FactorTasks from './pages/factors/FactorTasks';
 import UniverseManager from './pages/factors/UniverseManager';
 import FactorImport from './pages/factors/FactorImport';
 import FactorCorrelation from './pages/factors/FactorCorrelation';
+// 因子篮子改版 (因子层重构 §2.2)
+import BasketList from './pages/factors/baskets/BasketList';
+import BasketWizard from './pages/factors/baskets/BasketWizard';
+import BasketDetail from './pages/factors/baskets/BasketDetail';
+import BasketRunDetail from './pages/factors/baskets/BasketRunDetail';
+import EntryDetail from './pages/factors/baskets/EntryDetail';
+import Screening from './pages/factors/screening/Screening';
+import SelectionList from './pages/factors/screening/SelectionList';
+import SelectionDetail from './pages/factors/screening/SelectionDetail';
+import StatusRef from './pages/factors/baskets/StatusRef';
+import Robustness from './pages/factors/baskets/Robustness';
 
 const ROLE_RANK = { viewer: 0, editor: 1, admin: 2 };
 
@@ -114,13 +125,25 @@ export default function App() {
       <Route path="/settings" element={<Protected><Settings /></Protected>} />
 
       {/* Factor management — 6 sub-pages */}
-      <Route path="/factors" element={<Navigate to="/factors/library" replace />} />
+      <Route path="/factors" element={<Navigate to="/factors/baskets" replace />} />
       <Route path="/factors/library" element={<Protected><FactorLibrary /></Protected>} />
       <Route path="/factors/library/:factorId" element={<Protected><FactorDetail /></Protected>} />
       <Route path="/factors/tasks" element={<Protected><FactorTasks /></Protected>} />
       <Route path="/factors/universe" element={<Protected><UniverseManager /></Protected>} />
       <Route path="/factors/import" element={<Protected role="editor"><FactorImport /></Protected>} />
-      <Route path="/factors/correlation" element={<Protected><FactorCorrelation /></Protected>} />
+      {/* 因子相关性已并入篮子 — 301 重定向 (因子层重构 §8) */}
+      <Route path="/factors/correlation" element={<Navigate to="/factors/baskets" replace />} />
+      {/* 因子篮子改版 (因子层重构 §2.2) */}
+      <Route path="/factors/baskets" element={<Protected><BasketList /></Protected>} />
+      <Route path="/factors/baskets/new" element={<Protected role="editor"><BasketWizard /></Protected>} />
+      <Route path="/factors/baskets/:id" element={<Protected><BasketDetail /></Protected>} />
+      <Route path="/factors/baskets/:id/runs/:rid" element={<Protected><BasketRunDetail /></Protected>} />
+      <Route path="/factors/baskets/:id/items/:itemId" element={<Protected><EntryDetail /></Protected>} />
+      <Route path="/factors/screening" element={<Protected><Screening /></Protected>} />
+      <Route path="/factors/selections" element={<Protected><SelectionList /></Protected>} />
+      <Route path="/factors/selections/:sid" element={<Protected><SelectionDetail /></Protected>} />
+      <Route path="/factors/statusref" element={<Protected><StatusRef /></Protected>} />
+      <Route path="/factors/:factorId/robustness" element={<Protected><Robustness /></Protected>} />
       {/* 因子日志已并入「可观测」(/observ/logs?source=factor) — 重定向在上方 §7.1 */}
 
       <Route path="/strategies/*" element={<Protected><Placeholder module="strategy" /></Protected>} />

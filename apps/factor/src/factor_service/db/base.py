@@ -68,6 +68,12 @@ _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("degradation_count", "INTEGER DEFAULT 0"),
         ("has_critical", "BOOLEAN DEFAULT 0"),
     ],
+    # 因子篮子多级编排 (因子层重构 §4.2) — old DBs need these on `tasks`.
+    "tasks": [
+        ("brun_id", "VARCHAR"),
+        ("seq_no", "INTEGER DEFAULT 0"),
+        ("gate", "VARCHAR DEFAULT 'ready'"),
+    ],
 }
 
 

@@ -16,6 +16,7 @@ import datetime as dt
 
 from sqlalchemy import (
     Boolean,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -200,10 +201,18 @@ class Task(Base):
     initiated_by: Mapped[str] = mapped_column(String, default="")
     trace_id: Mapped[str | None] = mapped_column(String, nullable=True)
     result_summary: Mapped[dict] = mapped_column(JSON, default=dict)
+    # ── 篮子多级编排 (因子层重构 §4.2) — nullable/default keeps old rows valid ──
+    # brun_id: the owning basket_run ("big task"); null = standalone task.
+    # seq_no: in-group display order (= entry sort). gate: dependency门控 —
+    # 'waiting' tasks are NOT claimable (basket_corr waits for all evals).
+    brun_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
+    seq_no: Mapped[int] = mapped_column(Integer, default=0)
+    gate: Mapped[str] = mapped_column(String, default="ready")  # ready|waiting
 
     __table_args__ = (
         Index("ix_claim", "status", "priority", "created_at"),
         Index("ix_task_lane_status", "lane", "status"),
+        Index("ix_task_brun", "brun_id"),
     )
 
 
@@ -287,3 +296,224 @@ class TrackingSchedule(Base):
     last_run_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
     next_run_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
     run_config: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 因子篮子 (Basket) 体系 — 因子层重构 §4.1
+# ═════════════════════════════════════════════════════════════════════════════
+class Basket(Base):
+    """A long-lived research object: N entries sharing ONE common config, plus
+    correlation/tracking settings. The basket itself runs as one "big task"."""
+
+    __tablename__ = "basket"
+
+    basket_id: Mapped[str] = mapped_column(String, primary_key=True)  # bsk_{hex16}
+    name: Mapped[str] = mapped_column(String, index=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String, default="active")  # active|archived
+    active_revision: Mapped[int] = mapped_column(Integer, default=1)
+    # 配置改动后的待重算范围 (§9.2 失效矩阵的落点)
+    stale_scope: Mapped[str] = mapped_column(String, default="none")  # none|partial|full
+    stale_items: Mapped[list] = mapped_column(JSON, default=list)  # item_ids when partial
+    stale_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    # 相关性设置
+    correlation_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    correlation_method: Mapped[str] = mapped_column(String, default="pearson")  # pearson|spearman
+    correlation_threshold: Mapped[float] = mapped_column(Float, default=0.7)
+    corr_min_periods: Mapped[int] = mapped_column(Integer, default=12)
+    acknowledge_degraded: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 追踪设置 (§7) — EOD 数据就绪后的本地触发时刻 (默认 18:30)
+    tracking_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    tracking_hour: Mapped[int] = mapped_column(Integer, default=18)
+    tracking_minute: Mapped[int] = mapped_column(Integer, default=30)
+    tracking_paused_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    # config_stale|data_refingerprint|manual|null
+    last_tick_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    next_tick_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    owner: Mapped[str] = mapped_column(String, default="")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime, default=_utcnow, onupdate=_utcnow
+    )
+
+
+class BasketRevision(Base):
+    """One version of a basket's config (shared_config + entry set). Editing the
+    config = producing a new revision (entries are config, not standalone)."""
+
+    __tablename__ = "basket_revision"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    basket_id: Mapped[str] = mapped_column(
+        ForeignKey("basket.basket_id"), index=True
+    )
+    revision: Mapped[int] = mapped_column(Integer)  # (basket_id, revision) unique
+    shared_config: Mapped[dict] = mapped_column(JSON, default=dict)
+    items: Mapped[list] = mapped_column(JSON, default=list)
+    # [{item_id, factor_id, version, params, label, sort}]
+    common_key: Mapped[str] = mapped_column(String, index=True, default="")
+    comparable_key: Mapped[str] = mapped_column(String, index=True, default="")
+    change_summary: Mapped[dict] = mapped_column(JSON, default=dict)
+    invalidation: Mapped[str] = mapped_column(String, default="none")  # none|items:..|full
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    author: Mapped[str] = mapped_column(String, default="")  # may be 'system' (§4.1 v1.3)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_utcnow)
+
+    __table_args__ = (
+        Index("ix_brev_basket_rev", "basket_id", "revision", unique=True),
+    )
+
+
+class BasketItemState(Base):
+    """Incremental ledger pointer — one row per item_key (§4.1 / §5)."""
+
+    __tablename__ = "basket_item_state"
+
+    item_key: Mapped[str] = mapped_column(String, primary_key=True)
+    basket_id: Mapped[str] = mapped_column(String, index=True)
+    revision: Mapped[int] = mapped_column(Integer, default=0)
+    item_id: Mapped[str] = mapped_column(String, index=True)
+    factor_id: Mapped[str] = mapped_column(String, index=True)
+    last_rebalance_date: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+    last_settled_date: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+    pending_dates: Mapped[list] = mapped_column(JSON, default=list)  # ISO date strings
+    data_fingerprint: Mapped[str | None] = mapped_column(String, nullable=True)
+    artifact_dir: Mapped[str] = mapped_column(String, default="")
+    rows_factor: Mapped[int] = mapped_column(Integer, default=0)
+    rows_ic: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime, default=_utcnow, onupdate=_utcnow
+    )
+
+
+class BasketRun(Base):
+    """The "big task" in the queue — a basket's one generation of execution."""
+
+    __tablename__ = "basket_run"
+
+    brun_id: Mapped[str] = mapped_column(String, primary_key=True)  # brun_{hex16}
+    basket_id: Mapped[str] = mapped_column(String, index=True)
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    mode: Mapped[str] = mapped_column(String, default="full")
+    # full|incremental|repair|corr_only
+    trigger: Mapped[str] = mapped_column(String, default="manual")
+    # manual|tracking|config_change|data_refingerprint
+    with_correlation: Mapped[bool] = mapped_column(Boolean, default=True)
+    resolved_start: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+    resolved_end: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+    as_of: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+    status: Mapped[str] = mapped_column(String, default="queued")
+    # queued|running|success|degraded|partial|failed|canceled
+    total_children: Mapped[int] = mapped_column(Integer, default=0)
+    done_children: Mapped[int] = mapped_column(Integer, default=0)
+    failed_children: Mapped[int] = mapped_column(Integer, default=0)
+    degraded_children: Mapped[int] = mapped_column(Integer, default=0)
+    est_total_sec: Mapped[float] = mapped_column(Float, default=0.0)
+    corr_task_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    snapshot_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    initiated_by: Mapped[str] = mapped_column(String, default="")
+    trace_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_utcnow)
+    started_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    duration_sec: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    __table_args__ = (Index("ix_brun_basket", "basket_id", "created_at"),)
+
+
+class BasketRunItem(Base):
+    """Sub-task ↔ entry ↔ factor_run association (§4.1)."""
+
+    __tablename__ = "basket_run_item"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    brun_id: Mapped[str] = mapped_column(String, index=True)
+    item_id: Mapped[str] = mapped_column(String)
+    item_key: Mapped[str] = mapped_column(String, index=True)
+    factor_id: Mapped[str] = mapped_column(String)
+    seq_no: Mapped[int] = mapped_column(Integer, default=0)
+    task_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    run_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    status: Mapped[str] = mapped_column(String, default="queued")
+    inc_from: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+    inc_to: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+
+
+class BasketSnapshot(Base):
+    """Immutable result slice produced by each generation (§4.1)."""
+
+    __tablename__ = "basket_snapshot"
+
+    snapshot_id: Mapped[str] = mapped_column(String, primary_key=True)  # snap_{hex16}
+    basket_id: Mapped[str] = mapped_column(String, index=True)
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    brun_id: Mapped[str] = mapped_column(String, index=True, default="")
+    as_of: Mapped[dt.date | None] = mapped_column(Date, index=True, nullable=True)
+    resolved_start: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+    resolved_end: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+    item_summaries: Mapped[dict] = mapped_column(JSON, default=dict)
+    corr_artifact: Mapped[str | None] = mapped_column(String, nullable=True)
+    corr_json: Mapped[dict] = mapped_column(JSON, default=dict)  # inline matrix/clusters/pairs
+    basket_stats: Mapped[dict] = mapped_column(JSON, default=dict)
+    excluded_items: Mapped[list] = mapped_column(JSON, default=list)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_utcnow)
+
+
+class FactorSelection(Base):
+    """优选产出 · 不可变快照 (§11.7) — bound to a single (basket, snapshot)."""
+
+    __tablename__ = "factor_selection"
+
+    selection_id: Mapped[str] = mapped_column(String, primary_key=True)  # sel_{hex16}
+    name: Mapped[str] = mapped_column(String, default="")
+    basket_id: Mapped[str] = mapped_column(String, index=True)
+    snapshot_id: Mapped[str] = mapped_column(String, index=True)
+    status: Mapped[str] = mapped_column(String, default="draft")  # draft|final|archived
+    criteria_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    corr_method: Mapped[str] = mapped_column(String, default="pearson")
+    corr_threshold: Mapped[float] = mapped_column(Float, default=0.7)
+    corr_matrix_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    acknowledge_degraded: Mapped[bool] = mapped_column(Boolean, default=False)
+    owner: Mapped[str] = mapped_column(String, default="")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_utcnow)
+    finalized_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class FactorSelectionMember(Base):
+    __tablename__ = "factor_selection_member"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    selection_id: Mapped[str] = mapped_column(String, index=True)
+    rank: Mapped[int] = mapped_column(Integer, default=0)
+    decision: Mapped[str] = mapped_column(String, default="kept")
+    # kept|kept_manual|pruned_corr|pruned_capped
+    item_key: Mapped[str] = mapped_column(String)
+    item_id: Mapped[str] = mapped_column(String)
+    factor_id: Mapped[str] = mapped_column(String)
+    params_digest: Mapped[str] = mapped_column(String, default="")
+    score: Mapped[float] = mapped_column(Float, default=0.0)
+    metrics_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    blocked_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    rho: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    __table_args__ = (
+        Index("ix_selmember_uni", "selection_id", "item_key", unique=True),
+    )
+
+
+class ScreenPreset(Base):
+    """Saved filters+weights combo (§11.9). Weight templates are builtin presets."""
+
+    __tablename__ = "screen_preset"
+
+    preset_id: Mapped[str] = mapped_column(String, primary_key=True)  # spre_{hex16}
+    name: Mapped[str] = mapped_column(String, default="")
+    owner: Mapped[str] = mapped_column(String, default="")
+    filters_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    weights_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    builtin: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime, default=_utcnow, onupdate=_utcnow
+    )

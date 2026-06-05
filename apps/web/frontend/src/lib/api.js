@@ -231,9 +231,52 @@ export const endpoints = {
   pendingImports: () => get('/imports/pending'),
   importCode: (factorId, version) => get('/imports/code', { factor_id: factorId, version }),
 
-  // correlation
+  // correlation (deprecated — 因子相关性已并入篮子, 因子层重构 §8)
   submitCorrelation: (body) => post('/factors/correlation', body),
   correlationResult: (taskId) => get(`/factors/correlation/${taskId}`),
+
+  // ── 因子篮子 (因子层重构 §12) ──────────────────────────────────────────
+  baskets: (params) => get('/baskets', params),
+  basket: (id) => get(`/baskets/${id}`),
+  createBasket: (body) => post('/baskets', body),
+  patchBasket: (id, body) => patch(`/baskets/${id}`, body),
+  archiveBasket: (id) => del(`/baskets/${id}`),
+  basketLegacyTracked: () => get('/baskets/migration/legacy-tracked'),
+  basketRevisions: (id) => get(`/baskets/${id}/revisions`),
+  saveBasketRevision: (id, body) => post(`/baskets/${id}/revisions`, body),
+  setBasketTracking: (id, body) => post(`/baskets/${id}/tracking`, body),
+  basketRuns: (id) => get(`/baskets/${id}/runs`),
+  basketRun: (id, rid) => get(`/baskets/${id}/runs/${rid}`),
+  submitBasketRun: (id, body) => post(`/baskets/${id}/runs`, body),
+  cancelBasketRun: (id, rid) => post(`/baskets/${id}/runs/${rid}/cancel`, {}),
+  repairBasketRun: (id, rid) => post(`/baskets/${id}/runs/${rid}/repair`, {}),
+  basketSnapshots: (id) => get(`/baskets/${id}/snapshots`),
+  basketSnapshot: (id, sid) => get(`/baskets/${id}/snapshots/${sid}`),
+  basketCorrelation: (id, sid) => get(`/baskets/${id}/snapshots/${sid}/correlation`),
+  basketSnapshotDiff: (id, a, b) => get(`/baskets/${id}/snapshots/diff`, { a, b }),
+  basketItem: (id, itemId, snapshot) => get(`/baskets/${id}/items/${itemId}`, { snapshot }),
+  basketItemSeries: (id, itemId, kind, snapshot) =>
+    get(`/baskets/${id}/items/${itemId}/series`, { kind, snapshot }),
+  basketItemHistory: (id, itemId) => get(`/baskets/${id}/items/${itemId}/history`),
+
+  // ── 因子优选 + 入选集合 (因子层重构 §11/§12) ───────────────────────────
+  screeningBaskets: () => get('/screening/baskets'),
+  screeningGrid: (id, sid, params) => get(`/baskets/${id}/snapshots/${sid}/grid`, params),
+  screeningPrune: (id, sid, body) => post(`/baskets/${id}/snapshots/${sid}/prune`, body),
+  selections: (params) => get('/selections', params),
+  selection: (sid) => get(`/selections/${sid}`),
+  createSelection: (body) => post('/selections', body),
+  patchSelection: (sid, body) => patch(`/selections/${sid}`, body),
+  finalizeSelection: (sid) => post(`/selections/${sid}/finalize`, {}),
+  archiveSelection: (sid) => post(`/selections/${sid}/archive`, {}),
+  deleteSelection: (sid) => del(`/selections/${sid}`),
+  exportSelection: (sid, format = 'json') => get(`/selections/${sid}/export`, { format }),
+  screenPresets: () => get('/screen-presets'),
+  createScreenPreset: (body) => post('/screen-presets', body),
+  patchScreenPreset: (pid, body) => patch(`/screen-presets/${pid}`, body),
+  deleteScreenPreset: (pid) => del(`/screen-presets/${pid}`),
+  factorRobustness: (factorId, basketId) =>
+    get(`/factors/${factorId}/robustness`, { basket_id: basketId }),
 
   // logs — 全链路日志方案 v2.0 §6.5 (合并入「可观测」模块, 可观测层重构方案 §7)
   logs: (params) => get('/logs', params),

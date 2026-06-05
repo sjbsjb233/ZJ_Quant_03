@@ -6,7 +6,7 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .api import correlation, factors, imports, results, runs, tasks, universe
+from .api import baskets, correlation, factors, imports, results, runs, screening, tasks, universe
 from .config import ensure_dirs, get_settings
 from .db import base as _db_base
 from .db.seed import seed_all
@@ -57,6 +57,10 @@ def create_app() -> FastAPI:
     app.include_router(imports.router)
     app.include_router(universe.router)
     app.include_router(correlation.router)
+    # 因子篮子 (因子层重构) — flag-gated so the subsystem can ship dark.
+    if s.factor_basket_enabled:
+        app.include_router(baskets.router)
+        app.include_router(screening.router)
 
     @app.get("/api/v1/health")
     @app.get("/health")

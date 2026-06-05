@@ -63,8 +63,17 @@ def enqueue(
     initiated_by: str = "",
     trace_id: str | None = None,
     max_attempts: int = 2,
+    brun_id: str | None = None,
+    seq_no: int = 0,
+    gate: str = "ready",
+    commit: bool = True,
 ) -> Task:
-    """Persist a new task; sets priority by lane and ETA from history."""
+    """Persist a new task; sets priority by lane and ETA from history.
+
+    ``brun_id``/``seq_no``/``gate`` carry the 篮子多级编排 (因子层重构 §6): a
+    ``gate='waiting'`` task is created but NOT claimable until the orchestrator
+    flips it to ``'ready'`` (basket_corr waits for all evals).
+    """
     if lane not in ("interactive", "routine"):
         lane = "interactive"
     priority = 100 if lane == "interactive" else 10
@@ -82,10 +91,20 @@ def enqueue(
         max_attempts=max_attempts,
         initiated_by=initiated_by,
         trace_id=trace_id,
+        brun_id=brun_id,
+        seq_no=seq_no,
+        gate=gate,
     )
     db.add(t)
-    db.commit()
-    db.refresh(t)
+    if commit:
+        db.commit()
+        db.refresh(t)
+    else:
+        # Caller commits — lets a basket run create its brun + all child tasks in
+        # ONE atomic transaction, so the worker can't claim a child (and run
+        # advance() on a half-finalized brun) mid-expand. task_id is explicit, so
+        # the row is fully usable after the flush.
+        db.flush()
     return t
 
 
@@ -158,10 +177,12 @@ def claim_next_filtered(
     """
     while True:
         with _db_base.engine.begin() as conn:
-            # interactive first
+            # interactive first — gate='ready' enforces依赖门控 (因子层重构 §6.2):
+            # basket_corr stays 'waiting' (unclaimable) until all evals settle.
             sql = """
               SELECT task_id, lane FROM tasks
               WHERE status='queued' AND lane='interactive'
+                AND (gate='ready' OR gate IS NULL)
               ORDER BY priority DESC, created_at ASC LIMIT 1
             """
             row = conn.execute(text(sql)).fetchone()
@@ -169,6 +190,7 @@ def claim_next_filtered(
                 sql_r = """
                   SELECT task_id, lane FROM tasks
                   WHERE status='queued' AND lane='routine'
+                    AND (gate='ready' OR gate IS NULL)
                   ORDER BY priority DESC, created_at ASC LIMIT 1
                 """
                 row = conn.execute(text(sql_r)).fetchone()
