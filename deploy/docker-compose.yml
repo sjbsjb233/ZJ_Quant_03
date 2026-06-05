@@ -219,6 +219,9 @@ services:
     # Heaviest service: runs FACTOR_CONCURRENCY compute tasks in one cgroup.
     # This ceiling is shared across all concurrent tasks -- size it together
     # with FACTOR_CONCURRENCY. Was unbounded → 2026-06-01 core-dumps on "/".
+    # FACTOR_HEAVY_CONCURRENCY caps how many *evaluations* (each peaks at multiple
+    # GB of RSS — full bars_daily scan → polars) run at once: 4 concurrent OOM-
+    # killed the worker (2026-06-05 basket crash-loop). Keep it × ~5GB ≲ mem_limit.
     mem_limit: ${FACTOR_WORKER_MEM_LIMIT:-12g}
     memswap_limit: ${FACTOR_WORKER_MEM_LIMIT:-12g}
     # 关闭 core dump:崩溃只重启,不向宿主系统盘写出数十 G 的 core (2026-06-01 P0)。
@@ -236,6 +239,8 @@ services:
       FACTOR_DB_URL: sqlite:////factor-store/factor.db
       FACTOR_ROLE: worker
       FACTOR_CONCURRENCY: ${FACTOR_CONCURRENCY:-4}
+      # Memory-aware admission gate (修复 worker OOM crash-loop, 2026-06-05).
+      FACTOR_HEAVY_CONCURRENCY: ${FACTOR_HEAVY_CONCURRENCY:-2}
       FACTOR_RESERVE_INTERACTIVE: ${FACTOR_RESERVE_INTERACTIVE:-1}
       FACTOR_POLL_INTERVAL_MS: ${FACTOR_POLL_INTERVAL_MS:-1000}
       JWT_SECRET: ${JWT_SECRET:-change-me-in-prod}

@@ -25,6 +25,14 @@ def _now() -> dt.datetime:
     return dt.datetime.utcnow()
 
 
+# Task types that read the data layer (scan bars_daily into polars) and so carry
+# a multi-GB memory footprint. The dispatcher gates these behind
+# FACTOR_HEAVY_CONCURRENCY so a basket fan-out can't run enough of them at once
+# to OOM-kill the worker. `import_validate` runs only a tiny sample and stays
+# light. Keep this in sync with the dispatch types in run_executor.execute_task.
+HEAVY_TASK_TYPES = ("evaluation", "correlation", "basket_eval", "basket_corr")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Worker liveness (修复 A1 §3.4 · 方案A) — independent of any running task.
 def record_worker_heartbeat(db: Session, worker_id: str) -> None:
@@ -164,10 +172,16 @@ def claim_next(db: Session, worker_id: str, *, reserve_interactive: int) -> Task
 
 
 def claim_next_filtered(
-    db: Session, worker_id: str, allow_routine: bool
+    db: Session, worker_id: str, allow_routine: bool, allow_heavy: bool = True
 ) -> Task | None:
     """Variant used by the dispatcher that already knows whether routine is
     allowed (based on running counts vs reserved slots).
+
+    ``allow_heavy`` is the memory-aware admission gate: when the worker already
+    has FACTOR_HEAVY_CONCURRENCY heavy (data-reading) tasks in flight the
+    dispatcher passes ``False``, and the SELECT skips ``HEAVY_TASK_TYPES`` so a
+    light task can still be claimed but another heavy one waits — capping peak
+    RSS so a basket fan-out can't OOM-kill the worker.
 
     Race safety: the SELECT + UPDATE happen inside an autocommit transaction,
     but two threads can still SELECT the same row before either UPDATEs. We
@@ -175,25 +189,35 @@ def claim_next_filtered(
     arbiter — exactly one UPDATE succeeds. The loser must back off and pick
     again rather than return the (already-claimed) task to the caller.
     """
+    # Build a "not a heavy type" predicate (parameterised) when heavy is gated.
+    heavy_clause = ""
+    heavy_params: dict[str, Any] = {}
+    if not allow_heavy:
+        names = []
+        for i, tt in enumerate(HEAVY_TASK_TYPES):
+            key = f"ht{i}"
+            names.append(f":{key}")
+            heavy_params[key] = tt
+        heavy_clause = f" AND task_type NOT IN ({','.join(names)})"
     while True:
         with _db_base.engine.begin() as conn:
             # interactive first — gate='ready' enforces依赖门控 (因子层重构 §6.2):
             # basket_corr stays 'waiting' (unclaimable) until all evals settle.
-            sql = """
+            sql = f"""
               SELECT task_id, lane FROM tasks
               WHERE status='queued' AND lane='interactive'
-                AND (gate='ready' OR gate IS NULL)
+                AND (gate='ready' OR gate IS NULL){heavy_clause}
               ORDER BY priority DESC, created_at ASC LIMIT 1
             """
-            row = conn.execute(text(sql)).fetchone()
+            row = conn.execute(text(sql), heavy_params).fetchone()
             if row is None and allow_routine:
-                sql_r = """
+                sql_r = f"""
                   SELECT task_id, lane FROM tasks
                   WHERE status='queued' AND lane='routine'
-                    AND (gate='ready' OR gate IS NULL)
+                    AND (gate='ready' OR gate IS NULL){heavy_clause}
                   ORDER BY priority DESC, created_at ASC LIMIT 1
                 """
-                row = conn.execute(text(sql_r)).fetchone()
+                row = conn.execute(text(sql_r), heavy_params).fetchone()
             if row is None:
                 return None
             result = conn.execute(
