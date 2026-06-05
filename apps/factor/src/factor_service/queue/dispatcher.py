@@ -62,6 +62,18 @@ def _run_one(task_id: str, trace_id: str | None) -> dict:
         trace_id_var.reset(tok)
 
 
+def _advance_basket(db: Session, t: Task) -> None:
+    """The ONLY orchestration hook in the dispatcher (因子层重构 §6.3): after a
+    basket child finalizes, push its parent run forward. Never crash the loop."""
+    if not getattr(t, "brun_id", None):
+        return
+    try:
+        from ..baskets import orchestrator
+        orchestrator.advance(db, t.brun_id)
+    except Exception:  # noqa: BLE001
+        _log.warning("orchestrator.advance failed for brun %s", t.brun_id, exc_info=True)
+
+
 def _finalize_future(db: Session, task_id: str, fut: Future) -> None:
     t = db.get(Task, task_id)
     if t is None:
@@ -108,6 +120,8 @@ def _finalize_future(db: Session, task_id: str, fut: Future) -> None:
             if (t.started_at and t.finished_at)
             else 0.0,
         )
+    # Push the owning basket run forward (no-op for standalone tasks).
+    _advance_basket(db, t)
 
 
 def _now_utc():
@@ -151,6 +165,25 @@ def main() -> None:
     db = _db_base.SessionLocal()
     store.recover_stale(db, stale_sec)
 
+    # 因子篮子调度 (§7.1) + 孤儿巡检 (§6.3) — throttled to ~once/60s.
+    _last_basket_sweep = [0.0]
+
+    def _basket_maintenance() -> None:
+        if not s.factor_basket_enabled:
+            return
+        now = time.monotonic()
+        if now - _last_basket_sweep[0] < 60.0:
+            return
+        _last_basket_sweep[0] = now
+        try:
+            from ..baskets import scheduler as _sched
+            from quant_data import DataReader
+            _sched.sweep_orphans(db)
+            reader = DataReader(root=s.quant_data_root)
+            _sched.tick_baskets(db, reader)
+        except Exception:  # noqa: BLE001 - maintenance must never crash the loop
+            _log.debug("basket maintenance failed", exc_info=True)
+
     try:
         while not _stop.is_set():
             # 1) collect finished futures
@@ -188,6 +221,9 @@ def main() -> None:
                                lane=t.lane, trace_id=t.trace_id)
                 finally:
                     qd_logging.reset_context(_tok)
+
+            # basket tracking tick + orphan sweep (throttled inside).
+            _basket_maintenance()
 
             # liveness beacon (修复 A1 §3.4): mark this dispatcher alive every cycle —
             # even idle — so factor-api /health can tell live-but-idle from crashed.

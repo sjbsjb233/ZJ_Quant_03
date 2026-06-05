@@ -86,6 +86,12 @@ def execute_task(task_id: str) -> dict[str, Any]:
             return _run_correlation(db, t)
         if t.task_type == "import_validate":
             return _run_import_validate(db, t)
+        if t.task_type in ("basket_eval", "basket_corr"):
+            # Lazy import breaks the run_executor ↔ basket_executor cycle.
+            from . import basket_executor
+            if t.task_type == "basket_eval":
+                return basket_executor.run_basket_eval(db, t)
+            return basket_executor.run_basket_corr(db, t)
         return {"task_id": task_id, "status": "unknown_type"}
     finally:
         db.close()

@@ -115,6 +115,16 @@ export function TerminalSidebar({ module = 'data', current }) {
         fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--fg-3)',
         display: 'flex', flexDirection: 'column', gap: 4,
       }}>
+        {/* 状态徽标速查 (因子层重构 §10.6) — 工具入口, 不占业务页签位 */}
+        {module === 'factor' && (
+          <Link to="/factors/statusref" data-testid="sidebar-item-statusref" style={{
+            display: 'flex', alignItems: 'center', gap: 8, padding: '3px 0', marginBottom: 4,
+            color: current === 'statusref' ? 'var(--fg)' : 'var(--fg-3)', fontSize: 11,
+          }}>
+            <span style={{ fontFamily: 'var(--font-mono)' }}>◑</span>
+            <span>状态徽标速查</span>
+          </Link>
+        )}
         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
           <span>命令面板</span><span className="kbd" style={{ fontSize: 9, height: 14, lineHeight: '14px' }}>⌘K</span>
         </div>

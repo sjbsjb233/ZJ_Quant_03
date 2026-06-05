@@ -137,7 +137,7 @@ export default function FactorLibrary() {
           onEnable={() => Promise.all([...selected].map((id) => endpoints.patchFactor(id, { status: 'enabled' }))).then(() => { setSelected(new Set()); qc.invalidateQueries({ queryKey: ['factors.list'] }); })}
           onDisable={() => Promise.all([...selected].map((id) => endpoints.patchFactor(id, { status: 'disabled' }))).then(() => { setSelected(new Set()); qc.invalidateQueries({ queryKey: ['factors.list'] }); })}
           onArchive={() => Promise.all([...selected].map((id) => endpoints.archiveFactor(id))).then(() => { setSelected(new Set()); qc.invalidateQueries({ queryKey: ['factors.list'] }); })}
-          onTrack={() => Promise.all([...selected].map((id) => endpoints.patchFactor(id, { tracking_enabled: true }))).then(() => { setSelected(new Set()); qc.invalidateQueries({ queryKey: ['factors.list'] }); })}
+          onTrack={() => { setSelected(new Set()); nav('/factors/baskets/new'); }}
         />
         </div>
       )}
@@ -286,7 +286,7 @@ function BatchActionBar({ count, onClear, onEnable, onDisable, onTrack, onArchiv
       <span style={{ color: 'var(--fg-mute)' }}>│</span>
       <a onClick={onEnable} style={{ cursor: 'pointer' }}>批量启用</a>
       <a onClick={onDisable} style={{ cursor: 'pointer' }}>批量停用</a>
-      <a onClick={onTrack} style={{ cursor: 'pointer' }}>加入日常跟踪</a>
+      <a onClick={onTrack} style={{ cursor: 'pointer', color: 'var(--ok)' }}>加入篮子</a>
       <a onClick={onArchive} style={{ color: 'var(--err)', cursor: 'pointer' }}>归档</a>
       <div style={{ flex: 1 }} />
       <a onClick={onClear} style={{ color: 'var(--fg-3)', cursor: 'pointer' }}>取消选择</a>

@@ -11,13 +11,16 @@ export const MODULES = [
   { id: 'live', label: '实盘交易', en: 'LIVE', enabled: false, phase: '2027', to: '/live' },
 ];
 
-// 因子日志 tab 已并入「可观测」(observ/logs?source=factor)，故此处删除 (§7.1)。
+// 因子层重构 §2.1：新增「因子篮子 / 因子优选 / 入选集合」三个一级页签；
+// 「因子相关性」并入篮子（301 重定向）。因子日志已并入「可观测」(§7.1)。
 export const FACTOR_NAV = [
-  { id: 'library',     label: '因子库',      to: '/factors/library',     hot: true },
-  { id: 'queue',       label: '任务队列',    to: '/factors/tasks',       badge: 'LIVE' },
+  { id: 'library',     label: '因子库',      to: '/factors/library' },
+  { id: 'baskets',     label: '因子篮子',    to: '/factors/baskets',    badge: 'NEW' },
+  { id: 'screener',    label: '因子优选',    to: '/factors/screening',  badge: 'NEW' },
+  { id: 'selections',  label: '入选集合',    to: '/factors/selections' },
+  { id: 'queue',       label: '任务队列',    to: '/factors/tasks',      badge: 'LIVE' },
   { id: 'pools',       label: '股票池',      to: '/factors/universe' },
   { id: 'import',      label: '因子导入',    to: '/factors/import',      warn: true },
-  { id: 'correlation', label: '因子相关性',  to: '/factors/correlation' },
 ];
 
 // 日志中心 tab 已并入「可观测」(/observ/*)，故此处删除 (§7.1)。
@@ -75,6 +78,10 @@ export function NavGlyph({ id }) {
     fundamentals: <svg {...p}><path d="M2 12L6 8L9 10L14 4" /><circle cx="6" cy="8" r="1" /><circle cx="9" cy="10" r="1" /><circle cx="14" cy="4" r="1" /></svg>,
     explorer: <svg {...p}><rect x="2" y="2" width="5" height="5" /><circle cx="11.5" cy="4.5" r="2.5" /><path d="M2 9h5v5H2z" /><path d="M9 9l5 5M14 9l-5 5" /></svg>,
     library: <svg {...p}><path d="M3 2v12M6 2v12M9 2v12" /><path d="M12 3l2.5.7-3 11L9 14z" /></svg>,
+    baskets: <svg {...p}><path d="M2 5h12l-1.2 8H3.2z" /><path d="M5 5l1.5-3M11 5l-1.5-3" /><path d="M5 8v3M8 8v3M11 8v3" /></svg>,
+    screener: <svg {...p}><circle cx="7" cy="7" r="4.5" /><path d="M10.5 10.5L14 14" /><path d="M5 7h4M7 5v4" /></svg>,
+    selections: <svg {...p}><path d="M4 2h6l3 3v9H4z" /><path d="M6.5 8.5l1.4 1.4L11 6.7" /></svg>,
+    statusref: <svg {...p}><circle cx="8" cy="8" r="6" /><path d="M8 8l3-2M8 8v3.5" /></svg>,
     queue: <svg {...p}><rect x="2" y="3" width="12" height="2.5" /><rect x="2" y="7" width="9" height="2.5" /><rect x="2" y="11" width="6" height="2.5" /></svg>,
     pools: <svg {...p}><circle cx="5" cy="5" r="3" /><circle cx="11" cy="7" r="2" /><circle cx="6" cy="11" r="2" /><circle cx="11.5" cy="12" r="1.5" /></svg>,
     import: <svg {...p}><path d="M8 2v8M5 7l3 3 3-3" /><path d="M2 12v2h12v-2" /></svg>,

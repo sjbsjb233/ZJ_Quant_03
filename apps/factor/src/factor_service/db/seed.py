@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from quant_factor.registry import discover_builtins
 from quant_factor.universe import PRESET_UNIVERSES
 
-from .models import FactorRecord, FactorVersion, Universe
+from .models import FactorRecord, FactorVersion, ScreenPreset, Universe
 
 
 _log = logging.getLogger(__name__)
@@ -112,8 +112,26 @@ def _hash_source(cls) -> str:
     return hashlib.sha256(src.encode()).hexdigest()
 
 
+def seed_screen_presets(db: Session) -> int:
+    """Builtin weight-template presets (因子层重构 §11.4) — immutable, id-stable."""
+    from ..baskets.scoring import WEIGHT_TEMPLATES
+
+    names = {"ic_quality": "IC 质量(默认)", "ls_return": "多空收益", "low_turnover": "低换手"}
+    inserted = 0
+    for key, weights in WEIGHT_TEMPLATES.items():
+        pid = f"spre_builtin_{key}"
+        if db.get(ScreenPreset, pid):
+            continue
+        db.add(ScreenPreset(preset_id=pid, name=names.get(key, key), owner="system",
+                            filters_json={}, weights_json=dict(weights), builtin=True))
+        inserted += 1
+    db.commit()
+    return inserted
+
+
 def seed_all(db: Session) -> dict[str, int]:
     return {
         "universes": seed_universes(db),
         "builtins": seed_builtins(db),
+        "screen_presets": seed_screen_presets(db),
     }

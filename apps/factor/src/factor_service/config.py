@@ -36,6 +36,12 @@ class Settings(BaseSettings):
     preflight_enabled: bool = True
     degradation_policy_profile: str = "strict"
 
+    # ── 因子篮子 (因子层重构 §14.1) ─────────────────────────────────────────
+    # Master flag for the basket subsystem (P1/P2 isolation). When off, the
+    # basket routers are not mounted and the worker's tick/orphan sweep is a
+    # no-op — existing single-factor flows are untouched.
+    factor_basket_enabled: bool = True
+
     # ── 运行透视 / Run Trace 采集 (设计 §2.6) ───────────────────────────
     # trace_enabled: master switch — off ⇒ evaluator builds no trace, no埋点,
     #   no artifact, and the endpoint returns available:false (behaviour exactly
