@@ -61,10 +61,11 @@ def settled_split(
     if isinstance(ic, pl.DataFrame) and ic.height and "date" in ic.columns:
         settled = sorted({d for d in (_as_date(x) for x in ic["date"].to_list()) if d})
     last_settled = settled[-1] if settled else None
-    if last_settled is not None:
-        pending = [d for d in rebal if d > last_settled]
-    else:
-        pending = list(rebal)
+    # pending = every rebalance date WITHOUT a settled IC row — not just those
+    # after last_settled. An IC gap before last_settled (a mid-window date with
+    # no cross-section) would otherwise vanish from the accounting (review M2).
+    settled_set = set(settled)
+    pending = [d for d in rebal if d not in settled_set]
     last_rebal = rebal[-1] if rebal else None
     return settled, pending, last_rebal
 

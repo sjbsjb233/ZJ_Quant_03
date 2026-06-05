@@ -172,6 +172,8 @@ def grid(basket_id: str, sid: str,
          sort: str = "score_desc", page: int = 1, page_size: int = 100,
          db: Session = Depends(get_db), user=Depends(current_user)) -> dict:
     basket, snap, rev = _get_ctx(db, basket_id, sid)
+    page = max(1, page)                          # clamp pagination (review M5):
+    page_size = max(1, min(page_size, 500))      # negative page → negative slice
     rows, excluded_counts = _base_rows(db, basket, snap, rev, include_degraded)
 
     # score over the whole cohort (§11.4 顺序约定: standardize before filter)

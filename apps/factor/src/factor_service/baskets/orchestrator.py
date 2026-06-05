@@ -117,16 +117,22 @@ def expand(
 
 # ─────────────────────────────────────────────────────────────────────────────
 def _eff_status(db: Session, bri: BasketRunItem) -> str:
-    if bri.status in CHILD_TERMINAL:
-        return bri.status
+    # The TASK's live state is authoritative (review C2): a child whose task is
+    # still queued/running — including one re-queued for auto-retry after a
+    # failed attempt — is NOT terminal, even though the executor already stamped
+    # bri.status='failed' before raising. Trusting a stale terminal bri.status
+    # here would finalize the parent prematurely and discard the retry's result.
     t = db.get(Task, bri.task_id) if bri.task_id else None
-    if t is not None and t.status == "failed":
-        return "failed"
-    if t is not None and t.status == "canceled":
-        return "canceled"
-    if t is not None and t.status == "success":
-        return bri.status or "success"
-    return bri.status or "queued"
+    if t is not None:
+        if t.status in ("queued", "running"):
+            return "running"          # in-flight or retrying → not terminal
+        if t.status == "failed":
+            return "failed"
+        if t.status == "canceled":
+            return "canceled"
+        if t.status == "success":     # task done → trust the richer run outcome
+            return bri.status if bri.status in ("success", "degraded") else "success"
+    return bri.status if bri.status in CHILD_TERMINAL else (bri.status or "queued")
 
 
 def map_parent_status(eval_states: list[str]) -> str:
@@ -147,6 +153,12 @@ def map_parent_status(eval_states: list[str]) -> str:
 
 def advance(db: Session, brun_id: str) -> None:
     """Recompute progress, open/cancel the corr gate, finalize at terminal (§6.3)."""
+    # The dispatcher reuses ONE long-lived Session with expire_on_commit=False,
+    # while basket children commit their run_id/status from a *separate* worker
+    # session. Without this, the identity map serves stale BasketRunItem rows
+    # (run_id=None) and build_snapshot reads empty metrics (review C1). Expire
+    # first so every read below hits the DB fresh.
+    db.expire_all()
     run = db.get(BasketRun, brun_id)
     if run is None or run.status in RUN_TERMINAL:
         return

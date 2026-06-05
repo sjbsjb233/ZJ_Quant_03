@@ -222,8 +222,8 @@ function Workbench({ basketId, sid, onExit, onSwitchSnapshot }) {
   // selection (filters/collapse/include_degraded) trigger a refetch.
   const filtersJson = React.useMemo(() => {
     const dsl = { metric: [], flags: {}, factor: {}, params: [] };
-    if (filterState.icirMin !== '') dsl.metric.push({ k: 'icir_annual', op: '>=', v: Number(filterState.icirMin) });
-    if (filterState.winMin !== '') dsl.metric.push({ k: 'ic_win_rate', op: '>=', v: Number(filterState.winMin) });
+    if (filterState.icirMin !== '') dsl.metric.push({ k: 'icir_annual', op: 'gte', v: Number(filterState.icirMin) });
+    if (filterState.winMin !== '') dsl.metric.push({ k: 'ic_win_rate', op: 'gte', v: Number(filterState.winMin) });
     if (filterState.monotonic) dsl.flags.monotonic = true;
     if (filterState.category) dsl.factor.category = filterState.category;
     return JSON.stringify(dsl);

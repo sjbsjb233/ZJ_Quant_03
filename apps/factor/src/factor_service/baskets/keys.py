@@ -220,9 +220,10 @@ def params_digest(params: dict[str, Any] | None) -> str:
 def item_key(
     ckey: str, factor_id: str, version: str, params: dict[str, Any] | None
 ) -> str:
-    payload = "|".join([ckey, str(factor_id), str(version),
-                        canonical_json(params or {})])
-    return _sha16(payload)
+    # JSON-array join (not "|".join) so a "|" inside factor_id/version — both
+    # user-controllable for uploads — can't shift the boundary and alias two
+    # distinct items onto the same ledger (review M1).
+    return _sha16(canonical_json([ckey, str(factor_id), str(version), params or {}]))
 
 
 def comparable_key(shared_config: dict[str, Any] | None) -> str:

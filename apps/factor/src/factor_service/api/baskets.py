@@ -308,10 +308,25 @@ def patch_basket(basket_id: str, body: dict[str, Any], db: Session = Depends(get
                  user=Depends(require_editor)) -> dict:
     b = _get_basket(db, basket_id)
     if "name" in body:
-        b.name = body["name"]
+        name = (body["name"] or "").strip()
+        if not name or len(name) > 200:
+            raise ApiError("INVALID_PARAMETER", "name 为空或过长")
+        b.name = name
     if "description" in body:
         b.description = body["description"]
-    # correlation settings (§9.2: none-invalidation, takes effect next run)
+    # correlation settings (§9.2: none-invalidation, takes effect next run) —
+    # validate before persisting so a bad threshold/method can't reach prune (review M4).
+    if "correlation_method" in body and body["correlation_method"] not in ("pearson", "spearman"):
+        raise ApiError("INVALID_PARAMETER", "correlation_method 仅支持 pearson|spearman")
+    if "correlation_threshold" in body:
+        try:
+            thr = float(body["correlation_threshold"])
+        except (TypeError, ValueError):
+            raise ApiError("INVALID_PARAMETER", "correlation_threshold 非法")
+        if not 0.0 <= thr <= 1.0:
+            raise ApiError("INVALID_PARAMETER", "correlation_threshold 必须在 [0,1]")
+    if "corr_min_periods" in body and int(body["corr_min_periods"]) < 0:
+        raise ApiError("INVALID_PARAMETER", "corr_min_periods 不能为负")
     for k_in, attr in (("correlation_enabled", "correlation_enabled"),
                        ("correlation_method", "correlation_method"),
                        ("correlation_threshold", "correlation_threshold"),
