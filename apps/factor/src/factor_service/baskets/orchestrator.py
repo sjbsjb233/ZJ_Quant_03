@@ -78,7 +78,7 @@ def expand(
         task = store.enqueue(
             db, task_type="basket_eval", payload=payload, lane=lane,
             factor_id=it["factor_id"], initiated_by=initiated_by, trace_id=trace_id,
-            brun_id=run.brun_id, seq_no=seq, gate="ready",
+            brun_id=run.brun_id, seq_no=seq, gate="ready", commit=False,
         )
         db.add(BasketRunItem(
             brun_id=run.brun_id, item_id=it["item_id"], item_key=it["item_key"],
@@ -106,12 +106,14 @@ def expand(
         ctask = store.enqueue(
             db, task_type="basket_corr", payload=corr_payload, lane=lane,
             initiated_by=initiated_by, trace_id=trace_id,
-            brun_id=run.brun_id, seq_no=9999, gate=gate,
+            brun_id=run.brun_id, seq_no=9999, gate=gate, commit=False,
         )
         run.corr_task_id = ctask.task_id
 
     run.total_children = n_eval + (1 if run.with_correlation else 0)
     run.status = "queued"
+    # ONE atomic commit — brun + all child tasks + items become visible together,
+    # so the worker never sees a child before the brun is fully finalized.
     db.commit()
 
 

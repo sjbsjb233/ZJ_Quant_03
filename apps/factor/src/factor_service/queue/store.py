@@ -66,6 +66,7 @@ def enqueue(
     brun_id: str | None = None,
     seq_no: int = 0,
     gate: str = "ready",
+    commit: bool = True,
 ) -> Task:
     """Persist a new task; sets priority by lane and ETA from history.
 
@@ -95,8 +96,15 @@ def enqueue(
         gate=gate,
     )
     db.add(t)
-    db.commit()
-    db.refresh(t)
+    if commit:
+        db.commit()
+        db.refresh(t)
+    else:
+        # Caller commits — lets a basket run create its brun + all child tasks in
+        # ONE atomic transaction, so the worker can't claim a child (and run
+        # advance() on a half-finalized brun) mid-expand. task_id is explicit, so
+        # the row is fully usable after the flush.
+        db.flush()
     return t
 
 

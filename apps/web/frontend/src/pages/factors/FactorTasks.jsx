@@ -22,7 +22,9 @@ export default function FactorTasks() {
 
   const tasksQ = useQuery({
     queryKey: ['tasks.list', laneFilter, statusFilter],
-    queryFn: () => endpoints.tasks({ lane: laneFilter || undefined, status: statusFilter || undefined, limit: 100 }),
+    // standalone:true → basket-child tasks are excluded server-side (they show in
+    // the grouped cards), so the flat list isn't crowded out of the recent-N window.
+    queryFn: () => endpoints.tasks({ lane: laneFilter || undefined, status: statusFilter || undefined, standalone: true, limit: 100 }),
     refetchInterval: 3000,
   });
   const statsQ = useQuery({

@@ -14,7 +14,7 @@ from quant_factor import EvalConfig
 from quant_factor.cache import data_fingerprint
 
 from ..db.models import Basket, BasketItemState, BasketRevision, BasketRun
-from . import keys
+from . import clock, keys
 from .orchestrator import advance
 from .runner import (
     active_revision,
@@ -59,7 +59,7 @@ def _is_trading_day(reader, day: dt.date) -> bool:
 
 def _basket_fingerprint(reader, shared: dict) -> str | None:
     try:
-        today = dt.date.today()
+        today = clock.today()
         cfg = EvalConfig.from_dict(
             keys.eval_config_dict(shared, today - dt.timedelta(days=365), today)
         )
@@ -106,7 +106,7 @@ def record_system_revision(db: Session, basket: Basket, *, old_fp: str | None, n
 # ─────────────────────────────────────────────────────────────────────────────
 def tick_baskets(db: Session, reader, *, now: dt.datetime | None = None) -> int:
     """One scheduler pass — enqueue incremental ticks where due (§7.1)."""
-    local = now or dt.datetime.now()
+    local = now or clock.now()
     today = local.date()
     enqueued = 0
     baskets = (
@@ -117,16 +117,25 @@ def tick_baskets(db: Session, reader, *, now: dt.datetime | None = None) -> int:
     for b in baskets:
         if b.tracking_paused_reason:
             continue
+        # SCH-08: a fixed-window basket cannot track (the window never moves).
+        # Defensive skip even when tracking was force-enabled in the DB, bypassing
+        # the API's TRACKING_ON_FIXED_WINDOW guard.
+        rev = active_revision(db, b)
+        if rev and keys.is_fixed((rev.shared_config or {}).get("window")):
+            _log.warning("tick.skipped basket=%s reason=fixed_window_tracking", b.basket_id)
+            continue
         if not _is_trading_day(reader, today):
             continue
         if (local.hour, local.minute) < (b.tracking_hour, b.tracking_minute):
             continue
         as_of = latest_ready_day(reader) or today
-        if existing_brun_today(db, b.basket_id, as_of):
-            continue
+        # data-readiness gate BEFORE idempotency, so a behind-frontier day is
+        # reported as data_not_ready rather than silently passing the idem check.
         if as_of < today:
             _log.info("tick.skipped basket=%s reason=data_not_ready as_of=%s",
                       b.basket_id, as_of)
+            continue
+        if existing_brun_today(db, b.basket_id, as_of):
             continue
         try:
             if _fingerprint_changed(db, b, reader):

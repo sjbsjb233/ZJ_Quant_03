@@ -10,7 +10,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ..db.models import Basket, BasketRevision, BasketRun, BasketRunItem, FactorRun
-from . import keys
+from . import clock, keys
 from .orchestrator import expand
 
 _log = logging.getLogger("factor.basket_runner")
@@ -21,13 +21,23 @@ def _now() -> dt.datetime:
 
 
 def latest_ready_day(reader) -> dt.date | None:
-    """The data frontier — latest ready trading day in bars_daily (§7.1)."""
+    """The data frontier — latest ready trading day in bars_daily (§7.1).
+
+    NB: the real DataReader requires the *logical* table name ``raw.bars_daily``
+    (``get_spec`` raises KeyError on the bare ``bars_daily``); passing the short
+    name silently swallowed the error and fell back to the real clock — a bug the
+    FakeReader (which ignores the name) hid until the live warehouse exercised it.
+    """
     if reader is None:
         return None
-    try:
-        return reader.latest_date_in_view("bars_daily")
-    except Exception:  # noqa: BLE001
-        return None
+    for name in ("raw.bars_daily", "bars_daily"):
+        try:
+            d = reader.latest_date_in_view(name)
+            if d is not None:
+                return d
+        except Exception:  # noqa: BLE001 — try the next spelling, else None
+            continue
+    return None
 
 
 def _trading_days(reader, start: dt.date, end: dt.date) -> list[dt.date] | None:
@@ -80,7 +90,7 @@ def create_run(
     window = shared.get("window")
     common = rev.common_key or keys.common_key(shared)
 
-    as_of = latest_ready_day(reader) or dt.date.today()
+    as_of = latest_ready_day(reader) or clock.today()
     if keys.is_fixed(window):
         rstart, rend = keys.resolve_window(window, as_of)
         as_of = rend
@@ -114,7 +124,7 @@ def create_run(
         started_at=_now(),
     )
     db.add(brun)
-    db.commit()
+    db.flush()  # assign without committing — expand commits brun + children atomically
 
     items = _ensure_item_keys(list(rev.items or []), common)
     if mode == "corr_only":

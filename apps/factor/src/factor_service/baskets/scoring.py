@@ -123,15 +123,40 @@ def _cmp(op: str, x: float, v: Any) -> bool:
     raise ValueError(f"非法运算符 '{op}'")
 
 
-def apply_filters(rows: list[dict], filters: dict | None) -> list[dict]:
+def apply_filters(rows: list[dict], filters) -> list[dict]:
     """Filter rows by the DSL (§11.3). Hides rows; never rescore. Raises
-    ``ValueError`` on an illegal metric key / operator (→ INVALID_PARAMETER)."""
+    ``ValueError`` on an illegal metric key / operator (→ INVALID_PARAMETER).
+
+    Tolerates ``filters`` arriving as a JSON string (the grid passes it via a
+    query param; create_selection/prune pass it in a JSON body) — coerce here so
+    every caller is robust instead of 500-ing on ``str.get`` (review/live-stack).
+    """
+    if isinstance(filters, str):
+        import json as _json
+        try:
+            filters = _json.loads(filters)
+        except (ValueError, TypeError):
+            raise ValueError("filters 非法 JSON")
     if not filters:
         return list(rows)
+    if not isinstance(filters, dict):
+        raise ValueError("filters 必须是对象")
+    _OPS = ("gte", "lte", "between", "eq")
     metric_rules = filters.get("metric") or []
+    param_rules = filters.get("params") or []
+    # Bound the DSL size (defense in depth — the GET query length also caps it):
+    if len(metric_rules) + len(param_rules) > 100:
+        raise ValueError("过滤条件数量超过上限(100)")
+    # Validate keys AND operators UPFRONT (not lazily in _cmp) so an illegal op
+    # like ">=" is a clean 400 even when no row carries that metric.
     for rule in metric_rules:
         if rule.get("k") not in METRIC_WHITELIST:
             raise ValueError(f"非法指标键 '{rule.get('k')}'")
+        if rule.get("op") not in _OPS:
+            raise ValueError(f"非法运算符 '{rule.get('op')}' (允许: gte/lte/between/eq)")
+    for rule in param_rules:
+        if rule.get("op") not in _OPS:
+            raise ValueError(f"非法运算符 '{rule.get('op')}' (允许: gte/lte/between/eq)")
     flags = filters.get("flags") or {}
     fac = filters.get("factor") or {}
     param_rules = filters.get("params") or []

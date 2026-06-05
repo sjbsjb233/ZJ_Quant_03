@@ -40,6 +40,7 @@ from ..baskets import keys, ledger
 from ..baskets.correlation import compute_ic_correlation
 from ..baskets.snapshots import build_snapshot
 from ..queue import store
+from .results_writer import write_degradations
 
 _log = logging.getLogger("factor.basket_executor")
 _qlog = qd_logging.get_logger("factor.basket_executor")
@@ -207,6 +208,14 @@ def run_basket_eval(db, t: Task) -> dict[str, Any]:
         if bri:
             bri.status = final
         db.commit()
+        # Write the degradations artifact too (not just DB rows) so the dedicated
+        # /runs/{id}/degradations endpoint + run-detail drawer show basket-child
+        # degradations — the live stack revealed this was DB-only before.
+        try:
+            write_degradations(run_id, status=final, level=dledger.level(),
+                               events=dledger.to_jsonable())
+        except Exception:  # noqa: BLE001 — artifact is best-effort
+            pass
         _qlog.info("brun.child.done", brun_id=p["brun_id"], item_key=item_key,
                    status=final, settled=len(settled), pending=len(pending))
         return {"task_id": t.task_id, "status": final, "summary": run.summary}
@@ -254,6 +263,11 @@ def _finish_blocked(db, run, bri, t, pb) -> dict[str, Any]:
     if bri:
         bri.status = "failed"
     db.commit()
+    try:
+        write_degradations(run.run_id, status="failed", level=run.degradation_level,
+                           blocked=blocked_json, events=[])
+    except Exception:  # noqa: BLE001
+        pass
     return {"task_id": t.task_id, "status": "failed", "reason": "preflight_blocked",
             "blocked": [r.check_id for r in pb.results]}
 
