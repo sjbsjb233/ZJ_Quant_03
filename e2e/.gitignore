@@ -1,0 +1,4 @@
+node_modules/
+.stack/
+test-results/
+playwright-report/
