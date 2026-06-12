@@ -87,12 +87,20 @@ class MemoryProbe:
 
     psutil 在容器内读到的是 **宿主** 口径,必须先试 cgroup(方案 WP5);
     全部不可用时返回 None,闸退化为纯预算记账(仍然防叠加)。
+
+    口径修正(验收 E2E-07 实测): ``memory.current`` 含 page cache —— 容器
+    读 parquet 后 cache 可涨到 GB 级且不主动回落,naive ``max − current``
+    会把可回收缓存当占用,造成闸的**假性饥饿**(任务永远 deferred)。内核
+    在分配压力下会立刻回收 ``inactive_file``,故余量把它计回:
+    ``available = max − (current − inactive_file)``。
     """
 
     _V2_MAX = "/sys/fs/cgroup/memory.max"
     _V2_CUR = "/sys/fs/cgroup/memory.current"
+    _V2_STAT = "/sys/fs/cgroup/memory.stat"
     _V1_MAX = "/sys/fs/cgroup/memory/memory.limit_in_bytes"
     _V1_CUR = "/sys/fs/cgroup/memory/memory.usage_in_bytes"
+    _V1_STAT = "/sys/fs/cgroup/memory/memory.stat"
 
     @staticmethod
     def _read_bytes(path: str) -> float | None:
@@ -109,6 +117,18 @@ class MemoryProbe:
         # cgroup v1 reports a huge sentinel (~2^63) when unlimited
         return None if v >= 2**60 else v
 
+    @staticmethod
+    def _reclaimable_bytes(stat_path: str) -> float:
+        """可快速回收的 page cache(inactive_file;v1 名 total_inactive_file)。"""
+        try:
+            for line in open(stat_path):
+                key, _, val = line.partition(" ")
+                if key in ("inactive_file", "total_inactive_file"):
+                    return float(val)
+        except (OSError, ValueError):
+            pass
+        return 0.0
+
     def limit_mb(self) -> float | None:
         for p in (self._V2_MAX, self._V1_MAX):
             v = self._read_bytes(p)
@@ -117,10 +137,14 @@ class MemoryProbe:
         return None
 
     def available_mb(self) -> float | None:
-        for mx, cur in ((self._V2_MAX, self._V2_CUR), (self._V1_MAX, self._V1_CUR)):
+        for mx, cur, stat in (
+            (self._V2_MAX, self._V2_CUR, self._V2_STAT),
+            (self._V1_MAX, self._V1_CUR, self._V1_STAT),
+        ):
             m, c = self._read_bytes(mx), self._read_bytes(cur)
             if m is not None and c is not None:
-                return max(0.0, (m - c) / 1048576.0)
+                effective = max(0.0, c - self._reclaimable_bytes(stat))
+                return max(0.0, (m - effective) / 1048576.0)
         try:  # host-scope fallback (dev machines / no cgroup limit)
             import psutil  # type: ignore
 
@@ -190,6 +214,7 @@ class AdmissionGate:
         clock=time.monotonic,
         deferred_warn_s: float = DEFAULT_DEFERRED_WARN_MIN * 60.0,
         draining_warn_s: float = DEFAULT_DRAINING_WARN_MIN * 60.0,
+        validate_budgets=True,
     ):
         self._budgets = dict(DEFAULT_BUDGETS)
         self._budgets.update(budgets or {})
@@ -198,6 +223,24 @@ class AdmissionGate:
         self._exclusive_classes = frozenset(exclusive_classes or ())
         self._probe = probe or MemoryProbe()
         self._clock = clock
+        if validate_budgets:
+            # fail-fast (验收 T-WP5-008): 单类预算 > mem_limit − reserve 的任务
+            # 永远进不来 — 配置错误在进程启动时就报,而不是运行时静默饿死。
+            # 预算表经 compose 锚点全局共享下发,小容器只对 **自己会申请的类**
+            # 负责 — 接入点传本进程任务类集合;True = 校验全部(独立使用)。
+            limit = self._probe.limit_mb()
+            if limit is not None:
+                ceiling = max(0.0, limit - self._reserve_mb)
+                scope = (set(self._budgets) if validate_budgets is True
+                         else set(validate_budgets))
+                bad = {k: v for k, v in self._budgets.items()
+                       if k in scope and v > ceiling}
+                if bad:
+                    raise ValueError(
+                        f"ADMISSION_BUDGETS_JSON 配置错误: {bad} 超过容器可用预算 "
+                        f"(mem_limit {limit:.0f}MB − reserve {self._reserve_mb:.0f}MB "
+                        f"= {ceiling:.0f}MB),该类任务将永远无法放行 — 调小预算或"
+                        "调大容器 mem_limit(内存治理方案 WP5)。")
         self._deferred_warn_s = deferred_warn_s
         self._draining_warn_s = draining_warn_s
 

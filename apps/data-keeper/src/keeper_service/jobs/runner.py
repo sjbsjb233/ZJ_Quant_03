@@ -49,7 +49,9 @@ def _admission_gate() -> AdmissionGate:
     if _gate is None:
         with _gate_lock:
             if _gate is None:
-                _gate = AdmissionGate.from_env()
+                # fail-fast 范围 = keeper 自己的任务类 (预算表全局共享, T-WP5-008)
+                _gate = AdmissionGate.from_env(validate_budgets=(
+                    *set(_ADMISSION_CLASS.values()), "keeper.job.light"))
     return _gate
 
 

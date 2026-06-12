@@ -154,7 +154,18 @@ class FactorEvaluator:
         panel = ctx.bars(adjust="post")
 
         # ── step 1: compute raw factor values ─────────────────────────────
-        fvals = self._compute_factor(factor, ctx, rebal)
+        try:
+            fvals = self._compute_factor(factor, ctx, rebal)
+        except pl.exceptions.ColumnNotFoundError as e:
+            if req_cols:
+                # 投影面板只含声明列 — 因子用了未声明的列是治理缺口,给出
+                # 修复指引而非裸 polars 错误(内存治理验收 T-WP3-006)。
+                raise ValueError(
+                    f"因子 {factor.name} 的 compute() 使用了未声明的列({e});"
+                    f"已声明 required_columns={list(req_cols)} — 请把该列补进 "
+                    "required_columns(内存治理方案 WP3.1)后重跑。"
+                ) from e
+            raise
         if fvals.height == 0:
             raise ValueError("Factor returned no values — check compute() output")
         _ensure_columns(fvals, ["date", "symbol", "value"], "factor output")

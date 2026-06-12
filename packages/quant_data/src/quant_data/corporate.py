@@ -28,12 +28,36 @@ import bisect
 
 import pyarrow as pa
 
+from .logging import get_logger
 from .reader import DataReader, _in_clause, _to_date
+
+_log = get_logger("quant_data.corporate")
 
 # action types that move the price on the ex-date
 _PRICE_AFFECTING = {"cash_dividend", "stock_dividend", "transfer", "rights_issue", "split"}
 
 _BARS_TABLE = "raw.bars_daily"
+
+
+def _event_invalid_reason(ev: dict, last_bar_date) -> str | None:
+    """脏事件检测(内存治理验收 T-WP1-001b — 不得静默算出错值)。
+
+    quality 层只警告不拒写,脏行能进湖;读侧旧实现把它们"按公式硬算"——
+    比如负现金分红会得出 >1 的因子(数值上有效、业务上荒谬)。这里把非法
+    事件显式无效化(跳过,数值上等价于 ratio=1.0)并发结构化台账
+    ``corporate.event.invalid``,语义 = 方案约定的"跳过 + 台账"。
+    """
+    if last_bar_date is not None and ev["action_date"] > last_bar_date:
+        return "ex_date_beyond_last_bar"   # 未来事件会折扣全部历史 bar,违反末日=1.0 约定
+    for fld in ("cash_per_share", "stock_per_10", "transfer_per_10",
+                "rights_ratio", "rights_price"):
+        v = ev.get(fld)
+        if v is not None and v < 0:
+            return f"negative_{fld}"
+    split = ev.get("split_ratio")
+    if split is not None and split <= 0:
+        return "non_positive_split_ratio"  # 0/负拆股 = 无意义,旧实现静默当 1.0
+    return None
 
 
 def _event_ratio(prev_close: float, ev: dict) -> float:
@@ -78,6 +102,19 @@ def _price_events(reader: DataReader, symbols) -> dict[str, list[dict]]:
     return out
 
 
+def _last_bar_dates(reader: DataReader, symbols: list[str]) -> dict:
+    """每个事件票的末 bar 日(一次聚合;事件票集是小集合)。"""
+    if not symbols:
+        return {}
+    quoted = ",".join("'" + s.replace("'", "''") + "'" for s in symbols)
+    cur = reader.aggregate_current_view(
+        _BARS_TABLE, projection="symbol, MAX(date)",
+        tail="GROUP BY symbol",
+        filters=[f"t.symbol IN ({quoted})"],
+    )
+    return {s: _to_date(d) for s, d in cur.fetchall()}
+
+
 def _prev_closes(reader: DataReader, events_by_symbol, bar_filters) -> dict:
     """close of the last bar STRICTLY before each event's ex-date — in-engine.
 
@@ -109,6 +146,28 @@ def _prev_closes(reader: DataReader, events_by_symbol, bar_filters) -> dict:
         filters=bar_filters or None,
     )
     return {(s, _to_date(ad)): pc for s, ad, pc in cur.fetchall()}
+
+
+def _drop_invalid_events(events_by_symbol, last_bar):
+    """非法事件:跳过 + ``corporate.event.invalid`` 台账(T-WP1-001b)。
+
+    数值语义与"ratio=1.0"等价(乘 1 = 不乘),但负参数等旧实现会硬算出
+    错值的形态在这里被显式拦下;每个被拦事件都有结构化告警,不静默。
+    """
+    out: dict[str, list[dict]] = {}
+    for sym, evs in events_by_symbol.items():
+        kept = []
+        for ev in evs:
+            reason = _event_invalid_reason(ev, last_bar.get(sym))
+            if reason is not None:
+                _log.warn("corporate.event.invalid", symbol=sym,
+                          action_date=str(ev["action_date"]),
+                          action_type=ev["action_type"], reason=reason)
+                continue
+            kept.append(ev)
+        if kept:
+            out[sym] = kept
+    return out
 
 
 def _cumulative_intervals(events_by_symbol, prev_close):
@@ -179,6 +238,8 @@ def compute_adj_factors(symbols=None, reader: DataReader | None = None, root=Non
         return _empty_factors()
 
     events_by_symbol = _price_events(reader, symbols)
+    last_bar = _last_bar_dates(reader, sorted(events_by_symbol))
+    events_by_symbol = _drop_invalid_events(events_by_symbol, last_bar)
     prev_close = _prev_closes(reader, events_by_symbol, bar_filters)
     intervals = _cumulative_intervals(events_by_symbol, prev_close)
 

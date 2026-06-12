@@ -55,6 +55,9 @@ def _gate(probe, clock=None, **kw):
     kw.setdefault("budgets", {"heavy": 600, "light": 100, "giant": 1500})
     kw.setdefault("reserve_mb", 0)
     kw.setdefault("exclusive_classes", ())
+    # 运行时语义用例:关启动校验(giant 故意超 limit 以测运行时 deferred 路径;
+    # 启动 fail-fast 单独由 test_wp5_budget_failfast_validation 覆盖)。
+    kw.setdefault("validate_budgets", False)
     return AdmissionGate(probe=probe, clock=clock or Clock(), **kw)
 
 
@@ -234,6 +237,21 @@ def test_wp5_impossible_budget_reports_error(events):
     v = gate.try_acquire("giant", task_id="g")  # 1500 > 1000−600 ⇒ 永不可行
     assert isinstance(v, Deferred) and v.reason == "insufficient-budget"
     assert "admission.budget.impossible" in _names(events)
+
+
+def test_wp5_budget_failfast_validation():
+    """T-WP5-008: 单类预算 > mem_limit−reserve ⇒ 进程启动即 fail-fast。"""
+    with pytest.raises(ValueError, match="永远无法放行"):
+        AdmissionGate(budgets={"x": 5000}, reserve_mb=256,
+                      probe=FakeProbe(limit_mb=3072, available_mb=3000))
+    # 校验范围参数化:小容器只对自己的任务类负责(共享预算表不误炸)
+    g = AdmissionGate(budgets={"x": 5000, "mine": 100}, reserve_mb=256,
+                      probe=FakeProbe(limit_mb=3072, available_mb=3000),
+                      validate_budgets=("mine",))
+    assert g.budget_for("mine") == 100
+    # 探针无 limit(dev 机)⇒ 跳过校验不抛
+    AdmissionGate(budgets={"x": 5000},
+                  probe=FakeProbe(limit_mb=None, available_mb=None))
 
 
 def test_wp5_from_env_budgets(monkeypatch):

@@ -50,7 +50,9 @@ def admission_gate() -> AdmissionGate:
     if _admission_gate is None:
         with _admission_init_lock:
             if _admission_gate is None:
-                _admission_gate = AdmissionGate.from_env()
+                # fail-fast 范围 = web 自己的任务类 (预算表全局共享, T-WP5-008)
+                _admission_gate = AdmissionGate.from_env(
+                    validate_budgets=("web.rows.transform", "web.charts.heavy"))
     return _admission_gate
 
 

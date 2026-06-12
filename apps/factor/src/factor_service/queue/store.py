@@ -98,7 +98,10 @@ def enqueue(
     db.add(t)
     if commit:
         db.commit()
-        db.refresh(t)
+        # NOTE: 不做 post-commit refresh — session 配置 expire_on_commit=False,
+        # 对象属性全部在手(Task 无 server-default 列需要回读);而 refresh 的
+        # SELECT 可能落在连接池里仍持旧 WAL 读快照的连接上(SQLite + 多线程
+        # api),把一次成功的入队误判成 500(提交风暴实测,验收 L-006)。
     else:
         # Caller commits — lets a basket run create its brun + all child tasks in
         # ONE atomic transaction, so the worker can't claim a child (and run

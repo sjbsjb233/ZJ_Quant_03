@@ -167,6 +167,10 @@ def chunked_panel(
     - ``columns`` 必填(守则 §2:大表必须投影);需要价格时带上
       ``close``+``adj_factor``,块内自行派生 ``px = close × adj_factor``。
     - ``lookback_days``/``lookahead_days``:算子支撑窗口,按 **交易日** 计。
+      ⚠ 行偏移算子(``shift(N).over(symbol)`` 一族)的支撑是"该票自己的前
+      N 行";有数据空洞(停牌段)的票,N 行可能横跨 > N 个交易日 ——
+      调用方必须把 lookback 设为 **算子行窗 + 数据最大空洞长度**,否则
+      空洞票在块边界后的首段值与整读不一致(验收 T-WP4-001 实测边界)。
     - ``chunk``:属主块宽("1Y"/"3M"/"90D" 或交易日数);传 ``budget_mb``
       时按预算反推覆盖之(v1.2)。
     - 本原语永远 ``adjust="none"``;禁止对产出面板再做 post 复权(见模块

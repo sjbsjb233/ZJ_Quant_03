@@ -212,7 +212,9 @@ def main() -> None:
     pool = ThreadPoolExecutor(max_workers=conc, thread_name_prefix="factor-worker")
     inflight: dict[Future, str] = {}
     # 内存准入闸 (WP5 接入点①): per-process gate; grants released on finalize.
-    gate = AdmissionGate.from_env()
+    # fail-fast 校验只对本进程会申请的任务类负责 (预算表全局共享下发, T-WP5-008)。
+    gate = AdmissionGate.from_env(validate_budgets=(
+        *set(_ADMISSION_CLASS.values()), "factor.task.light"))
     grants: dict[str, Grant] = {}
 
     db = _db_base.SessionLocal()
