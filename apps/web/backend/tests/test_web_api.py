@@ -1237,7 +1237,7 @@ def test_wp5_admission_deferred_returns_429_with_retry_after(client, admin, monk
             return 1.0
 
     gate = AdmissionGate(budgets={"web.rows.transform": 1200}, reserve_mb=0,
-                         probe=Saturated())
+                         probe=Saturated(), validate_budgets=False)  # 测运行时 Deferred 路径
     monkeypatch.setattr(deps_mod, "_admission_gate", gate)
     r = client.get("/api/v1/data/tables/raw.bars_daily/rows", headers=admin,
                    params={"symbols": "600519.SH", "adjust": "post", "limit": 3})
