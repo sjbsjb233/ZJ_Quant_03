@@ -25,6 +25,22 @@ class Settings(BaseSettings):
     # ── role + worker tunables ─────────────────────────────────────────
     factor_role: str = "api"  # "api" | "worker"
     factor_concurrency: int = 4
+    # ── memory-aware admission gate (修复 worker OOM crash-loop) ────────────
+    # A factor evaluation scans the full bars_daily parquet set into polars and
+    # peaks at multiple GB of RSS (DuckDB's per-conn memory_limit caps the
+    # *engine* buffers but NOT the Arrow/polars materialization the result is
+    # copied into). Running FACTOR_CONCURRENCY (4) of them as threads in ONE
+    # process let combined RSS blow past the container's mem cap → the kernel
+    # OOM-killed the worker silently (SIGKILL, no traceback), Docker restarted
+    # it, the tasks were re-claimed and killed it again — a crash-loop that
+    # surfaced as "worker lost (stale heartbeat)" and failed the basket run.
+    # This caps how many *heavy* (data-reading) tasks run concurrently,
+    # independent of FACTOR_CONCURRENCY which still parallelises light tasks.
+    # Default 1 (serialise heavy tasks): a single eval already peaks at ~5.4GB
+    # of the 12GB cap and the host runs under memory pressure (see
+    # project_incident_20260604_hang), so 2 concurrent would leave almost no
+    # headroom. Ops with a bigger box can raise it via FACTOR_HEAVY_CONCURRENCY.
+    factor_heavy_concurrency: int = 1
     factor_reserve_interactive: int = 1
     factor_poll_interval_ms: int = 1000
     factor_stale_seconds: int = 120

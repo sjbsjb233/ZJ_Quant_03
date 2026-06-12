@@ -144,13 +144,21 @@ def main() -> None:
     reserve = int(
         os.getenv("FACTOR_RESERVE_INTERACTIVE", str(s.factor_reserve_interactive))
     )
+    # Memory-aware admission gate: at most `heavy_cap` data-reading evaluations
+    # run at once, regardless of `conc`. Each evaluation peaks at multiple GB of
+    # RSS (full bars_daily scan → polars), so 4 concurrent ones OOM-killed the
+    # worker; this bounds peak memory while light tasks still fill the pool.
+    heavy_cap = max(
+        1, int(os.getenv("FACTOR_HEAVY_CONCURRENCY", str(s.factor_heavy_concurrency)))
+    )
     poll_ms = int(os.getenv("FACTOR_POLL_INTERVAL_MS", str(s.factor_poll_interval_ms)))
     stale_sec = int(s.factor_stale_seconds)
 
     worker_id = (os.environ.get("HOSTNAME", "worker") + f"#{os.getpid()}")
     _log.info(
-        "dispatcher up — concurrency=%d reserve=%d poll=%dms worker=%s",
+        "dispatcher up — concurrency=%d heavy_cap=%d reserve=%d poll=%dms worker=%s",
         conc,
+        heavy_cap,
         reserve,
         poll_ms,
         worker_id,
@@ -161,6 +169,13 @@ def main() -> None:
 
     pool = ThreadPoolExecutor(max_workers=conc, thread_name_prefix="factor-worker")
     inflight: dict[Future, str] = {}
+    # Subset of `inflight` whose task is a HEAVY_TASK_TYPES (data-reading) job —
+    # the count drives the memory-aware admission gate below. NB: this gate is
+    # per-process; it assumes the single-worker deployment (compose pins
+    # container_name, so no --scale). If factor-worker is ever replicated, N
+    # workers would each admit heavy_cap heavies → N×cap total, re-opening the
+    # OOM — make the gate count running heavy tasks in the DB instead.
+    inflight_heavy: set[Future] = set()
 
     db = _db_base.SessionLocal()
     store.recover_stale(db, stale_sec)
@@ -190,6 +205,7 @@ def main() -> None:
             done = [f for f in list(inflight) if f.done()]
             for f in done:
                 tid = inflight.pop(f)
+                inflight_heavy.discard(f)
                 _finalize_future(db, tid, f)
 
             # 2) recover stale running tasks (heartbeat gap)
@@ -203,16 +219,26 @@ def main() -> None:
                     .count()
                 )
                 allow_routine = running_routine < (conc - reserve)
-                t = store.claim_next_filtered(db, worker_id, allow_routine)
+                # Memory gate: stop claiming heavy (data-reading) tasks once
+                # heavy_cap of them are already running. Light tasks may still
+                # fill the remaining slots; queued heavy tasks wait their turn.
+                allow_heavy = len(inflight_heavy) < heavy_cap
+                t = store.claim_next_filtered(
+                    db, worker_id, allow_routine, allow_heavy=allow_heavy
+                )
                 if t is None:
                     break
                 fut = pool.submit(_run_one, t.task_id, t.trace_id)
                 inflight[fut] = t.task_id
+                if t.task_type in store.HEAVY_TASK_TYPES:
+                    inflight_heavy.add(fut)
                 _log.info(
-                    "claimed task %s (type=%s lane=%s)",
+                    "claimed task %s (type=%s lane=%s heavy=%d/%d)",
                     t.task_id,
                     t.task_type,
                     t.lane,
+                    len(inflight_heavy),
+                    heavy_cap,
                 )
                 # structured twin, joined to the task's trace_id (V3 §4.3 / §6.4)
                 _tok = qd_logging.bind_context(trace_id=t.trace_id)
