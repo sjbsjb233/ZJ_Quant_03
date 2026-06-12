@@ -17,6 +17,8 @@ class LogMktCap(Factor):
     direction = -1
     requires_pit = False
     dependencies = ("raw.bars_daily",)
+    # 两个市值口径都声明:本因子自带 circ_mv↔total_mv 回退台账,投影不影响其语义
+    required_columns = ("circ_mv", "total_mv")     # 内存治理 WP3.1
     param_schema = {"field": (str, "circ_mv")}  # or "total_mv"
     display_name = "对数市值"
     description = "ln(circ_mv) — small-minus-big size factor"

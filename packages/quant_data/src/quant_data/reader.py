@@ -1,4 +1,44 @@
-"""DataReader -- the only sanctioned way business code touches data (doc §6).
+"""DataReader —— 数据湖唯一读取入口。
+
+调用守则(全库强制,违反即 code review 拒绝)
+==============================================
+1.【先问自己要什么】物化是最后手段,按优先级选择:
+   count_current_view(只要行数)
+   > aggregate_current_view(只要统计量/覆盖率)
+   > read_*(columns=…, symbols=…, start=…, end=…)(要明细,三类裁剪带全)
+   > read_*() 全量物化(仅限参考表与测试;大表全量 = 事故)
+2.【大表必须过滤】raw.bars_daily / raw.bars_minute / raw.universe:
+   - 必须传 columns;确需全列时注释写明理由
+   - symbols 与 (start, end) 至少传其一
+   - 预计物化 > 500MB:必须注册 quant_admission 任务类,预算见
+     ADMISSION_BUDGETS_JSON
+3.【禁止条款】(每条都对应一次真实事故或已知陷阱)
+   - 禁止对大表结果调 .to_pylist():Python 对象放大 5–10×
+     (事故:2026-06 复权重算 ~8GB,《内存治理总体方案》WP1.1)
+   - 禁止在分批/分页路径用 adjust="post":first_value 基准随结果集
+     首行漂移,不分块稳定;改用 close × adj_factor(陷阱档案:
+     tables.py 内存分页注释、方案 §6.3)
+   - 禁止循环内重复读同一面板:调用方缓存或 chunked_panel
+     (事故:forward_returns 每评估 ×6 全量读,方案 WP3.2)
+   - 禁止在服务进程调用全表校验工具(见 invariants.py 模块警告;
+     事故:2026-06-01 table_stats 崩溃循环同型)
+4.【新调用点登记】新增预计物化 > 1GB 的调用点,三件套缺一不可:
+   ① 在下方"重读调用点清单"登记;② 注册准入预算;
+   ③ 附内存断言测试(T-xxx,峰值 RSS 上限)
+
+重读调用点清单(2026-06-12 审计基线)
+------------------------------------
+- quant_factor/evaluate.py    评估面板(一次读,WP3)
+- quant_data/corporate.py     复权因子(SQL 内计算,WP1.1)
+- keeper_service/compaction   COPY 流式
+- quant_data/chunking.py      chunked_panel 分批面板(WP4 登记示例;
+                              预算类 factor.eval.minute,T-WP4-003)
+
+事故档案:2026-05-23(/rows)、06-01(table_stats)、06-04/05(factor OOM)。
+完整规则与覆盖矩阵:《ZJ_Quant 内存治理总体方案》§3.1。
+
+----------------------------------------------------------------------------
+机制说明 (doc §6) — the only sanctioned way business code touches data.
 
 Everything goes through the "current view" (doc §6.1): valid batches only,
 multi-source conflict resolved by priority, one row per logical key. On top of
@@ -8,10 +48,14 @@ that:
   * real-time minute downsampling -- 1m/5m/15m/30m/1h (doc §6.4)
   * extras_as_columns -- promote _extras KV into typed columns, with a
     core-column-first compat fallback (doc §3.3 / §7.3)
+  * column projection (内存治理方案 WP2) -- ``columns=``/``projection=`` push
+    the SELECT list into SQL so unrequested columns (尤其最肥的 _extras MAP)
+    are never materialised; ``None`` keeps the legacy full-column behaviour.
 """
 from __future__ import annotations
 
 import datetime as dt
+import os
 import re
 import time
 
@@ -26,6 +70,11 @@ from .schemas import ARROW_TYPE_BY_NAME, DATE, TS, TableSpec, get_spec
 
 _PRICE_COLS = ("open", "high", "low", "close", "pre_close", "vwap")
 _log = get_logger("quant_data.reader")
+
+# 迁移期扫尾阈值 (WP2.2): unprojected materialisations above this size emit
+# reader.projection.missing when QUANT_READER_PROJECTION_LOG=1. Module-level
+# so tests can lower it (缩限不缩机制).
+_PROJECTION_LOG_BYTES = 1 << 30
 
 # DuckDB's binder phrasing for "you asked for a column the parquet files don't
 # have": ``Referenced column "total_mv" not found in FROM clause!``.
@@ -137,6 +186,7 @@ class DataReader:
         post_filters: list[str] | None = None,
         limit: int | None = None,
         offset: int = 0,
+        projection: list[str] | None = None,
     ) -> pa.Table:
         """Materialise the current view.
 
@@ -154,6 +204,16 @@ class DataReader:
         value-stable per row -- e.g. ``_adjust(adjust="post")`` uses a window
         over the whole symbol and is NOT page-stable; callers using it must
         paginate in memory after the typed reader returns.
+
+        ``projection`` (内存治理方案 WP2.1) replaces only the OUTERMOST select
+        list; the dwp/ranked CTEs are untouched, so the row set, dedup winner
+        and ordering are byte-identical to the unprojected read -- DuckDB then
+        collapses the parquet scan to *filter ∪ dedup ∪ projection* columns.
+        The primary key is auto-unioned in (sorting and downstream joins rely
+        on it); extras-promoted fields are always appended last (same position
+        the ``SELECT *`` path puts them). Unknown columns raise
+        :class:`ColumnNotInViewError`, never silently vanish. ``None`` keeps
+        the legacy all-columns behaviour exactly.
         """
         self._validate_extras_types(extras_as_columns)
         files = storage.list_data_files(spec, self.root)
@@ -163,7 +223,7 @@ class DataReader:
         ]
         prio = sources.priority_map(self.root)
         if not files or not valid_ids or not prio:
-            return self._empty(spec, extras_as_columns)
+            return self._empty(spec, extras_as_columns, projection)
 
         present = _union_columns(files)
         con = self._con
@@ -187,6 +247,14 @@ class DataReader:
         extra_select, overridden = self._extras_select(extras_as_columns or {}, spec, present)
         excepts += overridden
         except_sql = f" EXCLUDE ({', '.join(_ident(c) for c in excepts)})" if excepts else ""
+        # 列投影 (WP2.1): only the outermost SELECT changes — inner CTEs keep
+        # the dedup/order columns alive and DuckDB prunes the scan itself.
+        select_sql = f"*{except_sql}{extra_select}"
+        if projection is not None:
+            cols = self._validated_projection(spec, projection, present, extras_as_columns)
+            extras_keys = set(extras_as_columns or {})
+            plain = [c for c in cols if c not in extras_keys]
+            select_sql = ", ".join(_ident(c) for c in plain) + extra_select
         order_sql = f" ORDER BY {order_by}" if order_by else ""
         post_sql = (" AND " + " AND ".join(post_filters)) if post_filters else ""
         # LIMIT/OFFSET literals: validated as ints so SQL injection is not a risk.
@@ -205,13 +273,14 @@ class DataReader:
             ) AS rn
             FROM dwp
         )
-        SELECT *{except_sql}{extra_select}
+        SELECT {select_sql}
         FROM ranked WHERE rn = 1{post_sql}{order_sql}{page_sql}
         """
         _log.debug("reader.query.built", table=spec.name,
                    predicates=len(filters or []),
                    post_predicates=len(post_filters or []),
-                   columns=len(present), limit=limit, offset=offset)
+                   columns=len(present), limit=limit, offset=offset,
+                   projected=None if projection is None else len(projection))
         start = time.perf_counter()
         try:
             result = con.execute(sql, [files]).to_arrow_table()
@@ -229,11 +298,50 @@ class DataReader:
         else:
             _log.info("reader.query.executed", table=spec.name,
                       rows_returned=result.num_rows, duration_ms=duration_ms)
+        # 迁移期扫尾 (WP2.2): big unprojected materialisations are the call
+        # sites the projection rollout still needs to visit — surface them.
+        if (
+            projection is None
+            and result.nbytes > _PROJECTION_LOG_BYTES
+            and os.environ.get(config.READER_PROJECTION_LOG_ENV, "0") == "1"
+        ):
+            _log.warn("reader.projection.missing", table=spec.name,
+                      rows_returned=result.num_rows, nbytes=result.nbytes)
         return result
+
+    def _validated_projection(
+        self,
+        spec: TableSpec,
+        projection: list[str],
+        present: set[str] | None,
+        extras_as_columns: dict[str, str] | None,
+    ) -> list[str]:
+        """Validate + normalise a projection: dedupe (keep request order),
+        auto-union the primary key, reject columns the view cannot serve.
+
+        ``present`` is the union of physical file columns; ``None`` means "no
+        data files" (empty view) — then the table spec is the best truth we
+        have. A column declared in the spec but absent from every file (e.g.
+        market-cap before its backfill) raises :class:`ColumnNotInViewError`,
+        the same typed error the aggregate path maps binder errors to.
+        """
+        extras_keys = set(extras_as_columns or {})
+        partition_cols = set(spec.partition_names())
+        servable = (
+            (present - partition_cols) if present is not None else set(spec.all_names())
+        ) | extras_keys
+        for col in projection:
+            if col not in servable:
+                raise ColumnNotInViewError(col, spec.name)
+        cols = list(dict.fromkeys(projection))
+        for k in spec.primary_key:
+            if k not in cols:
+                cols.append(k)
+        return cols
 
     def count_current_view(
         self,
-        spec: TableSpec,
+        spec: TableSpec | str,
         filters: list[str] | None = None,
         post_filters: list[str] | None = None,
         dedup_order: str | None = None,
@@ -244,7 +352,11 @@ class DataReader:
         materialising the data. Dedup ranking still runs because post_filters
         select on the winner, but only COUNT(*) is returned -- O(rows) without
         the to-Arrow copy + Python conversion that caused the original blow-up.
+        Accepts the table name as a string so spec-agnostic callers (因子层
+        preflight, 方案 WP3.3) don't need quant_data.schemas.
         """
+        if isinstance(spec, str):
+            spec = get_spec(spec)
         files = storage.list_data_files(spec, self.root)
         valid_ids = [
             b["batch_id"]
@@ -287,7 +399,7 @@ class DataReader:
 
     def aggregate_current_view(
         self,
-        spec: TableSpec,
+        spec: TableSpec | str,
         projection: str,
         tail: str = "",
         filters: list[str] | None = None,
@@ -306,7 +418,10 @@ class DataReader:
         as before -- the SQL surface is unchanged, only the data path is.
 
         Returns the executed DuckDB cursor (use ``.fetchall()`` / ``.description``).
+        Accepts the table name as a string (spec-agnostic callers, WP3.3).
         """
+        if isinstance(spec, str):
+            spec = get_spec(spec)
         con = self._con
         files = storage.list_data_files(spec, self.root)
         valid_ids = [
@@ -466,8 +581,20 @@ class DataReader:
                 exprs.append(f"{cast} AS {_ident(fname)}")
         return ", " + ", ".join(exprs), overridden
 
-    def _empty(self, spec: TableSpec, extras_as_columns: dict[str, str] | None) -> pa.Table:
+    def _empty(
+        self,
+        spec: TableSpec,
+        extras_as_columns: dict[str, str] | None,
+        projection: list[str] | None = None,
+    ) -> pa.Table:
         schema = spec.arrow_schema()
+        if projection is not None:
+            cols = self._validated_projection(spec, projection, None, extras_as_columns)
+            extras_keys = set(extras_as_columns or {})
+            schema = pa.schema(
+                [schema.field(c) for c in cols
+                 if c in schema.names and c not in extras_keys]
+            )
         if extras_as_columns:
             for fname, type_name in extras_as_columns.items():
                 if fname in schema.names:
@@ -478,8 +605,19 @@ class DataReader:
     # -- bars (doc §6.3 adjust, §6.4 downsample) -----------------------------
     def read_bars_daily(
         self, symbols=None, start=None, end=None, adjust="none", extras_as_columns=None,
-        recompute_adj=False,
+        recompute_adj=False, columns=None,
     ) -> pa.Table:
+        """Daily bars from the current view.
+
+        ⚠ 大表必须过滤(调用守则 §2):symbols 与 (start, end) 至少传其一,且
+        必须传 ``columns``(确需全列时在调用处注释理由)。
+
+        ``columns`` (WP2.2): the projected column list. The primary key is
+        auto-unioned in; ``adjust != "none"`` / ``recompute_adj`` auto-union
+        ``adj_factor`` (调价与 COALESCE 覆盖都需要它), and ``_adjust`` only
+        multiplies the price columns actually present, so a projected read is
+        behaviour-identical to ``read().select(columns)``. ``None`` = 全列。
+        """
         if start is not None and end is not None and _to_date(start) > _to_date(end):
             raise ValueError(f"start {start} is after end {end}")
         filters = []
@@ -489,8 +627,14 @@ class DataReader:
             filters.append(f"t.date >= {_date_lit(start)}")
         if end is not None:
             filters.append(f"t.date <= {_date_lit(end)}")
+        projection = None
+        if columns is not None:
+            projection = list(dict.fromkeys(columns))
+            if (adjust not in (None, "none") or recompute_adj) and "adj_factor" not in projection:
+                projection.append("adj_factor")
         cv = self._current_view(
-            get_spec("raw.bars_daily"), filters, extras_as_columns, order_by="symbol, date"
+            get_spec("raw.bars_daily"), filters, extras_as_columns, order_by="symbol, date",
+            projection=projection,
         )
         if recompute_adj:
             cv = self._recomputed_factors(cv, symbols)
@@ -516,10 +660,23 @@ class DataReader:
         )
         return self._con.execute(sql).to_arrow_table()
 
+    # columns _downsample's SQL reads — a projected read at frequency != 1m
+    # must carry them all or the aggregation would binder-fail mid-flight.
+    _DOWNSAMPLE_COLS = ("open", "high", "low", "close", "volume", "amount", "adj_factor")
+
     def read_bars_minute(
         self, symbols=None, start=None, end=None, frequency="1m", adjust="none",
-        extras_as_columns=None,
+        extras_as_columns=None, columns=None,
     ) -> pa.Table:
+        """Minute bars (with real-time downsampling).
+
+        ⚠ 大表必须过滤(调用守则 §2)——本表行数 ×240 于日线;全市场宽窗读取
+        必须走 ``quant_data.chunking.chunked_panel``(CHUNK_TABLES,方案 WP4)。
+
+        ``columns`` (WP2.2): projected list; pk auto-unioned. ``frequency !=
+        "1m"`` auto-unions the OHLCV set the downsampler aggregates;
+        ``adjust != "none"`` auto-unions ``adj_factor``.
+        """
         if frequency not in config.MINUTE_FREQUENCIES:
             raise ValueError(
                 f"unsupported frequency {frequency!r}; choose {sorted(config.MINUTE_FREQUENCIES)}"
@@ -531,8 +688,16 @@ class DataReader:
             filters.append(f"t.datetime >= {_ts_lit(start)}")
         if end is not None:
             filters.append(f"t.datetime <= {_ts_lit(end)}")
+        projection = None
+        if columns is not None:
+            projection = list(dict.fromkeys(columns))
+            if frequency != "1m":
+                projection += [c for c in self._DOWNSAMPLE_COLS if c not in projection]
+            if adjust not in (None, "none") and "adj_factor" not in projection:
+                projection.append("adj_factor")
         cv = self._current_view(
-            get_spec("raw.bars_minute"), filters, extras_as_columns, order_by="symbol, datetime"
+            get_spec("raw.bars_minute"), filters, extras_as_columns, order_by="symbol, datetime",
+            projection=projection,
         )
         if frequency != "1m":
             cv = self._downsample(cv, frequency)
@@ -593,7 +758,8 @@ class DataReader:
         return self._con.execute(sql).to_arrow_table()
 
     # -- fundamentals (PIT, doc §6.2) ----------------------------------------
-    def read_fundamentals(self, symbols=None, as_of_date=None, extras_as_columns=None) -> pa.Table:
+    def read_fundamentals(self, symbols=None, as_of_date=None, extras_as_columns=None,
+                          columns=None) -> pa.Table:
         if as_of_date is None:
             raise ValueError("read_fundamentals requires as_of_date (PIT, doc §6.2)")
         filters = [f"t.publish_date <= {_date_lit(as_of_date)}"]
@@ -604,14 +770,23 @@ class DataReader:
         # <= as_of), keep the most-recently-DISCLOSED one. Ordering dedup by
         # publish_date DESC (not just _ingested_at) means a later backfill of an
         # older revision can't leak a stale value -- the as-of revision wins.
+        # (The PIT dedup columns live in the inner CTEs, so a ``columns``
+        # projection can't break the as-of ranking — WP2.2 P2 顺手项.)
         return self._current_view(
             get_spec("raw.fundamentals"), filters, extras_as_columns,
             order_by="symbol, report_period",
             dedup_order="_src_priority DESC, publish_date DESC, _ingested_at DESC, _batch_id DESC",
+            projection=list(dict.fromkeys(columns)) if columns is not None else None,
         )
 
     # -- universe / calendar -------------------------------------------------
-    def read_universe(self, symbols=None, start=None, end=None, extras_as_columns=None) -> pa.Table:
+    def read_universe(self, symbols=None, start=None, end=None, extras_as_columns=None,
+                      columns=None) -> pa.Table:
+        """Per-day tradability/membership flags.
+
+        ⚠ 大表必须过滤(调用守则 §2):symbols 与 (start, end) 至少传其一;
+        ``columns`` (WP2.2 P2 顺手项) 只取需要的 flag 列。
+        """
         filters = []
         if (c := _in_clause("t.symbol", symbols)):
             filters.append(c)
@@ -620,7 +795,8 @@ class DataReader:
         if end is not None:
             filters.append(f"t.date <= {_date_lit(end)}")
         return self._current_view(
-            get_spec("raw.universe"), filters, extras_as_columns, order_by="date, symbol"
+            get_spec("raw.universe"), filters, extras_as_columns, order_by="date, symbol",
+            projection=list(dict.fromkeys(columns)) if columns is not None else None,
         )
 
     def read_calendar(self, market=None, start=None, end=None) -> pa.Table:
@@ -673,12 +849,71 @@ class DataReader:
                      extras_as_columns=None, order_by=None,
                      post_filters: list[str] | None = None,
                      dedup_order: str | None = None,
-                     limit: int | None = None, offset: int = 0) -> pa.Table:
+                     limit: int | None = None, offset: int = 0,
+                     projection: list[str] | None = None) -> pa.Table:
         return self._current_view(
             get_spec(table_name), filters, extras_as_columns, order_by,
             dedup_order=dedup_order, post_filters=post_filters,
-            limit=limit, offset=offset,
+            limit=limit, offset=offset, projection=projection,
         )
+
+    def current_view_columns(self, table_name: str) -> set[str]:
+        """Column names the current view can actually serve — metadata only.
+
+        Union of the physical parquet schemas minus partition helpers; reads
+        file FOOTERS, never row data, so "does this column exist yet?" checks
+        (preflight 列存在性、universe flag 探测) stay O(metadata) instead of
+        materialising a table just to look at ``.columns`` (方案 WP3.3).
+        Empty view ⇒ the table spec's declared columns.
+        """
+        spec = get_spec(table_name)
+        files = storage.list_data_files(spec, self.root)
+        if not files:
+            return set(spec.all_names())
+        return _union_columns(files) - set(spec.partition_names())
+
+    def current_view_sql(self, table_name: str,
+                         filters: list[str] | None = None) -> str | None:
+        """Self-contained SELECT text of the current view (no bound params).
+
+        File list, valid batch ids and source priorities are inlined as escaped
+        literals so the text can back a ``CREATE TEMP VIEW`` — the zero-
+        materialisation building block the invariants sweeper composes multi-
+        table checks from (方案 WP1.2 长期改写). Returns ``None`` when the view
+        is empty (caller registers an empty table instead). Trusted in-repo
+        callers only — this is NOT part of the sanctioned business read API.
+        """
+        spec = get_spec(table_name)
+        files = storage.list_data_files(spec, self.root)
+        valid_ids = [
+            b["batch_id"]
+            for b in batches.list_batches(target_table=spec.name, status="success", root=self.root)
+        ]
+        prio = sources.priority_map(self.root)
+        if not files or not valid_ids or not prio:
+            return None
+        files_sql = "[" + ", ".join(_str_lit(f) for f in files) + "]"
+        batches_sql = ", ".join(_str_lit(b) for b in valid_ids)
+        prio_sql = ", ".join(f"({_str_lit(s)}, {int(p)})" for s, p in prio.items())
+        where = [f"t._batch_id IN ({batches_sql})"] + (filters or [])
+        pk = ", ".join(spec.primary_key)
+        excepts = ["rn", "_src_priority", *spec.partition_names()]
+        except_sql = f" EXCLUDE ({', '.join(_ident(c) for c in excepts)})"
+        return f"""
+        WITH dwp AS (
+            SELECT t.*, p.priority AS _src_priority
+            FROM read_parquet({files_sql}, hive_partitioning=true, union_by_name=true) t
+            JOIN (VALUES {prio_sql}) p(source_id, priority) ON t._source = p.source_id
+            WHERE {' AND '.join(where)}
+        ),
+        ranked AS (
+            SELECT *, ROW_NUMBER() OVER (
+                PARTITION BY {pk} ORDER BY {self._DEFAULT_DEDUP}
+            ) AS rn
+            FROM dwp
+        )
+        SELECT *{except_sql} FROM ranked WHERE rn = 1
+        """
 
     # -- web-platform read paths (doc §7.5 / §7.6 / §7.8) --------------------
     def _batches_arrow(self) -> pa.Table:

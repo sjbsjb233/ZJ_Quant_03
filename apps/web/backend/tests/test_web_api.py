@@ -739,11 +739,12 @@ def test_monitor_rules_list_and_admin_override(client, admin, editor, viewer):
     r = client.get("/api/v1/monitor/rules", headers=viewer)
     assert r.status_code == 200
     items = r.json()["items"]
-    # L0 + D1–D15 (可观测层重构方案 §6.5: 注册表扩到 16 条)
-    assert len(items) == 16
+    # L0 + D1–D16 (可观测层 §6.5 的 16 条 + 内存治理方案 WP5 新增 D16 准入闸滞留)
+    assert len(items) == 17
     ids = {it["id"] for it in items}
     assert {"L0.unreachable", "D1.oom_killed", "D2.restart_storm", "D7.deadman",
-            "D12.sentinel_offline", "D13.disk", "D14.cpu_saturation", "D15.core_dump"} <= ids
+            "D12.sentinel_offline", "D13.disk", "D14.cpu_saturation", "D15.core_dump",
+            "D16.admission_stuck"} <= ids
     # every rule carries a detector_owner; the new infra rules are sentinel-owned.
     by_id = {it["id"]: it for it in items}
     assert all("detector_owner" in it for it in items)
@@ -1164,3 +1165,121 @@ def test_explorer_data_unavailable_when_column_absent(client, admin, monkeypatch
     err = r.json()["error"]
     assert err["code"] == "DATA_UNAVAILABLE"
     assert err["details"]["column"] == "total_mv"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 内存治理总体方案 — WP1.3 /rows 变换路径收紧 + WP5 准入闸 + D16 (T-WP1-002 等)
+# ═══════════════════════════════════════════════════════════════════════════
+def test_wp1_002_transform_requires_symbols(client, admin):
+    """T-WP1-002: 全市场+宽窗+变换 ⇒ FILTER_REQUIRED_FOR_TRANSFORM (4xx 而非物化)。"""
+    for extra in ({"adjust": "post"}, {"adjust": "pre"}, {"recompute_adj": "true"}):
+        r = client.get("/api/v1/data/tables/raw.bars_daily/rows", headers=admin,
+                       params={"start": "2020-01-01", "end": "2030-01-01", **extra})
+        assert r.status_code == 400, extra
+        assert r.json()["error"]["code"] == "FILTER_REQUIRED_FOR_TRANSFORM"
+
+
+def test_wp1_002_single_symbol_transform_still_works(client, admin):
+    """T-WP1-002: 单票任意窗口的复权浏览功能不变。"""
+    r = client.get("/api/v1/data/tables/raw.bars_daily/rows", headers=admin,
+                   params={"symbols": "600519.SH", "adjust": "post", "limit": 5})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["items"] and body["total"] >= len(body["items"])
+    # 无变换路径(SQL 分页)不受新规则影响
+    r2 = client.get("/api/v1/data/tables/raw.bars_daily/rows", headers=admin,
+                    params={"start": "2020-01-01", "end": "2030-01-01", "limit": 5})
+    assert r2.status_code == 200
+
+
+def test_wp1_003_transform_row_cap(client, admin, monkeypatch):
+    """WP1.3 规则②: 物化行数 > WEB_TRANSFORM_ROW_CAP ⇒ 拒绝并引导缩小范围。"""
+    monkeypatch.setenv("WEB_TRANSFORM_ROW_CAP", "3")
+    r = client.get("/api/v1/data/tables/raw.bars_daily/rows", headers=admin,
+                   params={"symbols": "600519.SH", "adjust": "post", "limit": 5})
+    assert r.status_code == 400
+    err = r.json()["error"]
+    assert err["code"] == "TRANSFORM_ROW_CAP_EXCEEDED"
+    assert err["details"]["cap"] == 3 and err["details"]["rows"] > 3
+
+
+def test_wp1_003_recompute_adj_passthrough(client, admin, monkeypatch):
+    """WP1.3 规则③: recompute_adj 解析出的 symbols 必须透传给 read_bars_daily。"""
+    from quant_data import DataReader
+
+    calls: list[dict] = []
+    orig = DataReader.read_bars_daily
+
+    def spy(self, *a, **kw):
+        calls.append(kw)
+        return orig(self, *a, **kw)
+
+    monkeypatch.setattr(DataReader, "read_bars_daily", spy)
+    r = client.get("/api/v1/data/tables/raw.bars_daily/rows", headers=admin,
+                   params={"symbols": "600519.SH", "recompute_adj": "true", "limit": 3})
+    assert r.status_code == 200
+    hit = [c for c in calls if c.get("recompute_adj")]
+    assert hit, "recompute_adj 必须抵达 reader"
+    assert hit[0].get("symbols") == ["600519.SH"], "symbols 必须随 recompute_adj 透传"
+
+
+def test_wp5_admission_deferred_returns_429_with_retry_after(client, admin, monkeypatch):
+    """WP5 接入点③: 闸 Deferred ⇒ 429 + Retry-After (变换路径)。"""
+    from quant_admission import AdmissionGate
+
+    from quant_web import deps as deps_mod
+
+    class Saturated:
+        def limit_mb(self):
+            return 100.0
+
+        def available_mb(self):
+            return 1.0
+
+    gate = AdmissionGate(budgets={"web.rows.transform": 1200}, reserve_mb=0,
+                         probe=Saturated())
+    monkeypatch.setattr(deps_mod, "_admission_gate", gate)
+    r = client.get("/api/v1/data/tables/raw.bars_daily/rows", headers=admin,
+                   params={"symbols": "600519.SH", "adjust": "post", "limit": 3})
+    assert r.status_code == 429
+    assert r.json()["error"]["code"] == "ADMISSION_DEFERRED"
+    assert int(r.headers["Retry-After"]) >= 1
+    # 闸恢复 ⇒ 请求恢复 (退避语义,不是永久拒绝)
+    monkeypatch.setattr(deps_mod, "_admission_gate", AdmissionGate(
+        budgets={"web.rows.transform": 1}, reserve_mb=0))
+    r2 = client.get("/api/v1/data/tables/raw.bars_daily/rows", headers=admin,
+                    params={"symbols": "600519.SH", "adjust": "post", "limit": 3})
+    assert r2.status_code == 200
+
+
+def test_wp5_d16_admission_detector(client, admin):
+    """D16 评估器侧: 闸自报的 stuck/timeout 标记升为 active 告警条件。"""
+    import datetime as _dt
+
+    from quant_web.config import get_settings
+    from quant_web.db.base import SessionLocal
+    from quant_web.db.models import AppLog
+    from quant_web.monitor.evaluator import MonitorEvaluator
+
+    with SessionLocal() as db:
+        db.add(AppLog(ts=_dt.datetime.utcnow(), level="ERROR", logger="quant_admission",
+                      event="admission.deferred.stuck", source="factor",
+                      message="stuck",
+                      extra={"task_class": "factor.eval.daily", "waited_s": 700}))
+        db.add(AppLog(ts=_dt.datetime.utcnow(), level="ERROR", logger="quant_admission",
+                      event="admission.draining.timeout", source="data",
+                      message="drain",
+                      extra={"draining_s": 2400}))
+        db.commit()
+
+    ev = MonitorEvaluator.__new__(MonitorEvaluator)
+    ev._s = get_settings()
+    ev._sf = SessionLocal
+    active: dict = {}
+    ev._d16_admission(active, {})
+    assert ("D16.admission_stuck", "factor", "factor.eval.daily") in active
+    assert ("D16.admission_stuck", "data", "draining") in active
+    stuck = active[("D16.admission_stuck", "factor", "factor.eval.daily")]
+    drain = active[("D16.admission_stuck", "data", "draining")]
+    assert stuck["severity"] == "warn" and drain["severity"] == "error"
+    assert stuck["detail"]["deferred_min"] == 10  # 阈值随 settings 渲染进 detail

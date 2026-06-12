@@ -19,6 +19,7 @@ class BookToPrice(Factor):
     direction = 1
     requires_pit = True
     dependencies = ("raw.bars_daily", "raw.fundamentals")
+    required_columns = ("close",)          # 内存治理 WP3.1 (bars 侧;fundamentals 走 PIT 读)
     param_schema = {}
     display_name = "账面市值比 (BP)"
     description = "Most-recently-published bps / today's close — PIT"

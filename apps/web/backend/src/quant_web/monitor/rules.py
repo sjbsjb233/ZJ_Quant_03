@@ -159,6 +159,17 @@ RULES: tuple[Rule, ...] = (
         (Param("rw_gb", "可写层 G GiB", "core_dump_rw_gb"),),
         detector_owner="sentinel",
     ),
+    # ── D16 准入闸滞留 (内存治理方案 WP5) ───────────────────────────────────
+    Rule(
+        "D16.admission_stuck", "准入闸滞留", "评估器", "warn", "data",
+        "内存准入闸长时间放不进任务 —— 重任务持续 deferred 或排干模式超时,"
+        "说明预算表/在跑任务体量与容器内存不匹配 (内存治理方案 WP5)。",
+        "Td = 同一 task_class deferred 滞留分钟阈值 · Tr = 排干滞留分钟阈值。"
+        "闸自报 admission.deferred.stuck / admission.draining.timeout 事件即触发,"
+        "事件停止后自动 resolve。阈值经 ADMISSION_* env 同步下发到闸与本页。",
+        (Param("deferred_min", "deferred 超 Td 分", "admission_deferred_warn_min"),
+         Param("draining_min", "排干超 Tr 分", "admission_draining_warn_min")),
+    ),
 )
 
 RULES_BY_ID: dict[str, Rule] = {r.id: r for r in RULES}

@@ -137,6 +137,12 @@ class Settings(BaseSettings):
     cpu_sat_pct: int = 90                        # D14 CPU 饱和阈值
     cpu_sat_for_sec: int = 120                   # D14 须持续秒数
     core_dump_rw_gb: float = 2.0                 # D15 可写层突增 ≥ G → 疑似 core-dump
+
+    # --- D16 准入闸滞留 (内存治理方案 WP5) -----------------------------------
+    # 阈值与 quant_admission 同名 env (ADMISSION_*) 同源,compose 同时下发两侧:
+    # 闸自报 stuck/timeout 事件 (app_log),评估器把持续出现的标记升为告警。
+    admission_deferred_warn_min: int = 10        # 同 task_class deferred 持续 > Td 分
+    admission_draining_warn_min: int = 30        # 排干模式持续 > Tr 分
     liveness_probe_timeout_sec: int = 2          # L0 存活探测超时秒
 
     @property

@@ -18,6 +18,7 @@ class Mom(Factor):
     direction = 1
     requires_pit = False
     dependencies = ("raw.bars_daily",)
+    required_columns = ("close",)          # 内存治理 WP3.1: 面板列投影
     param_schema = {
         "window": (int, 20),
         "skip": (int, 1),
@@ -49,6 +50,7 @@ class Reversal(Factor):
     direction = -1
     requires_pit = False
     dependencies = ("raw.bars_daily",)
+    required_columns = ("close",)          # 内存治理 WP3.1
     param_schema = {"window": (int, 20)}
     display_name = "N 日反转"
     description = "Negative short-window momentum — reversal of recent moves"
@@ -78,6 +80,8 @@ class TurnoverN(Factor):
     direction = -1  # high turnover historically associated with weaker returns
     requires_pit = False
     dependencies = ("raw.bars_daily",)
+    # float_share 可能未入库 — 读取层会自动剔缺列,本因子按列缺失走 volume 兜底
+    required_columns = ("volume", "float_share")   # 内存治理 WP3.1
     param_schema = {"window": (int, 20)}
     display_name = "N 日换手率"
     description = "rolling mean of volume / float_share over N days"

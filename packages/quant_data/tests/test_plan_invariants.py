@@ -195,16 +195,27 @@ def test_inv203_bar_after_delist(standard_world):
     assert _by(invariants.check_all(root=root), "INV-203").severity == "FATAL"
 
 
-# --- OOM guard (2026-06 memory audit) ---------------------------------------
-def test_guard_blocks_oversized_sweep(standard_world, monkeypatch):
-    """check_all must fail fast (not OOM) when the current view exceeds the
-    row budget; QUANT_INVARIANTS_ALLOW_LARGE overrides."""
-    root = standard_world["root"]
-    # tiny budget -> the standard world already exceeds it
-    monkeypatch.setenv("QUANT_INVARIANTS_MAX_ROWS", "1")
-    monkeypatch.delenv("QUANT_INVARIANTS_ALLOW_LARGE", raising=False)
-    with pytest.raises(RuntimeError, match="would materialise"):
-        invariants.check_all(root=root)
-    # explicit override lets the sweep run again
-    monkeypatch.setenv("QUANT_INVARIANTS_ALLOW_LARGE", "1")
-    assert invariants.check_all(root=root) == []
+# --- OOM 防线 (内存治理方案 WP1.2) ------------------------------------------
+# 旧的 row-budget guard 防的是"先物化后炸";聚合化重写后大表只作为引擎内
+# temp view 参与,物化点已不存在,guard 按其自身契约 ("rewrite 后启用") 退役。
+# 新防线 = 服务进程隔离:不再从包导出 + 模块级禁止警告 + CI grep apps/。
+def test_invariants_not_exported_from_package():
+    import quant_data
+
+    assert "invariants" not in quant_data.__all__
+    # the module is reachable only as an explicit submodule import (tests/离线)
+    assert "禁止在服务进程调用" in invariants.__doc__
+
+
+def test_viol_fetches_count_plus_sample_only(standard_world, root):
+    """_viol must report the FULL count but carry at most 5 samples — the
+    count+sample discipline that replaced whole-violation-set to_pylist."""
+    ctx = invariants._Ctx(root=root)
+    v = invariants._viol(
+        ctx.con, "INV-TEST", invariants.WARN, "raw.bars_daily",
+        "every bar row (synthetic always-true predicate)",
+        "SELECT date, symbol FROM bd",
+    )
+    assert v is not None
+    assert v.count > 5            # full count preserved …
+    assert len(v.samples) == 5    # … but only 5 rows ever reach Python

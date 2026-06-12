@@ -1,5 +1,12 @@
 """Data-quality invariant sweeper (doc §8).
 
+⚠ 禁止在服务进程调用 (内存治理方案 WP1.2)
+==========================================
+本模块是离线/测试用的全库扫描器:每条 invariant 都是一次全表级引擎扫描,
+CPU 重、IO 重。接进 web/keeper/factor 任一服务进程 = 复刻 2026-06-01
+table_stats 崩溃循环。CI 对 ``apps/`` 下的 ``quant_data.invariants`` 引用
+直接判失败;``quant_data.__init__`` 也不再导出本模块。
+
 Invariants are conditions that must hold in *any* state. Each is expressed as a
 query; a violation reports the count + a small sample. Severity is FATAL (data
 is corrupt / unusable) or WARN (suspicious, investigate). Intended to run as a
@@ -11,13 +18,20 @@ Scope decisions:
     invalidated batch is allowed to contain the bad data that got it invalidated.
   * Structural invariants (_batch_id/_source presence, orphan files) run over the
     **physical files**, so they catch corruption even inside valid batches.
+
+内存治理 (WP1.2 长期改写): the sweep used to materialise every table's full
+current view into the Python heap (``con.register`` of Arrow tables) and
+``.to_pylist()`` every violation set (~15GB on prod). The big raw tables are
+now exposed as DuckDB **temp views** over :meth:`DataReader.current_view_sql`
+(zero materialisation; multi-table joins run inside the engine under
+``memory_limit``), and every check fetches COUNT(*) + a 5-row sample instead
+of the whole violation set. ``to_pylist`` survives only on the ≤5-row samples.
 """
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 
-from . import config, storage
+from . import storage
 from .metadata import batches as batches_mod
 from .metadata import field_registry as fr_mod
 from .metadata import sources as sources_mod
@@ -27,37 +41,8 @@ from .schemas import BATCHES, FIELD_REGISTRY, RAW_TABLES, SOURCES, get_spec
 FATAL = "FATAL"
 WARN = "WARN"
 
-# check_all/_Ctx load every table's full current view into memory at once (and
-# _viol materialises each query result via to_pylist), so on production-scale
-# raw tables it OOM-kills a memory-limited container before any check runs. The
-# sweep has no production caller today; this guard makes accidental wiring fail
-# fast with a clear message instead of triggering a multi-table OOM. Properly
-# enabling it needs a streaming / COUNT(*)+sample rewrite of _Ctx and _viol.
-_DEFAULT_MAX_INVARIANT_ROWS = 2_000_000
-_INVARIANT_BIG_TABLES = (
-    "raw.bars_daily", "raw.universe", "raw.fundamentals", "raw.corporate_actions",
-)
-
-
-def _max_invariant_rows() -> int:
-    # Read at call time so the limit is configurable without re-importing.
-    return int(os.environ.get("QUANT_INVARIANTS_MAX_ROWS", _DEFAULT_MAX_INVARIANT_ROWS))
-
-
-def _guard_dataset_size(reader: DataReader) -> None:
-    if os.environ.get("QUANT_INVARIANTS_ALLOW_LARGE", "").lower() in ("1", "true", "yes"):
-        return
-    limit = _max_invariant_rows()
-    for table in _INVARIANT_BIG_TABLES:
-        n = reader.count_current_view(get_spec(table))
-        if n > limit:
-            raise RuntimeError(
-                f"invariants.check_all would materialise {table} ({n:,} rows > "
-                f"{limit:,}) into memory and OOM a memory-limited container. This "
-                "sweep is not production-wired; rewrite _Ctx/_viol for "
-                "streaming/COUNT+sample before enabling it, or set "
-                "QUANT_INVARIANTS_ALLOW_LARGE=1 to override deliberately."
-            )
+# tolerance for stored-vs-derived adj_factor comparison (INV-202)
+_ADJ_TOL = 1e-6
 
 
 @dataclass
@@ -74,31 +59,54 @@ class Violation:
 
 
 def _viol(con, inv, sev, table, msg, sql, params=None) -> Violation | None:
-    rows = con.execute(sql, params or []).to_arrow_table().to_pylist()
-    if not rows:
+    """COUNT(*) + a 5-row sample of the violating set — never the whole set.
+
+    The violation query itself can match millions of rows; pulling them all
+    through ``.to_pylist()`` was one of the WP1.2 blow-up points. Counting and
+    sampling are two engine passes over the same (pushed-down) query.
+    """
+    n = int(con.execute(f"SELECT COUNT(*) FROM ({sql})", params or []).fetchone()[0])
+    if not n:
         return None
-    return Violation(inv, sev, table, msg, len(rows), rows[:5])
+    samples = (
+        con.execute(f"SELECT * FROM ({sql}) LIMIT 5", params or [])
+        .to_arrow_table()
+        .to_pylist()
+    )
+    return Violation(inv, sev, table, msg, n, samples)
 
 
 class _Ctx:
-    """Registers current views + metadata as DuckDB relations for one sweep."""
+    """Exposes current views as DuckDB TEMP VIEWS + small metadata relations.
+
+    Big raw tables (bd/fd/un/cal/ca) are temp views over the self-contained
+    current-view SQL — nothing is materialised; every invariant (including the
+    bd×un / bd×cal joins) runs wholly inside the engine. Mutable reference
+    dictionaries (sym/sec) are single small files and stay registered tables.
+    """
 
     def __init__(self, root=None):
         self.root = root
-        self.con = config.connect_duckdb()
-        rd = DataReader(root=root)
-        _guard_dataset_size(rd)
-        self._reg("bd", rd.read_bars_daily())
-        self._reg("fd", rd.current_view("raw.fundamentals"))
-        self._reg("un", rd.read_universe())
-        self._reg("cal", rd.read_calendar())
-        self._reg("ca", rd.current_view("raw.corporate_actions"))
-        self._reg("sym", rd.read_symbols())
-        self._reg("sec", rd.read_sectors())
+        self.reader = DataReader(root=root)
+        self.con = self.reader._con
+        self._view("bd", "raw.bars_daily")
+        self._view("fd", "raw.fundamentals")
+        self._view("un", "raw.universe")
+        self._view("cal", "raw.calendar")
+        self._view("ca", "raw.corporate_actions")
+        self._reg("sym", self.reader.read_symbols())
+        self._reg("sec", self.reader.read_sectors())
         # metadata via the table spec so empty tables still carry the right columns
         self._reg("batches", storage.normalize_to_arrow(BATCHES, batches_mod.list_batches(root=root)))
         self._reg("sources", storage.normalize_to_arrow(SOURCES, sources_mod.list_sources(root=root)))
         self._reg("fieldreg", storage.normalize_to_arrow(FIELD_REGISTRY, fr_mod.list_fields(root=root)))
+
+    def _view(self, name, table):
+        sql = self.reader.current_view_sql(table)
+        if sql is None:  # empty view → schema-correct empty relation
+            self._reg(name, self.reader._empty(get_spec(table), None))
+        else:
+            self.con.execute(f"CREATE OR REPLACE TEMP VIEW {name} AS {sql}")
 
     def _reg(self, name, tbl):
         self.con.register(name, tbl)
@@ -184,7 +192,7 @@ def check_all(root=None) -> list[Violation]:
                      "bar after symbol delist_date",
                      "SELECT b.date,b.symbol FROM bd b JOIN sym s USING(symbol) "
                      "WHERE s.delist_date IS NOT NULL AND b.date>s.delist_date"))
-    out += _adj_factor_consistency(root)
+    out.append(_adj_factor_consistency(ctx))
 
     return [v for v in out if v is not None]
 
@@ -226,25 +234,28 @@ def _supersede_cycles(root) -> list[Violation]:
     return [None]
 
 
-def _adj_factor_consistency(root, tol=1e-6) -> list[Violation]:
+def _adj_factor_consistency(ctx: _Ctx) -> Violation | None:
+    """INV-202: stored adj_factor vs corporate_actions-derived — in-engine.
+
+    The legacy path ``.to_pylist()``-ed BOTH the full bars table and the full
+    derived table into Python dicts and diffed them row by row. Now the derived
+    table (3 columns, the unavoidable output of :func:`compute_adj_factors`,
+    itself engine-computed per WP1.1) is registered and compared in SQL; only
+    COUNT + 5 samples ever reach Python.
+    """
     from . import corporate
 
-    rd = DataReader(root=root)
-    stored = {(r["symbol"], r["date"]): r.get("adj_factor")
-              for r in rd.read_bars_daily(adjust="none").to_pylist()}
-    if not stored:
-        return [None]
-    derived = {(r["symbol"], r["date"]): r["adj_factor"]
-               for r in corporate.compute_adj_factors(root=root).to_pylist()}
-    bad = []
-    for key, s in stored.items():
-        d = derived.get(key)
-        if s is not None and d is not None and abs(s - d) > tol:
-            bad.append({"symbol": key[0], "date": key[1].isoformat(), "stored": s, "derived": d})
-    if bad:
-        return [Violation("INV-202", WARN, "raw.bars_daily",
-                          "stored adj_factor != corporate_actions-derived", len(bad), bad[:5])]
-    return [None]
+    derived = corporate.compute_adj_factors(reader=ctx.reader, root=ctx.root)
+    ctx.con.register("_inv_derived", derived)
+    return _viol(
+        ctx.con, "INV-202", WARN, "raw.bars_daily",
+        "stored adj_factor != corporate_actions-derived",
+        "SELECT b.symbol, CAST(b.date AS VARCHAR) AS date, "
+        "b.adj_factor AS stored, d.adj_factor AS derived "
+        "FROM bd b JOIN _inv_derived d USING (symbol, date) "
+        "WHERE b.adj_factor IS NOT NULL AND d.adj_factor IS NOT NULL "
+        f"AND abs(b.adj_factor - d.adj_factor) > {_ADJ_TOL}",
+    )
 
 
 def fatal(root=None) -> list[Violation]:

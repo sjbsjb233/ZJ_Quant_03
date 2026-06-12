@@ -26,6 +26,20 @@ from typing import Any, Iterable
 import polars as pl
 
 
+def _engine_log(event: str, **fields) -> None:
+    """Structured engine log via quant_data's chain (no-op if unavailable).
+
+    quant-data is a declared dependency, but the guard keeps reader-agnostic
+    test rigs importable in odd environments.
+    """
+    try:
+        from quant_data.logging import get_logger
+
+        get_logger("quant_factor.engine").info(event, **fields)
+    except Exception:  # noqa: BLE001 - logging must never break a run
+        pass
+
+
 class RunCancelled(Exception):
     """Raised by the engine cancellation check to unwind a running evaluation."""
 
@@ -39,6 +53,20 @@ class FactorContext:
     Wraps DataReader, converts pyarrow.Table -> pl.DataFrame at the boundary
     (zero-copy, both share Arrow memory), and forces PIT semantics for
     fundamentals (as_of must be supplied).
+
+    内存治理 (《内存治理总体方案》WP3.2) — 面板缓存 + 列投影:
+      * ``bars()`` memoises per ``(adjust, frozenset(columns))`` — the engine
+        reads the evaluation panel ONCE and every same-口径 re-read (factor
+        compute, forward returns, per-day PIT slices) is a cache hit. 每评估
+        bars 全量读: H+3 → 1。
+      * ``set_default_columns`` carries the engine-computed projection
+        (factor.required_columns ∪ 收益价列); factors that did not declare
+        required_columns keep the legacy full-column read (回退全列,结果不变,
+        不进台账 — 性能行为不污染降级语义, 方案 §2.4)。
+      * a projected column the data does not carry is dropped with a log and
+        the read retried — same observable behaviour as the legacy full read
+        (the column simply wasn't in the frame), so column-fallback factors
+        (TurnoverN/LogMktCap) keep their own degradation semantics.
     """
 
     def __init__(
@@ -48,6 +76,7 @@ class FactorContext:
         start: dt.date,
         end: dt.date,
         ledger=None,
+        default_columns: list[str] | None = None,
     ):
         self._reader = reader
         self.symbols = list(symbols)
@@ -57,14 +86,59 @@ class FactorContext:
         # controlled degradation (e.g. a field fallback) rather than silently
         # changing semantics. None during validation / standalone use.
         self.ledger = ledger
+        self._default_columns = list(default_columns) if default_columns else None
+        self._panel_cache: dict[tuple, pl.DataFrame] = {}
+
+    def set_default_columns(self, columns: list[str] | None) -> None:
+        """Engine hook (WP3.1): the projection ``bars()`` uses when the factor
+        code doesn't pass one explicitly. ``None`` = legacy full read."""
+        self._default_columns = list(columns) if columns else None
 
     # ── raw / reference reads ────────────────────────────────────────────
-    def bars(self, adjust: str = "post") -> pl.DataFrame:
-        """Daily bars on [start, end], post-adjusted by default for continuity."""
-        tbl = self._reader.read_bars_daily(
-            symbols=self.symbols, start=self.start, end=self.end, adjust=adjust
-        )
-        return pl.from_arrow(tbl)
+    def bars(self, adjust: str = "post", columns: list[str] | None = None) -> pl.DataFrame:
+        """Daily bars on [start, end], post-adjusted by default for continuity.
+
+        Cached per (adjust, columns) — repeated same-口径 calls within one
+        evaluation cost zero reads (WP3.2). Do NOT mutate the returned frame
+        in place (polars ops return new frames, so idiomatic code is safe).
+        """
+        cols = columns if columns is not None else self._default_columns
+        key = (adjust, tuple(sorted(cols)) if cols is not None else None)
+        hit = self._panel_cache.get(key)
+        if hit is not None:
+            return hit
+        df = pl.from_arrow(self._read_bars(cols, adjust))
+        self._panel_cache[key] = df
+        return df
+
+    def _read_bars(self, cols: list[str] | None, adjust: str):
+        """Projected read with drop-missing-column retry (see class docstring)."""
+        cols = list(cols) if cols is not None else None
+        while True:
+            try:
+                return self._reader.read_bars_daily(
+                    symbols=self.symbols, start=self.start, end=self.end,
+                    adjust=adjust, columns=cols,
+                )
+            except TypeError:
+                # reader without columns support (older fakes/stubs) → full read
+                return self._reader.read_bars_daily(
+                    symbols=self.symbols, start=self.start, end=self.end, adjust=adjust,
+                )
+            except ValueError as e:
+                # ColumnNotInViewError subclasses ValueError: a declared-but-
+                # not-ingested column (e.g. market-cap pre-backfill). Dropping
+                # it reproduces the legacy full read's observable shape — the
+                # column was absent there too; factor-level fallbacks fire as
+                # before. Any other ValueError re-raises untouched.
+                missing = getattr(e, "column", None)
+                if not (cols and missing and missing in cols):
+                    raise
+                cols = [c for c in cols if c != missing]
+                _engine_log("factor.columns.missing", column=missing,
+                            remaining=list(cols))
+                if not cols:
+                    cols = None
 
     def fundamentals(self, as_of: dt.date) -> pl.DataFrame:
         """PIT fundamentals — only rows where publish_date <= as_of are returned."""
@@ -105,6 +179,11 @@ class Factor(abc.ABC):
         direction       : +1 if larger = better, -1 if smaller = better
         requires_pit    : True for fundamental factors; engine slices per day
         dependencies    : raw tables this factor reads; declared for governance
+        required_columns: bars columns compute() actually uses (内存治理 WP3.1,
+                          与 dependencies 同级治理). The engine projects the
+                          evaluation panel to required_columns ∪ 收益价列;
+                          undeclared (empty) ⇒ legacy full-column read + a
+                          ``factor.columns.fallback`` log (结果不变,不进台账).
         param_schema    : {name: (type, default)}; UI form generated from this
         display_name    : (optional) human-readable label
         description     : (optional) short description shown in UI
@@ -115,6 +194,7 @@ class Factor(abc.ABC):
     direction: int = 1
     requires_pit: bool = False
     dependencies: tuple[str, ...] = ("raw.bars_daily",)
+    required_columns: tuple[str, ...] = ()
     param_schema: dict[str, tuple[type, Any]] = {}
     display_name: str = ""
     description: str = ""

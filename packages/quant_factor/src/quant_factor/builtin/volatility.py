@@ -13,6 +13,7 @@ class Volatility(Factor):
     direction = -1
     requires_pit = False
     dependencies = ("raw.bars_daily",)
+    required_columns = ("close",)          # 内存治理 WP3.1
     param_schema = {"window": (int, 60)}
     display_name = "N 日波动率"
     description = "rolling stdev of daily log returns over N days"

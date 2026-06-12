@@ -94,7 +94,7 @@ class MonitorEvaluator:
         overrides = self._overrides()
         for detector in (self._consume_sentinel_conditions, self._d5_d6_jobs,
                          self._d8_error_rate, self._d9_pipeline, self._d10_silence,
-                         self._d11_fe_crash, self._d12_sentinel):
+                         self._d11_fe_crash, self._d12_sentinel, self._d16_admission):
             try:
                 detector(active, overrides)
             except Exception:  # noqa: BLE001 - one bad detector can't stop the rest
@@ -296,6 +296,45 @@ class MonitorEvaluator:
                 "title": f"哨兵离线 · 心跳 {int(silent)}s 未更新 (阈值 {sh}s)",
                 "detail": {"sentinel_last_seen": str(last), "silent_sec": int(silent),
                            "threshold": sh},
+            }
+
+    # -- D16 admission gate stuck (内存治理方案 WP5) --------------------------
+    def _d16_admission(self, active: dict, overrides: dict) -> None:
+        """准入闸滞留:闸自报的 stuck/timeout 标记升为告警。
+
+        quant_admission 在 deferred 滞留 > Td / 排干 > Tr 后,每 ~60s 重报
+        ``admission.deferred.stuck`` / ``admission.draining.timeout``(ERROR,
+        经统一日志链落 app_log)。这里把近窗仍在出现的标记钉成 active 条件 ——
+        闸放行后标记停发,现有 auto_resolve 生命周期自动关闭它(方案 WP5 D16)。
+        """
+        if not self._enabled(overrides, "D16.admission_stuck"):
+            return
+        since = dt.datetime.utcnow() - dt.timedelta(minutes=5)  # 标记每 ~60s 重报
+        with self._sf() as db:
+            rows = (db.query(AppLog)
+                    .filter(AppLog.ts >= since,
+                            AppLog.event.in_(("admission.deferred.stuck",
+                                              "admission.draining.timeout")))
+                    .order_by(AppLog.ts.desc()).limit(50).all())
+        td = self._p(overrides, "D16.admission_stuck", "deferred_min", 10)
+        tr = self._p(overrides, "D16.admission_stuck", "draining_min", 30)
+        for r in rows:
+            extra = r.extra or {}
+            draining = r.event == "admission.draining.timeout"
+            target = "draining" if draining else (extra.get("task_class") or "unknown")
+            key = ("D16.admission_stuck", r.source or "data", target)
+            if key in active:
+                continue  # newest marker per target wins (rows are ts-desc)
+            waited = extra.get("draining_s") if draining else extra.get("waited_s")
+            active[key] = {
+                "severity": "error" if draining else "warn",
+                "title": (
+                    f"准入闸排干超时 {waited}s (阈值 {tr}m)" if draining
+                    else f"任务类 {target} deferred 滞留 {waited}s (阈值 {td}m)"
+                ),
+                "detail": {"event": r.event, **extra,
+                           "deferred_min": td, "draining_min": tr},
+                "trace_id": r.trace_id,
             }
 
     # -- side effects on lifecycle transitions -------------------------------

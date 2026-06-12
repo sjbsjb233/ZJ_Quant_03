@@ -212,6 +212,67 @@ def claim_next_filtered(
         # No backoff needed: the outer SELECT will skip the now-running row.
 
 
+def peek_next_filtered(
+    db: Session, allow_routine: bool, exclude_ids: set[str] | None = None
+) -> Task | None:
+    """The task ``claim_next_filtered`` WOULD claim — without claiming it.
+
+    内存治理 WP5 接入点①: the dispatcher peeks, asks the admission gate for the
+    task's memory class, and only claims on a Grant. ``exclude_ids`` skips
+    tasks already deferred this fill-round so lighter work behind a deferred
+    heavy task can still be inspected (排干模式下 dispatcher 整体停手,见
+    dispatcher). Selection order/predicates mirror claim_next_filtered exactly.
+    """
+    excl = ""
+    params: dict[str, Any] = {}
+    if exclude_ids:
+        names = []
+        for i, tid in enumerate(sorted(exclude_ids)):
+            key = f"x{i}"
+            params[key] = tid
+            names.append(f":{key}")
+        excl = f" AND task_id NOT IN ({', '.join(names)})"
+    with _db_base.engine.begin() as conn:
+        sql = f"""
+          SELECT task_id FROM tasks
+          WHERE status='queued' AND lane='interactive'
+            AND (gate='ready' OR gate IS NULL){excl}
+          ORDER BY priority DESC, created_at ASC LIMIT 1
+        """
+        row = conn.execute(text(sql), params).fetchone()
+        if row is None and allow_routine:
+            sql_r = f"""
+              SELECT task_id FROM tasks
+              WHERE status='queued' AND lane='routine'
+                AND (gate='ready' OR gate IS NULL){excl}
+              ORDER BY priority DESC, created_at ASC LIMIT 1
+            """
+            row = conn.execute(text(sql_r), params).fetchone()
+    return db.get(Task, row[0]) if row is not None else None
+
+
+def claim_task(db: Session, task_id: str, worker_id: str) -> Task | None:
+    """Claim ONE specific task (post-admission). None if it was taken/changed.
+
+    The ``AND status='queued'`` predicate stays the race arbiter, same as the
+    claim_next family — a stale peek simply yields None and the caller loops.
+    """
+    with _db_base.engine.begin() as conn:
+        result = conn.execute(
+            text(
+                """UPDATE tasks SET status='running', worker_id=:w,
+                   started_at=:t, heartbeat_at=:t, attempt=attempt+1
+                   WHERE task_id=:id AND status='queued'"""
+            ),
+            {"w": worker_id, "t": _now(), "id": task_id},
+        )
+        claimed = result.rowcount == 1
+    if not claimed:
+        return None
+    db.commit()
+    return db.get(Task, task_id)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 def heartbeat(
     db: Session, task_id: str, *, current: int | None = None, total: int | None = None
