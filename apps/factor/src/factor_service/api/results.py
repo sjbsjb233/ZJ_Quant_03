@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from ..db.models import EvalSummary, FactorRun
 from ..deps import current_user, get_db
 from ..errors import ApiError
-from ..services import results_writer
+from ..services import resource_writer, results_writer
 
 
 router = APIRouter()
@@ -119,4 +119,47 @@ def run_trace(
     art["degradation_level"] = getattr(r, "degradation_level", "none") or "none"
     art["degradation_count"] = getattr(r, "degradation_count", 0) or 0
     art["has_critical"] = bool(getattr(r, "has_critical", False))
+    # 资源画像 meta (方案 §6): surface the run's factor/pool/window so the资源画像
+    # 区块标题行 + workload归一化 can render without an extra query.
+    art["factor_id"] = r.factor_id
+    art["version"] = r.version
+    return art
+
+
+@router.get("/runs/{run_id}/resources/samples")
+def run_resource_samples(
+    run_id: str, db: Session = Depends(get_db), user=Depends(current_user)
+) -> dict:
+    """全分辨率 1Hz 样本 (资源画像方案 §3.4) — 前端首次缩放时懒加载一次.
+
+    Decompresses the ``{run_id}.samples.json.gz`` artifact server-side and returns
+    plain JSON; an absent artifact yields ``available:false`` (not a 404) so the
+    timeline can fall back to its ≤300-point首屏 series gracefully.
+    """
+    r = db.get(FactorRun, run_id)
+    if r is None:
+        raise ApiError("RUN_NOT_FOUND", f"运行 {run_id} 不存在")
+    art = resource_writer.read_samples(run_id)
+    if art is None:
+        return {"run_id": run_id, "available": False, "samples": []}
+    art["available"] = True
+    return art
+
+
+@router.get("/runs/{run_id}/profile")
+def run_profile(
+    run_id: str, db: Session = Depends(get_db), user=Depends(current_user)
+) -> dict:
+    """函数级火焰图剖析数据 (资源画像方案 §3.5) — speedscope 兼容 + 预构火焰树.
+
+    Returns 404 when the run was NOT profiled (no ``{run_id}.profile.json.gz``),
+    so the frontend renders the「以剖析模式重跑」空态 (契约 §6).
+    """
+    r = db.get(FactorRun, run_id)
+    if r is None:
+        raise ApiError("RUN_NOT_FOUND", f"运行 {run_id} 不存在")
+    art = resource_writer.read_profile(run_id)
+    if art is None:
+        raise ApiError("PROFILE_NOT_FOUND",
+                       "此运行未开启性能剖析,无函数级火焰图数据", status_code=404)
     return art

@@ -40,6 +40,8 @@ from ..baskets import keys, ledger
 from ..baskets.correlation import compute_ic_correlation
 from ..baskets.snapshots import build_snapshot
 from ..queue import store
+from . import resource_writer
+from .resource_collector import ResourceCollector
 from .results_writer import write_degradations
 
 _log = logging.getLogger("factor.basket_executor")
@@ -126,7 +128,16 @@ def run_basket_eval(db, t: Task) -> dict[str, Any]:
 
     _qlog.info("brun.child.start", brun_id=p["brun_id"], item_key=item_key,
                factor_id=factor_id, run_id=run_id)
+    # 资源画像 (方案 §4): basket children also accrue a per-run summary so the篮子
+    # 成本排行表 can rank by精确 CPU + attribute peak内存. Best-effort, fail-safe.
+    collector = (
+        ResourceCollector(task_id=t.task_id, run_id=run_id,
+                          factor_id=factor_id, version=ver.version)
+        if settings.resource_sampling_enabled else None
+    )
+    _ns = [None]  # final symbol count for workload归一化 (filled after universe resolve)
     try:
+        rc = collector.begin("load") if collector else None
         cfg = EvalConfig.from_dict(cfg_dict)
         factor = _load_factor(rec, ver, params)
         uni_row = db.get(Universe, cfg.universe_id)
@@ -137,20 +148,26 @@ def run_basket_eval(db, t: Task) -> dict[str, Any]:
         if uni_row.kind == "custom":
             custom = [r[0] for r in db.query(UniverseMember.symbol)
                       .filter(UniverseMember.universe_id == uni_row.universe_id).all()]
+        _ns[0] = len(custom) if custom else None
 
         reader = DataReader(root=settings.quant_data_root)
         try:
             fp = data_fingerprint(reader, cfg)
         except Exception:  # noqa: BLE001
             fp = None
+        if collector:
+            collector.end(rc)
 
         # ── preflight gate (红线 inherited) ──────────────────────────────────
         dledger = None
+        rc = collector.begin("preflight") if collector else None
         if settings.preflight_enabled:
             try:
                 from quant_factor.universe import resolve_universe
                 uni = resolve_universe(reader, uni_def, custom, cfg.start, cfg.end)
                 symbols = sorted(uni["symbol"].unique().to_list()) if uni.height else list(custom or [])
+                if symbols:
+                    _ns[0] = len(symbols)
             except Exception:  # noqa: BLE001
                 symbols = list(custom or [])
             policy_overrides = (shared or {}).get("degradation_policy")
@@ -161,9 +178,13 @@ def run_basket_eval(db, t: Task) -> dict[str, Any]:
                     policy_overrides=policy_overrides,
                 )
             except PreflightBlocked as pb:
+                if collector:
+                    collector.end(rc)
                 return _finish_blocked(db, run, bri, t, pb)
         if dledger is None:
             dledger = DegradationLedger()
+        if collector:
+            collector.end(rc)
 
         def progress(c, n):
             store.heartbeat(db, t.task_id, current=int(c), total=int(n))
@@ -172,11 +193,15 @@ def run_basket_eval(db, t: Task) -> dict[str, Any]:
             db.refresh(t)
             return bool(t.cancel_requested)
 
+        rc = collector.begin("compute") if collector else None
         evaluator = FactorEvaluator(reader, ledger=dledger, progress_cb=progress,
                                     cancel_cb=cancelled)
         result = evaluator.evaluate(factor, cfg, uni_def, custom)
+        if collector:
+            collector.end(rc)
 
         # ── write the item ledger + derive settle/pending ────────────────────
+        rc = collector.begin("write") if collector else None
         idir = ledger.item_dir(settings.factor_store_root, basket_id, revision, item_key)
         counts = ledger.write_ledger(idir, result, int(cfg.primary_horizon))
         settled, pending, last_rebal = ledger.settled_split(result, int(cfg.primary_horizon))
@@ -208,6 +233,8 @@ def run_basket_eval(db, t: Task) -> dict[str, Any]:
         if bri:
             bri.status = final
         db.commit()
+        if collector:
+            collector.end(rc)
         # Write the degradations artifact too (not just DB rows) so the dedicated
         # /runs/{id}/degradations endpoint + run-detail drawer show basket-child
         # degradations — the live stack revealed this was DB-only before.
@@ -236,6 +263,25 @@ def run_basket_eval(db, t: Task) -> dict[str, Any]:
         db.commit()
         _qlog.error("brun.child.failed", exc=e, brun_id=p["brun_id"], item_key=item_key)
         raise
+    finally:
+        _finalize_child_resources(db, collector, run, cfg_dict, _ns[0], settings)
+
+
+def _finalize_child_resources(db, collector, run, run_config, n_symbols, settings) -> None:
+    """资源画像收尾 for a basket child (方案 §4) — summary/baseline + trace节. Fail-safe."""
+    if collector is None:
+        return
+    try:
+        from .resource_sampler import REGISTRY
+        resources = resource_writer.finalize_run_resources(
+            db, collector, run_config=run_config, task_type="basket_eval",
+            profiled=False, n_symbols=n_symbols,
+            admission=REGISTRY.get_admission(collector.task_id), settings=settings,
+        )
+        if resources is not None:
+            resource_writer.merge_resources_into_trace(run.run_id, resources)
+    except Exception:  # noqa: BLE001 - 收尾 best-effort, 绝不影响 run 终态
+        _log.warning("basket child resource finalize failed (non-fatal)", exc_info=True)
 
 
 def _finish_blocked(db, run, bri, t, pb) -> dict[str, Any]:

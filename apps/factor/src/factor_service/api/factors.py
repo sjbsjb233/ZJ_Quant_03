@@ -18,10 +18,12 @@ from ..db.models import (
     EvalSummary,
     FactorRecord,
     FactorVersion,
+    RunResourceSummary,
     Universe,
 )
-from ..deps import current_user, get_db, get_reader, require_editor
+from ..deps import current_user, get_db, get_reader, require_admin, require_editor
 from ..errors import ApiError
+from ..services import resource_baseline as _rbl
 
 
 router = APIRouter()
@@ -588,6 +590,67 @@ def factor_ic(
         items.append({"horizon": int(h), **stats})
     items.sort(key=lambda x: x["horizon"])
     return {"factor_id": factor_id, "run_id": run_id, "items": items}
+
+
+@router.get("/factors/{factor_id}/resource-baseline")
+def factor_resource_baseline(
+    factor_id: str,
+    signature: str | None = None,
+    class_signature: str | None = None,
+    db: Session = Depends(get_db),
+    user=Depends(require_admin),
+) -> dict:
+    """资源画像基线 (资源画像方案 §6) — 两级签名 stat 行 + 最近 10 次 run summary.
+
+    管理员可见 (性能分析定位为管理功能, 方案 §6 权限)。``signature`` =本次运行的
+    精确签名 (前端从 trace ``resources.summary`` 取得);省略时仅返回历史趋势点列。
+    """
+    def _stat(sig: str | None, kind: str) -> dict | None:
+        if not sig:
+            return None
+        st = _rbl.read_stat(db, sig, kind)
+        if st is None:
+            return None
+        return {
+            "signature": sig, "attribution_kind": kind,
+            "p50_peak_mb": round(st.p50_peak_mb, 1), "p90_peak_mb": round(st.p90_peak_mb, 1),
+            "p50_cpu_sec": round(st.p50_cpu_sec, 1), "p90_cpu_sec": round(st.p90_cpu_sec, 1),
+            "p50_peak_per_mrow": round(st.p50_peak_per_mrow, 1),
+            "p90_peak_per_mrow": round(st.p90_peak_per_mrow, 1),
+            "p50_cpu_sec_per_mrow": round(st.p50_cpu_sec_per_mrow, 2),
+            "p90_cpu_sec_per_mrow": round(st.p90_cpu_sec_per_mrow, 2),
+            "sample_n": st.sample_n, "version": st.version,
+        }
+
+    recent = (
+        db.query(RunResourceSummary)
+        .filter(RunResourceSummary.factor_id == factor_id)
+        .order_by(RunResourceSummary.created_at.desc())
+        .limit(10)
+        .all()
+    )
+    recent_pts = [{
+        "run_id": s.run_id, "version": s.version,
+        "peak_rss_mb": round(s.peak_rss_mb, 1), "peak_per_mrow": round(s.peak_per_mrow, 1),
+        "cpu_sec": round(s.cpu_sec, 1), "attribution": s.attribution,
+        "profiled": s.profiled,
+        "created_at": s.created_at.isoformat() + "Z" if s.created_at else None,
+    } for s in reversed(recent)]  # chronological for the trend line
+
+    return {
+        "factor_id": factor_id,
+        "signature": signature,
+        "class_signature": class_signature,
+        "exact": {
+            "exact": _stat(signature, "exact"),
+            "shared": _stat(signature, "shared"),
+        },
+        "klass": {
+            "exact": _stat(class_signature, "exact"),
+            "shared": _stat(class_signature, "shared"),
+        },
+        "recent": recent_pts,
+    }
 
 
 @router.get("/factors/{factor_id}/tracking")

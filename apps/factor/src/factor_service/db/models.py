@@ -244,6 +244,77 @@ class TaskDurationStat(Base):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 因子运行资源画像 (资源画像方案 v1.2 §4.2) — 两张小表, 永久留存.
+class RunResourceSummary(Base):
+    """One row per run — the CPU/memory profile rolled up at task wrap-up.
+
+    Drives the basket cost table aggregation (API现场聚合, 方案 §4.2) and feeds
+    the baseline stat below. ``attribution`` is the诚实归因等级: ``exact`` (solo
+    全程, RSS 增量可精确归因) or ``shared-N`` (并发期进程读数, 方案 §2)。
+    """
+
+    __tablename__ = "run_resource_summary"
+
+    run_id: Mapped[str] = mapped_column(String, primary_key=True)
+    factor_id: Mapped[str] = mapped_column(String, index=True)
+    version: Mapped[str] = mapped_column(String, default="")
+    signature: Mapped[str] = mapped_column(String, index=True, default="")
+    class_signature: Mapped[str] = mapped_column(String, index=True, default="")
+    attribution: Mapped[str] = mapped_column(String, default="exact")  # exact|shared-N
+    peak_rss_mb: Mapped[float] = mapped_column(Float, default=0.0)
+    cpu_sec: Mapped[float] = mapped_column(Float, default=0.0)
+    avg_cpu_pct: Mapped[float] = mapped_column(Float, default=0.0)
+    arrow_peak_mb: Mapped[float] = mapped_column(Float, default=0.0)
+    workload_mrows: Mapped[float] = mapped_column(Float, default=0.0)
+    peak_per_mrow: Mapped[float] = mapped_column(Float, default=0.0)
+    cpu_sec_per_mrow: Mapped[float] = mapped_column(Float, default=0.0)
+    concurrent_max: Mapped[int] = mapped_column(Integer, default=1)
+    sample_n: Mapped[int] = mapped_column(Integer, default=0)
+    profiled: Mapped[bool] = mapped_column(Boolean, default=False)
+    started_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_utcnow)
+
+    __table_args__ = (
+        Index("ix_rrs_factor", "factor_id"),
+        Index("ix_rrs_signature", "signature"),
+    )
+
+
+class RunResourceStat(Base):
+    """Per-signature p50/p90 baseline — mirrors ``task_duration_stat`` (方案 §5.2).
+
+    Two rows accrue per run: the精确基线 (factor@version|universe|freq|window) and
+    the同类基线 (task class). Comparison is on归一化 metrics so cross-config runs
+    are commensurable; ``exact`` and ``shared`` samples baseline separately.
+    """
+
+    __tablename__ = "run_resource_stat"
+
+    signature: Mapped[str] = mapped_column(String, primary_key=True)
+    attribution_kind: Mapped[str] = mapped_column(String, default="exact")  # exact|shared
+    factor_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
+    version: Mapped[str | None] = mapped_column(String, nullable=True)
+    p50_peak_mb: Mapped[float] = mapped_column(Float, default=0.0)
+    p90_peak_mb: Mapped[float] = mapped_column(Float, default=0.0)
+    p50_cpu_sec: Mapped[float] = mapped_column(Float, default=0.0)
+    p90_cpu_sec: Mapped[float] = mapped_column(Float, default=0.0)
+    p50_peak_per_mrow: Mapped[float] = mapped_column(Float, default=0.0)
+    p90_peak_per_mrow: Mapped[float] = mapped_column(Float, default=0.0)
+    p50_cpu_sec_per_mrow: Mapped[float] = mapped_column(Float, default=0.0)
+    p90_cpu_sec_per_mrow: Mapped[float] = mapped_column(Float, default=0.0)
+    # Rolling window of recent normalized samples for percentile recompute (方案 §5.2).
+    recent_peak_per_mrow: Mapped[list] = mapped_column(JSON, default=list)
+    recent_cpu_per_mrow: Mapped[list] = mapped_column(JSON, default=list)
+    recent_peak_mb: Mapped[list] = mapped_column(JSON, default=list)
+    recent_cpu_sec: Mapped[list] = mapped_column(JSON, default=list)
+    sample_n: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime, default=_utcnow, onupdate=_utcnow
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 class Universe(Base):
     __tablename__ = "universe"
 

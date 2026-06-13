@@ -7,12 +7,13 @@
 // status / degradation_level / degradation.events (GET /runs/{id}); the *trace*
 // (GET /runs/{id}/trace, 契约 §2.7) carries the process data. No mock switcher.
 import React from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { endpoints } from '../../lib/api';
 import { TPanel } from '../../components/shell/panels';
 import { Loading } from '../../components/ui/primitives';
 import { Distribution, FunnelBar } from './charts';
 import { fmtNum } from './shared';
+import ResourceProfileBlock from './resource/ResourceProfileBlock';
 
 // ── canonical 6-stage pipeline ───────────────────────────────────────────────
 const STAGE_ORDER = ['load', 'preflight', 'universe_resolve', 'compute', 'write', 'eval'];
@@ -713,9 +714,21 @@ function MasterDetail({ t }) {
 }
 
 // ─── orchestrator ────────────────────────────────────────────────────────────
-export default function RunScopeTab({ runId }) {
+export default function RunScopeTab({ runId, onSelectRun }) {
+  const qc = useQueryClient();
   const traceQ = useQuery({ queryKey: ['trace', runId], queryFn: () => endpoints.runTrace(runId), enabled: !!runId });
   const runQ = useQuery({ queryKey: ['run', runId], queryFn: () => endpoints.run(runId), enabled: !!runId });
+
+  // 重跑 / 以剖析模式重跑 (资源画像方案 §3.5/§6) — reuse the retry endpoint + profile
+  // flag; on success jump the detail view to the new run.
+  const rerunMut = useMutation({
+    mutationFn: (profile) => endpoints.retryRun(runId, { profile: !!profile }),
+    onSuccess: (res) => {
+      if (res?.run_id && onSelectRun) onSelectRun(res.run_id);
+      qc.invalidateQueries({ queryKey: ['factor.runs'] });
+    },
+  });
+  const handleRerun = (profile) => rerunMut.mutate(profile);
 
   if (!runId) {
     return <div style={{ padding: 40, textAlign: 'center', color: 'var(--fg-3)', fontFamily: 'var(--font-mono)', fontSize: 13 }}>请先在上方选择一次评估运行</div>;
@@ -776,6 +789,8 @@ export default function RunScopeTab({ runId }) {
           <MasterDetail t={t} />
         </>
       )}
+      {/* 资源画像区块 (资源画像方案 §7.1) — 紧随运行透视既有内容, 覆盖全部终态 */}
+      <ResourceProfileBlock trace={t} run={run} onRerun={handleRerun} onOpenRun={onSelectRun} />
     </div>
   );
 }
