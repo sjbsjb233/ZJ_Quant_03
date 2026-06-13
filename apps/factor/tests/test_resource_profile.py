@@ -429,6 +429,34 @@ def test_resource_budget_advice(rp_app, monkeypatch):
     assert rp_app.get("/runs/resource-budgets", headers=_hdr("viewer")).status_code == 403
 
 
+def test_basket_epoch_is_tz_independent():
+    """篮子聚合的 naive-UTC→epoch 必须按 UTC 换算, 不随本地时区漂移 (审查 #2 回归).
+
+    旧实现用 ``naive.timestamp()`` (按本地时区) 在非 UTC 主机上会偏 UTC 偏移量,
+    使 worker NDJSON (time.time() 真 epoch) 切片错位 → timeline 空 / peak 0。
+    本用例显式切换进程时区, 在非 UTC 下旧代码会失败、修复后恒等于真 UTC epoch。
+    """
+    import calendar
+    import os
+    import time as _t
+    from factor_service.api.baskets import _epoch
+
+    d = dt.datetime(2026, 6, 12, 10, 0, 0)  # naive, 视为 UTC
+    expected = calendar.timegm(d.utctimetuple())
+    orig = os.environ.get("TZ")
+    try:
+        for tz in ("UTC", "America/New_York", "Asia/Shanghai"):
+            os.environ["TZ"] = tz
+            _t.tzset()
+            assert _epoch(d) == expected, f"_epoch drifted under TZ={tz}"
+    finally:
+        if orig is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = orig
+        _t.tzset()
+
+
 def test_finalize_failsafe_does_not_sink_run(rp_app, monkeypatch):
     """资源画像收尾失败 → run 仍成功 (失败安全红线 §3.1)."""
     _fake_reader(monkeypatch)

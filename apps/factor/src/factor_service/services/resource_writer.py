@@ -14,6 +14,7 @@ import gzip
 import json
 import logging
 import os
+import time
 
 from sqlalchemy.orm import Session
 
@@ -106,7 +107,6 @@ def read_ndjson_window(
     only the day-files the window spans (incl. ``{day}.N`` rollovers). Best-effort:
     a malformed line or missing file is skipped, never raised.
     """
-    import time
     s = settings or get_settings()
     d = s.worker_samples_dir
     if not os.path.isdir(d):
@@ -210,7 +210,11 @@ def finalize_run_resources(
 def _finalize(db, collector, run_config, task_type, profiled,
               n_symbols, n_days, admission, s):
     run_id = collector.run_id
-    end_wall = dt.datetime.utcnow().timestamp()
+    # MUST be the same clock as collector.t0_wall and the sampler's `ts` (both
+    # time.time(), a true epoch). `datetime.utcnow().timestamp()` would treat the
+    # naive value as LOCAL time and drift by the UTC offset on non-UTC hosts —
+    # corrupting durations, avg_cpu and the persisted baselines.
+    end_wall = time.time()
     raw = slice_samples(collector.t0_wall, end_wall)
     # normalise to relative time (seconds from run start)
     t0 = collector.t0_wall
@@ -247,6 +251,11 @@ def _finalize(db, collector, run_config, task_type, profiled,
     _stage_peak = max((x.rss_end_mb for x in collector.stages), default=0.0)
     peak_rss = max((sr["rss_mb"] for sr in raw), default=_stage_peak)
     arrow_peak = max((sr["arrow_mb"] for sr in raw), default=0.0)
+    # NB: per-stage cpu_sec is RUSAGE_THREAD of the *eval thread* only — precise &
+    # concurrency-proof for attribution (方案 §2), but it does NOT include CPU burned
+    # by polars/DuckDB worker pools spawned off this thread, so cpu_sec is a lower
+    # bound for multi-threaded engines. Read the baseline as "eval-thread CPU", not
+    # total core-seconds.
     cpu_sec = sum(st.cpu_sec for st in collector.stages)
     wall = max(0.001, end_wall - t0)
     avg_cpu = (sum(sr["cpu_pct"] for sr in raw) / len(raw)) if raw else (cpu_sec / wall * 100)
@@ -361,7 +370,10 @@ def _concurrent_tasks(db, raw, run_id, t0) -> list[dict]:
                 spans[rid][0] = min(spans[rid][0], sr["ts"])
                 spans[rid][1] = max(spans[rid][1], sr["ts"])
     out = []
-    for rid, (a, b) in list(spans.items())[:12]:
+    # keep the 12 longest-overlapping peers (not just first-seen) — those are the
+    # ones that actually explain the shared-N attribution.
+    ranked = sorted(spans.items(), key=lambda kv: kv[1][1] - kv[1][0], reverse=True)
+    for rid, (a, b) in ranked[:12]:
         name, kind = _run_label(db, rid)
         out.append({
             "run_id": rid, "name": name, "type": kind,

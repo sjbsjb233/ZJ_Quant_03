@@ -362,6 +362,13 @@ def main() -> None:
                 _last_sampler_warn[0] = now_m
                 _log.warning("resource sampler not alive — 资源画像时间线将降级缺失")
 
+            # 资源画像 admission 台账 TTL 清理: 被延迟后又取消的任务不会再被 peek,
+            # 其条目永不经 grant/finalize 清理 — 超 1h 直接丢弃, 防按任务数泄漏.
+            _adm_now = time.time()
+            for _tid in [k for k, ts in adm_defer_first.items() if _adm_now - ts > 3600]:
+                adm_defer_first.pop(_tid, None)
+                adm_log.pop(_tid, None)
+
             time.sleep(poll_ms / 1000.0)
     finally:
         _log.info("dispatcher shutting down; %d in-flight", len(inflight))

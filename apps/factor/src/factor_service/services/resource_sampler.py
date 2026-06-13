@@ -158,11 +158,11 @@ class InFlightRegistry:
             self._bump_peaks_locked()
 
     def set_stage(self, task_id: str, stage: str | None) -> None:
+        # a stage change never alters the in-flight count, so peaks need no re-bump.
         with self._lock:
             ctx = self._tasks.get(task_id)
             if ctx is not None:
                 ctx.stage = stage
-                self._bump_peaks_locked()
 
     def record_admission(self, task_id: str, event: dict) -> None:
         with self._lock:

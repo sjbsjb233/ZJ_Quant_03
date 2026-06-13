@@ -608,6 +608,17 @@ def _term_state(frun) -> str:
     return st if st in ("success", "degraded", "failed") else "success"
 
 
+def _epoch(d: dt.datetime) -> float:
+    """Naive-UTC DB datetime → true epoch seconds.
+
+    DB datetimes are written via ``datetime.utcnow()`` (naive, UTC). ``.timestamp()``
+    on a naive value treats it as LOCAL time, drifting by the UTC offset on non-UTC
+    hosts — and the worker NDJSON ``ts`` is ``time.time()`` (true epoch), so a naive
+    ``.timestamp()`` window would slice nothing. Stamp UTC explicitly first.
+    """
+    return d.replace(tzinfo=dt.timezone.utc).timestamp()
+
+
 def _aggregate_basket_resources(db: Session, run: BasketRun) -> dict:
     from ..services import resource_writer
     from ..db.models import RunResourceSummary
@@ -641,9 +652,9 @@ def _aggregate_basket_resources(db: Session, run: BasketRun) -> dict:
         t_from = summ.started_at if summ and summ.started_at else (frun.started_at if frun else None)
         t_to = summ.finished_at if summ and summ.finished_at else (frun.finished_at if frun else None)
         if t_from:
-            starts.append(t_from.timestamp())
+            starts.append(_epoch(t_from))
         if t_to:
-            ends.append(t_to.timestamp())
+            ends.append(_epoch(t_to))
         cpu = round(summ.cpu_sec, 1) if summ else None
         if cpu:
             cpu_sum += cpu
@@ -657,15 +668,15 @@ def _aggregate_basket_resources(db: Session, run: BasketRun) -> dict:
         tasks.append({
             "run_id": bri.run_id, "factor_id": frun.factor_id if frun else None,
             "name": name, "ver": ver,
-            "from_ts": t_from.timestamp() if t_from else None,
-            "to_ts": t_to.timestamp() if t_to else None,
+            "from_ts": _epoch(t_from) if t_from else None,
+            "to_ts": _epoch(t_to) if t_to else None,
             "cpu": cpu, "state": st, "mem": mem,
             "attribution": summ.attribution if summ else None,
             "legacy": summ is None,
         })
 
-    w_start = (run.started_at.timestamp() if run.started_at else (min(starts) if starts else None))
-    w_end = (run.finished_at.timestamp() if run.finished_at else (max(ends) if ends else None))
+    w_start = (_epoch(run.started_at) if run.started_at else (min(starts) if starts else None))
+    w_end = (_epoch(run.finished_at) if run.finished_at else (max(ends) if ends else None))
     if w_start is None or w_end is None or w_end <= w_start:
         # nothing to slice — return tasks-only (mixed/empty matrices render fine)
         return {"available": bool(tasks), "window": {"T": 0},
