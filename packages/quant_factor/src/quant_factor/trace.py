@@ -94,7 +94,12 @@ def _histogram(finite: np.ndarray, bins: int = 16) -> dict | None:
 
 @dataclass
 class StageRecord:
-    """流水线某一阶段的元信息记录。"""
+    """流水线某一阶段的元信息记录。
+
+    资源画像方案 §3.2 扩展:在阶段始末采 ``getrusage(RUSAGE_THREAD)`` /进程 RSS /
+    ``pyarrow.total_allocated_bytes`` 得到本阶段精确 CPU 秒、内存增量、Arrow 物化
+    增量与同期最大并发。全部可选(默认 ``None``)—— 旧 trace / 采集关闭时逐字节等价。
+    """
 
     stage: str                          # load|preflight|universe_resolve|compute|write|eval
     status: str = "ok"                  # ok|degrade|blocked|error|skipped
@@ -102,6 +107,12 @@ class StageRecord:
     duration_ms: float | None = None
     detail: dict = field(default_factory=dict)
     error: str | None = None
+    # ── 资源画像 (方案 §3.2) — 可选, 旧 trace 无此四字段 ──────────────────────
+    cpu_sec: float | None = None        # 本阶段本线程精确 CPU 秒 (RUSAGE_THREAD 差值)
+    rss_start_mb: float | None = None   # 阶段始进程 RSS
+    rss_end_mb: float | None = None     # 阶段末进程 RSS (增量 = end − start)
+    arrow_delta_mb: float | None = None  # Arrow 物化增量 (定位"是不是读数据涨的")
+    in_flight_max: int | None = None    # 本阶段同期最大并发 (归因等级依据)
 
 
 class RunTrace:

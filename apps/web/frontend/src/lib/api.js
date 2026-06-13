@@ -197,12 +197,19 @@ export const endpoints = {
   runs: (params) => get('/runs', params),
   run: (runId) => get(`/runs/${runId}`),
   cancelRun: (runId) => post(`/runs/${runId}/cancel`, {}),
-  retryRun: (runId) => post(`/runs/${runId}/retry`, {}),
+  retryRun: (runId, body) => post(`/runs/${runId}/retry`, body || {}),
   runIcSeries: (runId) => get(`/runs/${runId}/ic-series`),
   runLayers: (runId) => get(`/runs/${runId}/layers`),
   runTurnover: (runId) => get(`/runs/${runId}/turnover`),
   runDegradations: (runId) => get(`/runs/${runId}/degradations`),  // 降级台账 (设计 §8.3)
   runTrace: (runId) => get(`/runs/${runId}/trace`),                // 运行透视 (设计 §2.5)
+  // ── 资源画像 (资源画像方案 §6) ─────────────────────────────────────────
+  runResourceSamples: (runId) => get(`/runs/${runId}/resources/samples`),  // 全分辨率懒加载 §3.4
+  runProfile: (runId) => get(`/runs/${runId}/profile`),                    // 函数级火焰图 §3.5
+  factorResourceBaseline: (fid, signature, classSignature) =>
+    get(`/factors/${fid}/resource-baseline`, { signature, class_signature: classSignature }),
+  basketRunResources: (id, rid) => get(`/baskets/${id}/runs/${rid}/resources`),
+  resourceBudgetAdvice: () => get('/runs/resource-budgets'),                 // 预算重标定建议 §8
 
   // tasks
   tasks: (params) => get('/tasks', params),

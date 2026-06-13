@@ -48,6 +48,10 @@ from .results_writer import (
     write_run_results,
     write_run_trace,
 )
+from . import resource_writer
+from .resource_collector import ResourceCollector
+from .resource_profiler import RunProfiler
+from .resource_sampler import REGISTRY
 
 
 _log = logging.getLogger("factor.executor")
@@ -122,11 +126,30 @@ def _run_evaluation(db, t: Task) -> dict[str, Any]:
         if settings.trace_enabled
         else None
     )
+    # 资源画像 (资源画像方案 §3.2/§3.5): 阶段级 CPU/内存采集器 + 可选函数级剖析器.
+    # 全部旁路、失败安全 — 任何采集异常绝不影响 run 终态.
+    collector = (
+        ResourceCollector(task_id=t.task_id, run_id=run_id,
+                          factor_id=run.factor_id, version=run.version)
+        if settings.resource_sampling_enabled else None
+    )
+    profile_requested = bool((t.payload or {}).get("profile")) or settings.resource_profile_default
+    profiler = None
+    if profile_requested:
+        try:
+            import threading as _th
+            REGISTRY.bind_thread(t.task_id, _th.get_ident())
+            profiler = RunProfiler(t.task_id, run_id, settings)
+            profiler.start()
+        except Exception:  # noqa: BLE001 - 剖析失败绝不影响任务
+            _log.warning("profiler failed to start (non-fatal)", exc_info=True)
+            profiler = None
 
     log_file, log_write = _open_run_log(run_id)
     try:
         # ── stage: load (resolve factor/version/universe + build the engine) ──
         st_load = trace.stage("load") if trace else None
+        rc_load = collector.begin("load") if collector else None
         t_load = time.perf_counter()
         with qd_logging.timed(_qlog, "run.stage.load", run_id=run_id) as m:
             # Resolve factor + version + config
@@ -219,6 +242,8 @@ def _run_evaluation(db, t: Task) -> dict[str, Any]:
                 member_count=(len(custom_syms) if custom_syms is not None else None),
                 config_resolved=cfg.to_jsonable(),
             )
+        if collector:
+            collector.end(rc_load, st_load)
 
         # ── stage: preflight (NEW · 设计 §5/§7) ──────────────────────────────
         # The authoritative gate. A block here marks the run failed and it NEVER
@@ -227,6 +252,7 @@ def _run_evaluation(db, t: Task) -> dict[str, Any]:
         stage = "preflight"
         ledger = None
         st_pf = trace.stage("preflight") if trace else None
+        rc_pf = collector.begin("preflight") if collector else None
         t_pf = time.perf_counter()
         with qd_logging.timed(_qlog, "run.stage.preflight", run_id=run_id) as m:
             if settings.preflight_enabled:
@@ -250,6 +276,9 @@ def _run_evaluation(db, t: Task) -> dict[str, Any]:
                             duration_ms=(time.perf_counter() - t_pf) * 1000,
                             blocked=[r.check_id for r in pb.results],
                         )
+                    if collector:
+                        collector.end(rc_pf, st_pf)
+                    if trace:
                         _write_trace_safe(run_id, trace)   # 阻断也落盘(关键!)
                     return _finish_preflight_blocked(
                         db, run, run_id, t, pb, log_write, t0
@@ -275,6 +304,8 @@ def _run_evaluation(db, t: Task) -> dict[str, Any]:
                 st_pf, status=pf_status,
                 duration_ms=(time.perf_counter() - t_pf) * 1000,
             )
+        if collector:
+            collector.end(rc_pf, st_pf)
 
         # The evaluator carries the (preflight-seeded) ledger so runtime
         # degradations append to the same台账.
@@ -296,6 +327,7 @@ def _run_evaluation(db, t: Task) -> dict[str, Any]:
         # ── stage: compute (run the factor + evaluation engine) ──────────────
         stage = "compute"
         st_compute = trace.stage("compute") if trace else None
+        rc_compute = collector.begin("compute") if collector else None
         t_compute = time.perf_counter()
         with qd_logging.timed(_qlog, "run.stage.compute", run_id=run_id) as m:
             result = evaluator.evaluate(factor, cfg, uni_def, custom_syms)
@@ -309,10 +341,13 @@ def _run_evaluation(db, t: Task) -> dict[str, Any]:
                 duration_ms=(time.perf_counter() - t_compute) * 1000,
                 ic_rows=ic_rows,
             )
+        if collector:
+            collector.end(rc_compute, st_compute)
 
         # ── stage: write (persist IC / layer / decay / turnover artifacts) ───
         stage = "write"
         st_write = trace.stage("write") if trace else None
+        rc_write = collector.begin("write") if collector else None
         t_write = time.perf_counter()
         with qd_logging.timed(_qlog, "run.results.write", run_id=run_id) as m:
             write_run_results(run_id, factor_id, result)
@@ -325,10 +360,13 @@ def _run_evaluation(db, t: Task) -> dict[str, Any]:
                 rows_written=ic_rows,
                 path=os.path.join(get_settings().evaluations_dir, factor_id),
             )
+        if collector:
+            collector.end(rc_write, st_write)
 
         # ── stage: eval (roll the metrics summary into eval_summary) ─────────
         stage = "eval"
         st_eval = trace.stage("eval") if trace else None
+        rc_eval = collector.begin("eval") if collector else None
         t_eval = time.perf_counter()
         with qd_logging.timed(_qlog, "run.stage.eval", run_id=run_id) as m:
             _persist_eval_summary(db, run, cfg, uni_row.universe_id, result, ledger)
@@ -339,6 +377,8 @@ def _run_evaluation(db, t: Task) -> dict[str, Any]:
                 duration_ms=(time.perf_counter() - t_eval) * 1000,
                 metrics_n=len(result.get("summary") or {}),
             )
+        if collector:
+            collector.end(rc_eval, st_eval)
 
         # ── status decision (设计 §7): degraded iff the台账 has ≥1 event ─────
         final_status = "degraded" if ledger.count > 0 else "success"
@@ -407,6 +447,11 @@ def _run_evaluation(db, t: Task) -> dict[str, Any]:
         _qlog.error("run.failed", exc=e, run_id=run_id, stage=stage)
         raise
     finally:
+        # 资源画像收尾 — best-effort, runs on every terminal path (success / cancel
+        # / fail / preflight-blocked). Embeds the `resources` node into trace.json.
+        _finalize_resources(
+            db, collector, profiler, run, dict(run.run_config or {}), "evaluation", trace
+        )
         if log_file:
             log_file.close()
 
@@ -423,6 +468,62 @@ def _write_trace_safe(run_id: str, trace) -> None:
         write_run_trace(run_id, trace.to_jsonable())
     except Exception:  # noqa: BLE001
         _log.warning("write run trace failed (non-fatal)", exc_info=True)
+
+
+# ─── 资源画像收尾 (资源画像方案 §3.3/§3.4/§3.5) ───────────────────────────────
+def _funnel_final_symbols(trace) -> int | None:
+    """Pull the universe funnel's final symbol count for workload归一化 (方案 §1)."""
+    if trace is None:
+        return None
+    try:
+        rec = trace.stage_record("universe_resolve")
+        funnel = (rec.detail.get("funnel") if rec and rec.detail else None) or []
+        if funnel:
+            return funnel[-1].get("symbols")
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
+def _finalize_resources(db, collector, profiler, run, run_config, task_type, trace) -> None:
+    """Slice samples → resources节 + summary/baseline/artifacts, merge into trace.
+
+    Best-effort on every terminal path; any failure is logged and swallowed so a
+    采集 hiccup never changes the run's outcome (方案 §3.1 失败安全红线)。
+    """
+    if collector is None and profiler is None:
+        return
+    try:
+        if profiler is not None:
+            profiler.stop()
+        profiled = bool(profiler is not None and profiler.has_samples())
+        resources = None
+        if collector is not None:
+            admission = REGISTRY.get_admission(collector.task_id)
+            resources = resource_writer.finalize_run_resources(
+                db, collector, run_config=run_config, task_type=task_type,
+                profiled=profiled, n_symbols=_funnel_final_symbols(trace),
+                admission=admission,
+            )
+        if profiled:
+            try:
+                resource_writer.write_gz_artifact(
+                    run.run_id, "profile", profiler.to_artifact()
+                )
+            except Exception:  # noqa: BLE001
+                _log.warning("profile artifact write failed (non-fatal)", exc_info=True)
+                if resources is not None:
+                    resources["has_profile"] = False
+        if resources is not None:
+            resource_writer.merge_resources_into_trace(
+                run.run_id, resources,
+                fallback_payload=trace.to_jsonable() if trace is not None else None,
+            )
+    except Exception:  # noqa: BLE001
+        _log.warning("resource finalize failed (non-fatal)", exc_info=True)
+    # NB: the registry entry is cleared by the dispatcher on finalize (symmetric
+    # with mark_inflight) — keeping it here keeps this task counted as in-flight
+    # for concurrent runs' attribution until the future truly completes.
 
 
 def _resolve_symbols_for_preflight(reader, uni_def, custom_syms, cfg) -> list[str]:

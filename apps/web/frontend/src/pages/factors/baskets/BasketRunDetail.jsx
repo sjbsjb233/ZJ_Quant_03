@@ -10,6 +10,7 @@ import { endpoints } from '../../../lib/api';
 import { TerminalShell } from '../../../components/shell';
 import { Loading, ErrorState, Empty } from '../../../components/ui';
 import { Badge, SectionHead, degradeValue } from './kit';
+import BasketResourceBlock from '../resource/BasketResourceBlock';
 
 export default function BasketRunDetail() {
   const { id, rid } = useParams();
@@ -134,6 +135,12 @@ export default function BasketRunDetail() {
                   </tbody>
                 </table>
               )}
+            </div>
+
+            {/* 篮子资源画像区块 (资源画像方案 §7.2) — 位于子任务列表语境之后.
+                区块自带标题行/汇总卡/总曲线+甘特/成本排行, 内部已含面板与留白. */}
+            <div style={{ marginTop: 14 }}>
+              <BasketResourceBlock basketId={id} brunId={rid} brun={run} />
             </div>
 
             <div style={{ marginTop: 14 }}>

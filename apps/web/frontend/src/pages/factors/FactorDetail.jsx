@@ -1,6 +1,6 @@
 // /factors/library/:factorId — single factor detail with 8 tabs.
 import React from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { endpoints } from '../../lib/api';
 import { TerminalShell, TPanel } from '../../components/shell';
@@ -26,9 +26,13 @@ export default function FactorDetail() {
   const { factorId } = useParams();
   const nav = useNavigate();
   const qc = useQueryClient();
+  // Deep-link support (资源画像 §7.2): a basket gantt/cost click lands here with
+  // ?tab=runscope&run=<run_id> so the资源画像区块 opens on the right run.
+  const [searchParams] = useSearchParams();
+  const initialTab = TABS.some((t) => t.id === searchParams.get('tab')) ? searchParams.get('tab') : 'overview';
 
-  const [tab, setTab] = React.useState('overview');
-  const [runId, setRunId] = React.useState(null);
+  const [tab, setTab] = React.useState(initialTab);
+  const [runId, setRunId] = React.useState(searchParams.get('run') || null);
   const [showRun, setShowRun] = React.useState(false);
 
   const factorQ = useQuery({
@@ -159,7 +163,7 @@ export default function FactorDetail() {
             {tab === 'decay' && <DecayTab factorId={factorId} runId={selectedRunId} />}
             {tab === 'layered' && <LayeredTab runId={selectedRunId} />}
             {tab === 'turnover' && <TurnoverTab runId={selectedRunId} />}
-            {tab === 'runscope' && <RunScopeTab runId={selectedRunId} />}
+            {tab === 'runscope' && <RunScopeTab runId={selectedRunId} onSelectRun={setRunId} />}
             {tab === 'tracking' && <TrackingTab factor={factor} onCloseTracking={() => patch.mutate({ tracking_enabled: false })} onRetest={() => setShowRun(true)} />}
             {tab === 'version' && <VersionTab factor={factor} />}
             {tab === 'history' && <HistoryTab runs={runs} onSelect={(rid) => { setRunId(rid); setTab('overview'); }} />}

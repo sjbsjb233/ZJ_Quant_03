@@ -491,6 +491,21 @@ def get_run(basket_id: str, brun_id: str, db: Session = Depends(get_db),
     return _serialize_run(db, run, with_children=True)
 
 
+@router.get("/baskets/{basket_id}/runs/{brun_id}/resources")
+def basket_run_resources(basket_id: str, brun_id: str, db: Session = Depends(get_db),
+                         user=Depends(current_user)) -> dict:
+    """篮子运行资源画像 (资源画像方案 §6/§7.2) — API现场聚合,单一事实来源.
+
+    汇总 = 进程峰值 RSS (worker NDJSON 按篮子时间窗切片) + 子任务 CPU 合计 (精确) +
+    并发峰值 + 最贵因子;timeline = 进程样本切片 (max-pool ≤400);tasks = 各子 run
+    的 summary 甘特条;admission = 子任务准入事件 (治理方案落地后出现)。
+    """
+    run = db.get(BasketRun, brun_id)
+    if run is None or run.basket_id != basket_id:
+        raise ApiError("BRUN_NOT_FOUND", f"运行 {brun_id} 不存在")
+    return _aggregate_basket_resources(db, run)
+
+
 @router.post("/baskets/{basket_id}/runs/{brun_id}/cancel")
 def cancel_basket_run(basket_id: str, brun_id: str, db: Session = Depends(get_db),
                       user=Depends(require_editor)) -> dict:
@@ -577,6 +592,173 @@ def _children(db: Session, run: BasketRun) -> list[dict]:
                 "status_raw": ct.status, "gate": ct.gate, "task_id": ct.task_id,
                 "note": "等待全部评估完成" if ct.gate == "waiting" else None,
             })
+    return out
+
+
+# ─── 篮子资源画像聚合 (资源画像方案 §7.2) ───────────────────────────────────
+def _term_state(frun) -> str:
+    """Map a FactorRun terminal status to the design's 5 终态 (kit StatusRef)."""
+    if frun is None:
+        return "cancelled"
+    st = frun.status
+    if st == "failed" and (frun.error or "") == "preflight_blocked":
+        return "blocked"
+    if st == "canceled":
+        return "cancelled"
+    return st if st in ("success", "degraded", "failed") else "success"
+
+
+def _epoch(d: dt.datetime) -> float:
+    """Naive-UTC DB datetime → true epoch seconds.
+
+    DB datetimes are written via ``datetime.utcnow()`` (naive, UTC). ``.timestamp()``
+    on a naive value treats it as LOCAL time, drifting by the UTC offset on non-UTC
+    hosts — and the worker NDJSON ``ts`` is ``time.time()`` (true epoch), so a naive
+    ``.timestamp()`` window would slice nothing. Stamp UTC explicitly first.
+    """
+    return d.replace(tzinfo=dt.timezone.utc).timestamp()
+
+
+def _aggregate_basket_resources(db: Session, run: BasketRun) -> dict:
+    from ..services import resource_writer
+    from ..db.models import RunResourceSummary
+
+    rev = (
+        db.query(BasketRevision)
+        .filter(BasketRevision.basket_id == run.basket_id,
+                BasketRevision.revision == run.revision)
+        .first()
+    )
+    labels = {it["item_id"]: it.get("label") for it in (rev.items if rev else [])}
+    bris = (
+        db.query(BasketRunItem)
+        .filter(BasketRunItem.brun_id == run.brun_id)
+        .order_by(BasketRunItem.seq_no)
+        .all()
+    )
+
+    # window: brun times, falling back to the span of child summaries.
+    starts, ends = [], []
+    tasks: list[dict] = []
+    cpu_sum = 0.0
+    costliest = None
+    for bri in bris:
+        frun = db.get(FactorRun, bri.run_id) if bri.run_id else None
+        summ = db.get(RunResourceSummary, bri.run_id) if bri.run_id else None
+        rec = db.get(FactorRecord, frun.factor_id) if frun else None
+        name = labels.get(bri.item_id) or (rec.display_name or rec.base_name if rec else bri.item_id)
+        ver = frun.version if frun else ""
+        st = _term_state(frun)
+        t_from = summ.started_at if summ and summ.started_at else (frun.started_at if frun else None)
+        t_to = summ.finished_at if summ and summ.finished_at else (frun.finished_at if frun else None)
+        if t_from:
+            starts.append(_epoch(t_from))
+        if t_to:
+            ends.append(_epoch(t_to))
+        cpu = round(summ.cpu_sec, 1) if summ else None
+        if cpu:
+            cpu_sum += cpu
+            if costliest is None or cpu > costliest[1]:
+                costliest = (f"{name}@{ver}", cpu, bri.run_id)
+        mem = None
+        if summ:
+            kind = "exact" if summ.attribution == "exact" else "shared"
+            n = summ.concurrent_max if kind == "shared" else None
+            mem = {"kind": kind, "v": round(summ.peak_rss_mb, 1), "n": n}
+        tasks.append({
+            "run_id": bri.run_id, "factor_id": frun.factor_id if frun else None,
+            "name": name, "ver": ver,
+            "from_ts": _epoch(t_from) if t_from else None,
+            "to_ts": _epoch(t_to) if t_to else None,
+            "cpu": cpu, "state": st, "mem": mem,
+            "attribution": summ.attribution if summ else None,
+            "legacy": summ is None,
+        })
+
+    w_start = (_epoch(run.started_at) if run.started_at else (min(starts) if starts else None))
+    w_end = (_epoch(run.finished_at) if run.finished_at else (max(ends) if ends else None))
+    if w_start is None or w_end is None or w_end <= w_start:
+        # nothing to slice — return tasks-only (mixed/empty matrices render fine)
+        return {"available": bool(tasks), "window": {"T": 0},
+                "totals": _basket_totals(0.0, cpu_sum, 1, costliest),
+                "timeline": [], "tasks": _rel_tasks(tasks, w_start or 0), "admission": []}
+
+    raw = resource_writer.read_ndjson_window(w_start, w_end)
+    peak_rss = max((s["rss_mb"] for s in raw), default=0.0)
+    conc_max = max((int(s.get("in_flight", 1)) for s in raw), default=1)
+    conc_max = max(conc_max, *( [t.get("attribution") and _shared_n(t["attribution"]) or 1 for t in tasks] or [1]))
+    # max-pool the total curve to ≤400 points (design §7.3 渲染流畅)
+    series = [{"t": s["ts"] - w_start, "rss_mb": s["rss_mb"], "cpu_pct": s.get("cpu_pct", 0),
+               "arrow_mb": s.get("arrow_mb", 0), "in_flight": s.get("in_flight", 1)} for s in raw]
+    timeline = resource_writer.max_pool(series, 400)
+
+    admission = _basket_admission(db, tasks, w_start)
+
+    return {
+        "available": True,
+        "window": {"T": round(w_end - w_start, 1)},
+        "totals": _basket_totals(peak_rss, cpu_sum, conc_max, costliest),
+        "timeline": timeline,
+        "tasks": _rel_tasks(tasks, w_start),
+        "admission": admission,
+    }
+
+
+def _shared_n(attribution: str) -> int:
+    try:
+        return int(attribution.split("-")[1]) if attribution and attribution.startswith("shared") else 1
+    except (ValueError, IndexError):
+        return 1
+
+
+def _basket_totals(peak_rss, cpu_sum, conc_max, costliest) -> dict:
+    return {
+        "peak_rss_mb": round(peak_rss, 1),
+        "cpu_sec_sum": round(cpu_sum, 1),
+        "concurrent_max": int(conc_max),
+        "costliest_factor": ({"name": costliest[0], "cpu": costliest[1], "run_id": costliest[2]}
+                             if costliest else None),
+    }
+
+
+def _rel_tasks(tasks: list[dict], w_start: float) -> list[dict]:
+    out = []
+    for t in tasks:
+        out.append({
+            "run_id": t["run_id"], "factor_id": t.get("factor_id"),
+            "name": t["name"], "ver": t["ver"],
+            "from": round((t["from_ts"] - w_start), 1) if t["from_ts"] else None,
+            "to": round((t["to_ts"] - w_start), 1) if t["to_ts"] else None,
+            "cpu": t["cpu"], "state": t["state"], "mem": t["mem"],
+            "attribution": t["attribution"], "legacy": t["legacy"],
+        })
+    return out
+
+
+def _basket_admission(db: Session, tasks: list[dict], w_start: float) -> list[dict]:
+    """Merge child runs' admission events, offset into the basket window (§7.2).
+
+    Best-effort: reads each child's resources节 from its trace; missing/odd data
+    is skipped. Empty until the governance plan (准入事件) lands — by design."""
+    from ..services.results_writer import read_run_trace
+    out = []
+    for t in tasks:
+        rid = t.get("run_id")
+        cs = t.get("from_ts")
+        if not rid or cs is None:
+            continue
+        try:
+            tr = read_run_trace(rid) or {}
+            for ev in ((tr.get("resources") or {}).get("admission") or []):
+                out.append({
+                    "ts": round((cs - w_start) + (ev.get("ts") or 0), 1),
+                    "event": ev.get("event", "granted"),
+                    "wait_ms": ev.get("wait_ms"),
+                    "run_id": rid,
+                })
+        except Exception:  # noqa: BLE001
+            continue
+    out.sort(key=lambda e: e["ts"])
     return out
 
 

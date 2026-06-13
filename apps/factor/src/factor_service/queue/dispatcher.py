@@ -63,6 +63,12 @@ from ..db.models import Task  # noqa: E402
 from ..db.seed import seed_all  # noqa: E402
 from ..logging_ctx import configure_logging, trace_id_var  # noqa: E402
 from ..obs import install_obs  # noqa: E402
+from ..services.resource_sampler import (  # noqa: E402
+    REGISTRY,
+    sampler_alive,
+    start_sampler,
+    stop_sampler,
+)
 from ..services.run_executor import execute_task  # noqa: E402
 from . import store  # noqa: E402
 from .estimator import update_stats  # noqa: E402
@@ -185,6 +191,9 @@ def main() -> None:
     configure_logging(s.log_level)
     install_obs(s)               # log shipper → web /logs/ingest (source="factor")
     ensure_dirs(s)
+    # 资源画像进程采样器 (资源画像方案 §3.1): 随 dispatcher 启动, 1Hz 采进程 RSS/CPU/
+    # Arrow/in_flight; 失败安全 — 采样器异常绝不影响任务调度.
+    start_sampler(s)
     _db_base.init_db()
     # Seed builtins + presets on first launch (idempotent).
     with _db_base.SessionLocal() as db:
@@ -216,12 +225,17 @@ def main() -> None:
     gate = AdmissionGate.from_env(validate_budgets=(
         *set(_ADMISSION_CLASS.values()), "factor.task.light"))
     grants: dict[str, Grant] = {}
+    # 资源画像 admission 台账 (方案 §4.1): buffer deferrals per task so the grant
+    # event can carry an accurate wait_ms. Bounded by the queue; pruned at grant.
+    adm_log: dict[str, list[dict]] = {}
+    adm_defer_first: dict[str, float] = {}
 
     db = _db_base.SessionLocal()
     store.recover_stale(db, stale_sec)
 
     # 因子篮子调度 (§7.1) + 孤儿巡检 (§6.3) — throttled to ~once/60s.
     _last_basket_sweep = [0.0]
+    _last_sampler_warn = [0.0]   # 资源画像采样器死亡告警节流
 
     def _basket_maintenance() -> None:
         if not s.factor_basket_enabled:
@@ -248,6 +262,11 @@ def main() -> None:
                 g = grants.pop(tid, None)
                 if g is not None:
                     g.release()
+                # 资源画像: drop the task from the in-flight registry (symmetric
+                # with mark_inflight) so concurrent-attribution stays accurate.
+                REGISTRY.clear_inflight(tid)
+                adm_log.pop(tid, None)
+                adm_defer_first.pop(tid, None)
                 _finalize_future(db, tid, f)
 
             # 2) recover stale running tasks (heartbeat gap)
@@ -281,6 +300,14 @@ def main() -> None:
                 )
                 if isinstance(verdict, Deferred):
                     deferred_ids.add(cand.task_id)
+                    # 资源画像 admission 台账: buffer the defer (wait_ms filled at grant).
+                    now_w = time.time()
+                    adm_defer_first.setdefault(cand.task_id, now_w)
+                    log = adm_log.setdefault(cand.task_id, [])
+                    if len(log) < 10:
+                        log.append({"ts": now_w,
+                                    "event": "draining" if verdict.draining else "deferred",
+                                    "wait_ms": None})
                     if verdict.draining:
                         break  # 排干模式: 本轮整体停手
                     continue
@@ -290,6 +317,16 @@ def main() -> None:
                     deferred_ids.add(cand.task_id)
                     continue
                 grants[t.task_id] = verdict
+                # 资源画像: register the task in-flight BEFORE submit so the sampler
+                # counts it and the worker can bind its thread; flush admission台账.
+                REGISTRY.mark_inflight(t.task_id, t.run_id)
+                now_w = time.time()
+                first = adm_defer_first.pop(t.task_id, None)
+                events = adm_log.pop(t.task_id, [])
+                events.append({"ts": now_w, "event": "granted",
+                               "wait_ms": int((now_w - first) * 1000) if first else 0})
+                for ev in events:
+                    REGISTRY.record_admission(t.task_id, ev)
                 fut = pool.submit(_run_one, t.task_id, t.trace_id, verdict.exclusive)
                 inflight[fut] = t.task_id
                 _log.info(
@@ -318,9 +355,24 @@ def main() -> None:
             except Exception:  # noqa: BLE001 - heartbeat must never crash the loop
                 _log.debug("worker heartbeat write failed", exc_info=True)
 
+            # 资源画像采样器死亡上报 (方案 §3.1): 降级标记 — 画像缺失但任务照跑.
+            now_m = time.monotonic()
+            if s.resource_sampling_enabled and not sampler_alive() \
+                    and now_m - _last_sampler_warn[0] > 300:
+                _last_sampler_warn[0] = now_m
+                _log.warning("resource sampler not alive — 资源画像时间线将降级缺失")
+
+            # 资源画像 admission 台账 TTL 清理: 被延迟后又取消的任务不会再被 peek,
+            # 其条目永不经 grant/finalize 清理 — 超 1h 直接丢弃, 防按任务数泄漏.
+            _adm_now = time.time()
+            for _tid in [k for k, ts in adm_defer_first.items() if _adm_now - ts > 3600]:
+                adm_defer_first.pop(_tid, None)
+                adm_log.pop(_tid, None)
+
             time.sleep(poll_ms / 1000.0)
     finally:
         _log.info("dispatcher shutting down; %d in-flight", len(inflight))
+        stop_sampler()
         pool.shutdown(wait=True)
         db.close()
 

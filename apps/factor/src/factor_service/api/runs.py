@@ -20,9 +20,10 @@ from ..db.models import (
     FactorRun,
     FactorRunDegradation,
     FactorVersion,
+    RunResourceStat,
     Task,
 )
-from ..deps import current_user, get_db, require_editor
+from ..deps import current_user, get_db, require_admin, require_editor
 from ..errors import ApiError
 from ..logging_ctx import trace_id_var
 from ..queue import store
@@ -96,6 +97,8 @@ def submit_run(
         raise ApiError("INVALID_PARAMETER", "start 必须早于 end")
 
     params = body.get("params") or {}
+    # 资源画像剖析开关 (方案 §6): 管理员可提交剖析运行 (默认关闭, 有开销与体积成本).
+    profile = bool(body.get("profile")) and user.role == "admin"
 
     # ── preflight gate at the source (设计 §10.3) ────────────────────────────
     # Refuse to create a run that would be blocked — return 422 with the
@@ -152,6 +155,7 @@ def submit_run(
             "version": version,
             "params": params,
             "run_config": cfg.to_jsonable(),
+            "profile": profile,
         },
         lane=lane,
         run_id=run_id,
@@ -163,12 +167,13 @@ def submit_run(
     db.commit()
     _qlog.info("run.submit", run_id=run_id, factor_id=factor_id, version=version,
                task_id=task.task_id, universe=cfg.universe_id, lane=task.lane,
-               **{"from": str(cfg.start), "to": str(cfg.end)})
+               profile=profile, **{"from": str(cfg.start), "to": str(cfg.end)})
     return {
         "run_id": run_id,
         "task_id": task.task_id,
         "status": "queued",
         "lane": task.lane,
+        "profile": profile,
         "est_duration_sec": int(task.est_duration_sec),
     }
 
@@ -228,6 +233,49 @@ def preflight_dry_run(
         )
     except ValueError as e:
         raise ApiError("INVALID_PARAMETER", str(e))
+
+
+@router.get("/runs/resource-budgets")
+def resource_budget_advice(
+    db: Session = Depends(get_db),
+    user=Depends(require_admin),
+) -> dict[str, Any]:
+    """预算重标定建议 (资源画像方案 §8) — 任务类实测 p90_peak_mb vs 准入预算.
+
+    只建议不自动改 (预算静态配置的哲学不变, §8)。``p90 > 0.9×预算`` → 建议调升;
+    ``p90 < 0.5×预算`` → 建议调降。数据源 = 同类基线 (run_resource_stat) 的滚动
+    p90;预算源 = quant_admission 预算表 (治理方案 WP5 落地后即对齐)。
+    """
+    import json
+    from quant_admission import DEFAULT_BUDGETS
+
+    budgets = dict(DEFAULT_BUDGETS)
+    raw = os.environ.get("ADMISSION_BUDGETS_JSON")
+    if raw:
+        try:
+            budgets.update({str(k): float(v) for k, v in json.loads(raw).items()})
+        except (ValueError, TypeError, AttributeError):
+            pass
+
+    items = []
+    for cls, budget in sorted(budgets.items()):
+        st = db.get(RunResourceStat, f"{cls}#exact")
+        if st is None or st.sample_n == 0 or not budget:
+            continue
+        p90 = st.p90_peak_mb
+        ratio = p90 / budget if budget else 0.0
+        if ratio > 0.9:
+            advice = "raise"
+        elif ratio < 0.5:
+            advice = "lower"
+        else:
+            advice = "ok"
+        items.append({
+            "task_class": cls, "budget_mb": round(budget, 0),
+            "p90_peak_mb": round(p90, 0), "ratio": round(ratio, 2),
+            "sample_n": st.sample_n, "advice": advice,
+        })
+    return {"items": items, "note": "只建议不自动改 — 预算为静态配置 (资源画像方案 §8)"}
 
 
 @router.get("/runs")
@@ -355,12 +403,15 @@ def cancel_run(
 @router.post("/runs/{run_id}/retry")
 def retry_run(
     run_id: str,
+    body: dict[str, Any] | None = None,
     db: Session = Depends(get_db),
     user=Depends(require_editor),
 ) -> dict[str, Any]:
     r = db.get(FactorRun, run_id)
     if r is None:
         raise ApiError("RUN_NOT_FOUND", f"运行 {run_id} 不存在")
+    # 「以剖析模式重跑」(资源画像方案 §6): 复用重跑端点 + profile 参数 (管理员).
+    profile = bool((body or {}).get("profile")) and user.role == "admin"
     # New run + new task with original config.
     new_id = f"frun_{uuid.uuid4().hex[:16]}"
     nr = FactorRun(
@@ -384,6 +435,7 @@ def retry_run(
             "version": r.version,
             "params": dict(r.params or {}),
             "run_config": dict(r.run_config or {}),
+            "profile": profile,
         },
         lane=(r.run_config or {}).get("lane") or "interactive",
         run_id=new_id,
@@ -394,8 +446,8 @@ def retry_run(
     nr.task_id = task.task_id
     db.commit()
     _qlog.info("run.submit", run_id=new_id, factor_id=r.factor_id, version=r.version,
-               task_id=task.task_id, retried_from=run_id)
-    return {"run_id": new_id, "task_id": task.task_id, "status": "queued"}
+               task_id=task.task_id, retried_from=run_id, profile=profile)
+    return {"run_id": new_id, "task_id": task.task_id, "status": "queued", "profile": profile}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

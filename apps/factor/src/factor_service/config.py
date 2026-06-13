@@ -58,6 +58,40 @@ class Settings(BaseSettings):
     trace_enabled: bool = True
     trace_histogram_enabled: bool = True
 
+    # ── 因子运行资源画像 (资源画像方案 v1.2 §3/§9) ──────────────────────────
+    # resource_sampling_enabled: master switch — off ⇒ no process sampler, no
+    #   stage resource capture, no artifacts; the trace's `resources` node is
+    #   absent and the UI shows the legacy空态 (behaviour equivalent to before).
+    # resource_sample_interval_s: process sampler cadence (1Hz, 方案 §3.1).
+    # resource_max_points: trace.json `resources.samples` cap (max-pool, 方案 §3.3).
+    # resource_fullres_enabled: write the 1Hz full-resolution {run_id}.samples.json.gz
+    #   artifact (方案 §3.4) consumed lazily by the timeline brush/zoom.
+    # resource_ndjson_retention_days / _max_mb: worker_samples NDJSON留存 (方案 §9).
+    # resource_baseline_window: rolling sample count per signature for the p50/p90
+    #   baseline (镜像 task_duration_stat 的轻量风格, 方案 §5.2).
+    resource_sampling_enabled: bool = True
+    resource_sample_interval_s: float = 1.0
+    resource_max_points: int = 300
+    resource_fullres_enabled: bool = True
+    resource_ndjson_retention_days: int = 14
+    resource_ndjson_max_mb: int = 50
+    resource_baseline_window: int = 64
+    resource_baseline_min_samples: int = 5
+    # D17 资源回归哨兵 (方案 §5.3): 同因子新版本 p50 归一化资源增幅超此比例触发告警.
+    resource_regression_threshold: float = 0.5
+
+    # ── 函数级火焰图剖析 (资源画像方案 v1.1 §3.5) ───────────────────────────
+    # resource_profile_default: 默认关闭 — 剖析有开销与体积成本, 仅按需开启.
+    # resource_profile_hz / _downshift_*: 内置采样剖析 100Hz, >20min 自动降至 50Hz.
+    # resource_profile_max_mb: speedscope 工件硬上限 (超限自动降采样, 方案 §3.5).
+    # resource_profile_native: py-spy --native 增强模式 (需 SYS_PTRACE, 生产默认禁用).
+    resource_profile_default: bool = False
+    resource_profile_hz: int = 100
+    resource_profile_downshift_after_s: float = 1200.0  # 20 min
+    resource_profile_downshift_hz: int = 50
+    resource_profile_max_mb: int = 10
+    resource_profile_native: bool = False
+
     # ── CORS (in case factor service is exposed directly) ──────────────
     allowed_origins: str = (
         "http://localhost:5173,http://localhost:3000,http://localhost:8000,http://localhost:8100"
@@ -118,6 +152,11 @@ class Settings(BaseSettings):
         return os.path.join(self.factor_store_root, "runs")
 
     @property
+    def worker_samples_dir(self) -> str:
+        """Daily NDJSON slices of the 1Hz process sampler (资源画像方案 §3.1)."""
+        return os.path.join(self.runs_dir, "worker_samples")
+
+    @property
     def library_dir(self) -> str:
         return os.path.join(self.factor_store_root, "library")
 
@@ -152,6 +191,7 @@ def ensure_dirs(s: Settings) -> None:
         s.factor_store_root,
         s.evaluations_dir,
         s.runs_dir,
+        s.worker_samples_dir,
         s.library_dir,
         s.inbox_dir,
         s.correlations_dir,
