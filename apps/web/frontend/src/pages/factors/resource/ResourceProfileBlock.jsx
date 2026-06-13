@@ -86,7 +86,7 @@ export default function ResourceProfileBlock({ trace, run: factorRun, onRerun, o
 
   // ── states that short-circuit the full block ──────────────────────────────
   const wrap = (children) => (
-    <div ref={ref} style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: '14px 16px', background: 'var(--bg)' }}>
+    <div ref={ref} data-testid="rp-block" style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: '14px 16px', background: 'var(--bg)' }}>
       {children}
     </div>
   );

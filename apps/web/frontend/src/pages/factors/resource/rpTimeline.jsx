@@ -44,7 +44,7 @@ export function RPTimeline({ run, sel, onSel, width = 1380, height = 280, level 
   const xTicks = Array.from({ length: 6 }, (_, i) => view[0] + (view[1] - view[0]) * i / 5);
 
   return (
-    <div style={{ position: 'relative' }}>
+    <div style={{ position: 'relative' }} data-testid="rp-timeline">
       <svg ref={svgRef} width={width} height={height} style={{ display: 'block', cursor: 'crosshair' }}
         onMouseMove={onMove} onMouseLeave={() => setHover(null)}
         onDoubleClick={() => onSel && onSel(null)}>
@@ -199,7 +199,7 @@ export function RPBrushNav({ run, sel, onSel, width = 1380, height = 42, padL = 
     + `L${x(T).toFixed(1)},${pad.t + ih}L${x(0).toFixed(1)},${pad.t + ih}Z`;
 
   return (
-    <svg ref={ref} width={width} height={height} style={{ display: 'block', cursor: sel ? 'grab' : 'crosshair', touchAction: 'none' }}
+    <svg ref={ref} data-testid="rp-minimap" width={width} height={height} style={{ display: 'block', cursor: sel ? 'grab' : 'crosshair', touchAction: 'none' }}
       onPointerDown={down} onPointerMove={move} onPointerUp={up}>
       <rect x={pad.l} y={pad.t} width={iw} height={ih} fill="var(--surface-2)" stroke="var(--border)" rx="2" />
       <path d={path} fill="var(--fg-mute)" opacity="0.35" stroke="var(--fg-4)" strokeWidth="0.8" />
@@ -245,7 +245,7 @@ export function RPSelStats({ run, sel, onClear }) {
     </span>
   );
   return (
-    <div style={{
+    <div data-testid="rp-selection-stat" style={{
       display: 'flex', alignItems: 'center', gap: 16, padding: '5px 12px', flexWrap: 'wrap',
       background: 'var(--info-bg)', border: '1px solid var(--info)', borderRadius: 4,
       fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--fg-2)',
@@ -265,7 +265,7 @@ export function RPSelStats({ run, sel, onClear }) {
       </span>
       <div style={{ flex: 1 }}></div>
       <span style={{ color: 'var(--fg-4)', fontSize: 9.5 }}>双击主图重置</span>
-      {onClear && <button className="btn ghost sm" onClick={onClear} style={{ color: 'var(--info)' }}>✕ 清除选区</button>}
+      {onClear && <button data-testid="rp-selection-clear" className="btn ghost sm" onClick={onClear} style={{ color: 'var(--info)' }}>✕ 清除选区</button>}
     </div>
   );
 }

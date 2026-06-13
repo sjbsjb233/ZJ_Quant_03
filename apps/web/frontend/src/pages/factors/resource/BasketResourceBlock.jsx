@@ -49,7 +49,7 @@ export default function BasketResourceBlock({ basketId, brunId, brun, basketName
   const openRun = (runId) => {
     if (!runId) return;
     const fid = (q.data?.tasks || []).find((t) => t.run_id === runId)?.factor_id;
-    if (fid) navigate(`/factors/${fid}?tab=runscope&run=${runId}`);
+    if (fid) navigate(`/factors/library/${fid}?tab=runscope&run=${runId}`);
   };
 
   const Title = ({ bk }) => (
@@ -65,7 +65,7 @@ export default function BasketResourceBlock({ basketId, brunId, brun, basketName
   );
 
   const wrap = (children) => (
-    <div ref={ref} style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: 16, background: 'var(--bg)', borderRadius: 6 }}>
+    <div ref={ref} data-testid="bk-block" style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: 16, background: 'var(--bg)', borderRadius: 6 }}>
       {children}
     </div>
   );

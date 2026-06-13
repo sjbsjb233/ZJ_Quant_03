@@ -150,7 +150,7 @@ export function RPFlamePanel({ run, flame, sel, mode = 'data', width = 1380, ini
           style={{ color: 'var(--fg-3)' }}>⟲ 重置</button>
         <div style={{ flex: 1 }}></div>
         {sel && (
-          <span className="chip info" style={{ height: 18, fontSize: 10 }}>
+          <span data-testid="rp-flame-selection-indicator" className="chip info" style={{ height: 18, fontSize: 10 }}>
             ◧ 选区 {rpMMSS(sel.t0)}–{rpMMSS(sel.t1)} · 样本 {rpThousand(visSamples)}
           </span>
         )}
