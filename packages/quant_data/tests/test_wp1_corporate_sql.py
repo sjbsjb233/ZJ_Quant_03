@@ -119,3 +119,47 @@ def test_wp1_001_empty_and_no_event_paths(root):
     )
     out = corporate.compute_adj_factors(symbols=["Z"], root=root).to_pylist()
     assert out and all(r["adj_factor"] == 1.0 for r in out)
+
+
+def test_wp1_001_dirty_events_byte_identical_plus_warned(root):
+    """终审 🟠-1: 脏事件(负现金/0拆股/未来除权)下,新实现仍与 legacy 逐字节
+    一致(共用 _event_ratio,不丢弃),且每个脏事件都有 corporate.event.invalid
+    告警(不静默)。未来除权日是合法分红 —— 不再被当脏数据,与 legacy 同样折进。"""
+    from quant_data import corporate
+    from quant_data import logging as qd_logging
+    from quant_data.corporate import _compute_adj_factors_legacy
+
+    days = [dt.date(2025, 11, 3), dt.date(2025, 11, 4), dt.date(2025, 11, 5)]
+    ingest.ingest_bars_daily(
+        records=[daily_bar(d, symbol="D", close=20.0 - i) for i, d in enumerate(days)],
+        apply_mapping=False, root=root,
+    )
+    ingest.ingest_corporate_actions(records=[
+        # 负现金分红:legacy 折进 >1 因子 —— 新实现必须一致(不得丢成 1.0)
+        {"symbol": "D", "action_date": days[1], "action_type": "cash_dividend",
+         "cash_per_share": -2.0},
+        # 0 拆股:_event_ratio 内建护栏两侧都 → 1.0
+        {"symbol": "D", "action_date": days[2], "action_type": "split",
+         "split_ratio": 0.0},
+        # 未来除权(晚于末 bar):合法待派息,legacy 折进全部 bar,新实现亦然
+        {"symbol": "D", "action_date": dt.date(2026, 1, 9),
+         "action_type": "cash_dividend", "cash_per_share": 0.5},
+    ], root=root)
+
+    events = []
+    qd_logging.register_sink(lambda rec: events.append(rec.event))
+    try:
+        new = {(r["symbol"], r["date"]): r["adj_factor"]
+               for r in corporate.compute_adj_factors(symbols=["D"], root=root).to_pylist()}
+    finally:
+        qd_logging.unregister_all_sinks()
+    old = {(r["symbol"], r["date"]): r["adj_factor"]
+           for r in _compute_adj_factors_legacy(symbols=["D"], root=root).to_pylist()}
+
+    assert set(new) == set(old)
+    for k, ov in old.items():
+        assert math.isclose(new[k], ov, rel_tol=1e-12), (k, new[k], ov)
+    # 未来除权折进 ⇒ 末 bar 因子 ≠ 1.0(证明它没被当脏数据丢弃)
+    assert abs(new[("D", days[-1])] - 1.0) > 1e-9
+    # 不静默:负现金 + 0拆股各一条告警(共 2 条;未来除权不算脏,不告警)
+    assert events.count("corporate.event.invalid") == 2

@@ -288,3 +288,95 @@ def test_wp5_from_env_budgets(monkeypatch):
     v = gate.try_acquire("factor.eval.daily", task_id="t")
     assert isinstance(v, Grant)
     v.release()
+
+
+def test_wp5_from_env_exclusive_classes(monkeypatch):
+    """终审 🟡-3: ADMISSION_EXCLUSIVE_CLASSES 空串=未设(走默认),不得覆盖成空。"""
+    monkeypatch.delenv("ADMISSION_EXCLUSIVE_CLASSES", raising=False)
+    g0 = AdmissionGate.from_env(probe=FakeProbe(limit_mb=None, available_mb=None))
+    assert g0._exclusive_classes == frozenset({"factor.eval.minute"})   # 默认
+    # compose ${VAR:-} 未设时透传的是【空串】—— 必须仍走默认,而非空集
+    monkeypatch.setenv("ADMISSION_EXCLUSIVE_CLASSES", "")
+    g1 = AdmissionGate.from_env(probe=FakeProbe(limit_mb=None, available_mb=None))
+    assert g1._exclusive_classes == frozenset({"factor.eval.minute"})
+    # 显式设置才覆盖
+    monkeypatch.setenv("ADMISSION_EXCLUSIVE_CLASSES", "factor.eval.minute, keeper.compact")
+    g2 = AdmissionGate.from_env(probe=FakeProbe(limit_mb=None, available_mb=None))
+    assert g2._exclusive_classes == frozenset({"factor.eval.minute", "keeper.compact"})
+
+
+# ── 终审 🟠-2: MemoryProbe 真实 cgroup 解析(OOM 防护唯一数值来源)──────────
+def _probe_on(tmp_path, *, v2_max=None, v2_cur=None, v2_stat=None,
+              v1_max=None, v1_cur=None, v1_stat=None):
+    """构造一个把 cgroup 路径指向 tmp 文件的 MemoryProbe 子类实例。"""
+    from quant_admission import MemoryProbe
+
+    def w(name, content):
+        if content is None:
+            return str(tmp_path / f"{name}.absent")   # 不创建 → 触发 OSError 分支
+        p = tmp_path / name
+        p.write_text(content)
+        return str(p)
+
+    class _P(MemoryProbe):
+        _V2_MAX = w("v2max", v2_max)
+        _V2_CUR = w("v2cur", v2_cur)
+        _V2_STAT = w("v2stat", v2_stat)
+        _V1_MAX = w("v1max", v1_max)
+        _V1_CUR = w("v1cur", v1_cur)
+        _V1_STAT = w("v1stat", v1_stat)
+
+    return _P()
+
+
+def test_probe_v2_available_credits_inactive_file(tmp_path):
+    GiB = 1024 ** 3
+    p = _probe_on(
+        tmp_path,
+        v2_max=str(3 * GiB), v2_cur=str(2 * GiB),
+        v2_stat=f"anon 1073741824\ninactive_file {1 * GiB}\nslab 123\n",
+    )
+    assert p.limit_mb() == 3072.0
+    # available = max − (current − inactive_file) = 3G − (2G − 1G) = 2G
+    assert abs(p.available_mb() - 2048.0) < 0.5
+
+
+def test_probe_v2_max_means_no_limit_falls_through(tmp_path):
+    # v2 "max" = 无上限 → limit 落到 v1(也缺)→ None;available 落 psutil/None
+    p = _probe_on(tmp_path, v2_max="max", v2_cur="123")
+    assert p.limit_mb() is None
+    av = p.available_mb()
+    assert av is None or av > 0          # psutil 兜底(宿主口径)或 None
+
+
+def test_probe_v1_sentinel_unlimited_is_none(tmp_path):
+    p = _probe_on(tmp_path, v1_max=str(2 ** 63 - 1), v1_cur="100")
+    assert p.limit_mb() is None          # 巨型哨兵 ≥ 2^60 视为无上限
+
+
+def test_probe_v1_path_when_v2_absent(tmp_path):
+    GiB = 1024 ** 3
+    p = _probe_on(
+        tmp_path,
+        v1_max=str(4 * GiB), v1_cur=str(3 * GiB),
+        v1_stat=f"total_inactive_file {2 * GiB}\n",   # v1 名字
+    )
+    assert p.limit_mb() == 4096.0
+    # 4G − (3G − 2G) = 3G
+    assert abs(p.available_mb() - 3072.0) < 0.5
+
+
+def test_probe_stat_missing_reclaimable_zero(tmp_path):
+    GiB = 1024 ** 3
+    p = _probe_on(tmp_path, v2_max=str(2 * GiB), v2_cur=str(GiB))  # 无 stat 文件
+    # 无 inactive_file → reclaimable 0 → available = 2G − 1G = 1G
+    assert abs(p.available_mb() - 1024.0) < 0.5
+
+
+def test_probe_read_bytes_branches(tmp_path):
+    p = _probe_on(tmp_path)
+    assert p._read_bytes(str(tmp_path / "nope")) is None      # OSError
+    bad = tmp_path / "bad"; bad.write_text("not-a-number")
+    assert p._read_bytes(str(bad)) is None                    # ValueError
+    ok = tmp_path / "ok"; ok.write_text("4096\n")
+    assert p._read_bytes(str(ok)) == 4096.0

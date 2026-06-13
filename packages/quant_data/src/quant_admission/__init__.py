@@ -273,8 +273,11 @@ class AdmissionGate:
             "draining_warn_s": float(
                 os.environ.get(DRAINING_WARN_ENV, DEFAULT_DRAINING_WARN_MIN)) * 60.0,
         }
-        excl = os.environ.get(EXCLUSIVE_CLASSES_ENV)
-        if excl is not None:
+        # 空串 = 未设(走默认 DEFAULT_EXCLUSIVE_CLASSES)。compose 锚点用
+        # ${VAR:-} 透传时,未设的变量到这里是空串 —— 若按 "is not None" 判定会
+        # 把默认独占类覆盖成空元组,使 factor.eval.minute 失去独占语义(终审 🟡-3)。
+        excl = (os.environ.get(EXCLUSIVE_CLASSES_ENV) or "").strip()
+        if excl:
             kw["exclusive_classes"] = tuple(c.strip() for c in excl.split(",") if c.strip())
         kw.update(overrides)
         return cls(**kw)

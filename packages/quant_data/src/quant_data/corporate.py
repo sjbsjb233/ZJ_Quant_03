@@ -39,16 +39,19 @@ _PRICE_AFFECTING = {"cash_dividend", "stock_dividend", "transfer", "rights_issue
 _BARS_TABLE = "raw.bars_daily"
 
 
-def _event_invalid_reason(ev: dict, last_bar_date) -> str | None:
-    """脏事件检测(内存治理验收 T-WP1-001b — 不得静默算出错值)。
+def _event_quality_warning(ev: dict) -> str | None:
+    """脏事件检测 —— **纯诊断**,不改变计算(终审 🟠-1 修正)。
 
-    quality 层只警告不拒写,脏行能进湖;读侧旧实现把它们"按公式硬算"——
-    比如负现金分红会得出 >1 的因子(数值上有效、业务上荒谬)。这里把非法
-    事件显式无效化(跳过,数值上等价于 ratio=1.0)并发结构化台账
-    ``corporate.event.invalid``,语义 = 方案约定的"跳过 + 台账"。
+    红线是"复权因子与改造前逐字节一致"。``_event_ratio`` 是新旧实现共用的
+    同一函数:0/负拆股、负权益等已被其内建护栏(``denom<=0`` / ``adj_prev<=0``
+    → 1.0)天然无害化,新旧结果本就相同。所以这里只**记台账**(不静默)、
+    **不丢弃事件** —— 丢弃才会产生与旧系统的分歧(尤其负现金分红 legacy 折进
+    >1 因子,丢弃则变 1.0)。脏数据的拒写/治理是 quality.py(入库)与 invariants
+    INV-011 这条专线的职责,内存改造不在读侧偷改研究口径。
+
+    注意:**不再把"除权日晚于末 bar"当脏数据** —— 那是已公告未除权的合法
+    分红(生产常见),legacy 把它折进全部历史 bar,新实现亦然(逐字节一致)。
     """
-    if last_bar_date is not None and ev["action_date"] > last_bar_date:
-        return "ex_date_beyond_last_bar"   # 未来事件会折扣全部历史 bar,违反末日=1.0 约定
     for fld in ("cash_per_share", "stock_per_10", "transfer_per_10",
                 "rights_ratio", "rights_price"):
         v = ev.get(fld)
@@ -56,7 +59,7 @@ def _event_invalid_reason(ev: dict, last_bar_date) -> str | None:
             return f"negative_{fld}"
     split = ev.get("split_ratio")
     if split is not None and split <= 0:
-        return "non_positive_split_ratio"  # 0/负拆股 = 无意义,旧实现静默当 1.0
+        return "non_positive_split_ratio"  # 0/负拆股:_event_ratio 已无害化为 1.0
     return None
 
 
@@ -102,19 +105,6 @@ def _price_events(reader: DataReader, symbols) -> dict[str, list[dict]]:
     return out
 
 
-def _last_bar_dates(reader: DataReader, symbols: list[str]) -> dict:
-    """每个事件票的末 bar 日(一次聚合;事件票集是小集合)。"""
-    if not symbols:
-        return {}
-    quoted = ",".join("'" + s.replace("'", "''") + "'" for s in symbols)
-    cur = reader.aggregate_current_view(
-        _BARS_TABLE, projection="symbol, MAX(date)",
-        tail="GROUP BY symbol",
-        filters=[f"t.symbol IN ({quoted})"],
-    )
-    return {s: _to_date(d) for s, d in cur.fetchall()}
-
-
 def _prev_closes(reader: DataReader, events_by_symbol, bar_filters) -> dict:
     """close of the last bar STRICTLY before each event's ex-date — in-engine.
 
@@ -148,26 +138,21 @@ def _prev_closes(reader: DataReader, events_by_symbol, bar_filters) -> dict:
     return {(s, _to_date(ad)): pc for s, ad, pc in cur.fetchall()}
 
 
-def _drop_invalid_events(events_by_symbol, last_bar):
-    """非法事件:跳过 + ``corporate.event.invalid`` 台账(T-WP1-001b)。
+def _warn_dirty_events(events_by_symbol) -> int:
+    """记脏事件台账(不静默),但**不丢弃** —— 计算对 legacy 逐字节一致。
 
-    数值语义与"ratio=1.0"等价(乘 1 = 不乘),但负参数等旧实现会硬算出
-    错值的形态在这里被显式拦下;每个被拦事件都有结构化告警,不静默。
+    返回告警条数(供测试断言"看见了"且"计算未变")。
     """
-    out: dict[str, list[dict]] = {}
+    n = 0
     for sym, evs in events_by_symbol.items():
-        kept = []
         for ev in evs:
-            reason = _event_invalid_reason(ev, last_bar.get(sym))
+            reason = _event_quality_warning(ev)
             if reason is not None:
+                n += 1
                 _log.warn("corporate.event.invalid", symbol=sym,
                           action_date=str(ev["action_date"]),
                           action_type=ev["action_type"], reason=reason)
-                continue
-            kept.append(ev)
-        if kept:
-            out[sym] = kept
-    return out
+    return n
 
 
 def _cumulative_intervals(events_by_symbol, prev_close):
@@ -238,8 +223,7 @@ def compute_adj_factors(symbols=None, reader: DataReader | None = None, root=Non
         return _empty_factors()
 
     events_by_symbol = _price_events(reader, symbols)
-    last_bar = _last_bar_dates(reader, sorted(events_by_symbol))
-    events_by_symbol = _drop_invalid_events(events_by_symbol, last_bar)
+    _warn_dirty_events(events_by_symbol)        # 诊断台账,不改变计算(逐字节一致)
     prev_close = _prev_closes(reader, events_by_symbol, bar_filters)
     intervals = _cumulative_intervals(events_by_symbol, prev_close)
 

@@ -46,6 +46,9 @@ x-admission-env: &admission-env
   ADMISSION_RESERVE_MB: ${ADMISSION_RESERVE_MB:-1024}
   ADMISSION_DEFERRED_WARN_MIN: ${ADMISSION_DEFERRED_WARN_MIN:-10}
   ADMISSION_DRAINING_WARN_MIN: ${ADMISSION_DRAINING_WARN_MIN:-30}
+  # 声明式独占任务类(逗号分隔)。留空 = 用代码默认 "factor.eval.minute"
+  # (from_env 把空串当未设,不会覆盖成空,见 quant_admission §from_env)。
+  ADMISSION_EXCLUSIVE_CLASSES: ${ADMISSION_EXCLUSIVE_CLASSES:-}
 
 services:
   # ── 唯一公网入口 ─────────────────────────────────────────────

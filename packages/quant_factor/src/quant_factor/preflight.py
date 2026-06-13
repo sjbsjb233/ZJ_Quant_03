@@ -204,7 +204,10 @@ class PreflightContext:
             return 0
         key = ("flag_rows", tuple(cols))
         if key not in self._cache:
-            expr = " OR ".join(f"{c} = true" for c in cols)
+            # 纵深防御(终审 🟡-5):cols 源自 preset_flag(用户可控),虽已被
+            # universe_columns() 物理列白名单挡过,这里再过列标识符校验,与
+            # bars_field_coverage 一致——白名单 + 校验双保险。
+            expr = " OR ".join(f"{_safe_column(c)} = true" for c in cols)
             try:
                 cur = self.reader.aggregate_current_view(
                     "raw.universe", projection="COUNT(*)",
@@ -220,9 +223,10 @@ class PreflightContext:
         """COUNT of non-null `col` values in the in-window universe view."""
         key = ("nonnull", col)
         if key not in self._cache:
+            safe = _safe_column(col)        # 纵深防御(终审 🟡-5)
             try:
                 cur = self.reader.aggregate_current_view(
-                    "raw.universe", projection=f"COUNT({col})",
+                    "raw.universe", projection=f"COUNT({safe})",
                     filters=self._window_filters() or None,
                 )
                 self._cache[key] = int(cur.fetchone()[0])
