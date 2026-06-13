@@ -254,6 +254,29 @@ def test_wp5_budget_failfast_validation():
                   probe=FakeProbe(limit_mb=None, available_mb=None))
 
 
+def test_wp5_allow_wait_false_no_orphan_waiter(events):
+    """安全审查 P2: 请求-响应型调用方(allow_wait=False)拿不到即 Deferred,
+    不入排干队列、不触发 draining,因此不会留下永不认领的孤儿队头连环拖 429。"""
+    # 在场 600 占住,giant(1500)装不下当前但可独占 ⇒ 平时会进排干队列
+    gate = _gate(FakeProbe(limit_mb=2000, available_mb=2000),
+                 budgets={"light": 600, "giant": 1500})
+    hold = gate.try_acquire("light", task_id="l1")
+    assert isinstance(hold, Grant)
+    # allow_wait=False:Deferred 但 **不入队**、**不进 draining**
+    v = gate.try_acquire("giant", task_id="web1", allow_wait=False)
+    assert isinstance(v, Deferred) and not v.draining
+    assert not gate.is_draining(), "请求型调用方不得把闸拖进排干模式"
+    # 后续轻任务照常放行(没有孤儿队头挡路)
+    again = gate.try_acquire("light", task_id="l2")
+    assert isinstance(again, Grant)
+    hold.release(); again.release()
+    # 对照:allow_wait=True 会入队并进 draining(老语义不变)
+    h2 = gate.try_acquire("light", task_id="l3")
+    w = gate.try_acquire("giant", task_id="worker1", allow_wait=True)
+    assert isinstance(w, Deferred) and w.draining and gate.is_draining()
+    h2.release()
+
+
 def test_wp5_from_env_budgets(monkeypatch):
     monkeypatch.setenv("ADMISSION_BUDGETS_JSON", '{"factor.eval.daily": 42}')
     monkeypatch.setenv("ADMISSION_RESERVE_MB", "7")

@@ -268,6 +268,14 @@ def main() -> None:
                 cand = store.peek_next_filtered(db, allow_routine, exclude_ids=deferred_ids)
                 if cand is None:
                     break
+                # 安全审查 P2: 我们已持有该 task 的 grant(其 future 仍在跑,但
+                # recover_stale 因心跳过期把它翻回 queued 又被 peek 到)⇒ 不得二次
+                # 准入。二次 grant 会按 task_id 覆盖 _in_flight 记账,使闸把两份
+                # 在跑内存只算一份(正是 06-04 卡死场景),削弱 OOM 防护。跳过它,
+                # 等当前 future 收尾时 _finalize_future 统一处理。
+                if cand.task_id in grants:
+                    deferred_ids.add(cand.task_id)
+                    continue
                 verdict = gate.try_acquire(
                     _admission_class(cand.task_type), task_id=cand.task_id
                 )

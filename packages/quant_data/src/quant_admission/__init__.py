@@ -302,16 +302,24 @@ class AdmissionGate:
 
     # ── the gate ─────────────────────────────────────────────────────────
     def try_acquire(self, task_class: str, *, task_id: str,
-                    est_mb: float | None = None) -> Grant | Deferred:
+                    est_mb: float | None = None,
+                    allow_wait: bool = True) -> Grant | Deferred:
         """Grant 持有期间计入 in_flight;Deferred 含原因与建议等待。
 
         只决定重任务 **何时开始**,不碰怎么算(方案 §2.2);每次决策写 app_log。
+
+        ``allow_wait`` (安全审查 P2): 排干等位队列假设同一 ``task_id`` 每轮**重复
+        呈现**(factor dispatcher 重复 peek、keeper 循环同 job)。请求-响应型调用方
+        (web 端点)不会重新呈现 —— 它拿 Deferred 即返回 429,客户端用 **新** id
+        重试。这类调用方必须传 ``allow_wait=False``:拿不到就立即 Deferred,**不入
+        排干队列、不触发排干模式**,否则会留下永不被认领的孤儿队头,30s 内把所有
+        同类端点拖进 draining(连环 429)。
         """
         est = float(est_mb) if est_mb is not None else self.budget_for(task_class)
         with self._lock:
             now = self._clock()
             self._prune_waiters(now)
-            verdict = self._decide(task_class, task_id, est, now)
+            verdict = self._decide(task_class, task_id, est, now, allow_wait=allow_wait)
             self._log_decision(verdict, now)
             return verdict
 
@@ -347,7 +355,8 @@ class AdmissionGate:
         if not self._waiters and self._exclusive_active is None:
             self._draining_since = None
 
-    def _decide(self, task_class: str, task_id: str, est: float, now: float):
+    def _decide(self, task_class: str, task_id: str, est: float, now: float,
+                allow_wait: bool = True):
         headroom = self._headroom_mb()
         in_flight = self._in_flight_total()
         declared_exclusive = task_class in self._exclusive_classes
@@ -399,8 +408,12 @@ class AdmissionGate:
         ):
             return grant(exclusive=True)
 
-        # ④ 现在装不下,但独占可行 ⇒ 入排干队列 (FIFO),进入只出不进
+        # ④ 现在装不下,但独占可行 ⇒ 入排干队列 (FIFO),进入只出不进。
+        #    请求-响应型调用方 (allow_wait=False) 不入队 —— 直接 Deferred,避免
+        #    留下永不认领的孤儿队头把同类端点拖进连环 draining (安全审查 P2)。
         if self._fits_alone(est):
+            if not allow_wait:
+                return defer("insufficient-budget", wait=5.0)
             self._waiters.append(_Waiter(task_class, task_id, est, now, now))
             if self._draining_since is None:
                 self._draining_since = now

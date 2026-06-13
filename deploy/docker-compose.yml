@@ -36,7 +36,13 @@ x-logging-env: &logging-env
 # WP2/3 实测重标定 (方案 §8 阶段三开工前)。reserve = 进程常驻 + 突发预留。
 # DEFERRED/DRAINING 阈值同时喂给闸 (自报 stuck 事件) 与 web 评估器 D16 (规则页)。
 x-admission-env: &admission-env
-  ADMISSION_BUDGETS_JSON: ${ADMISSION_BUDGETS_JSON:-{"factor.eval.daily":600,"factor.eval.minute":4500,"factor.correlation":400,"keeper.compact":800,"web.rows.transform":1200,"web.charts.heavy":512,"factor.task.light":64,"keeper.job.light":64}}
+  # 留空 = 用 quant_admission.DEFAULT_BUDGETS(与下表逐字一致);要覆盖就在 .env
+  # 设整段 JSON。不在此内联默认 JSON —— compose 的 ${VAR:-…} 遇 JSON 自带的 }
+  # 会被第一个 } 截断成非法值,from_env 再 fallback 回 DEFAULT_BUDGETS,使
+  # 操作员的覆盖静默失效(安全审查 P2)。预算口径(MB):
+  #   factor.eval.daily=600 minute=4500 correlation=400 keeper.compact=800
+  #   web.rows.transform=1200 web.charts.heavy=512 *.light=64
+  ADMISSION_BUDGETS_JSON: ${ADMISSION_BUDGETS_JSON:-}
   ADMISSION_RESERVE_MB: ${ADMISSION_RESERVE_MB:-1024}
   ADMISSION_DEFERRED_WARN_MIN: ${ADMISSION_DEFERRED_WARN_MIN:-10}
   ADMISSION_DRAINING_WARN_MIN: ${ADMISSION_DRAINING_WARN_MIN:-30}
@@ -91,6 +97,11 @@ services:
       QUANT_DUCKDB_THREADS: ${WEB_DUCKDB_THREADS:-auto}
       QUANT_HEAVY_TASK_SLOTS: ${VIZ_MAX_CONCURRENT_SCANS:-3}
       OMP_NUM_THREADS: ${WEB_OMP_THREADS:-1}
+      # /rows 变换路径(复权/重算复权)内存物化行数硬上限 (内存治理 WP1.3):
+      # 超过即 4xx 引导缩小范围,而非吃满堆。按 web-backend mem_limit 调。
+      WEB_TRANSFORM_ROW_CAP: ${WEB_TRANSFORM_ROW_CAP:-200000}
+      # 重读端点并发信号量上限 (2026-06-01 P0;同时作为 DuckDB 重任务槽口径)。
+      VIZ_MAX_CONCURRENT_SCANS: ${VIZ_MAX_CONCURRENT_SCANS:-3}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost,http://localhost:80}
       JWT_SECRET: ${JWT_SECRET:-change-me-in-prod}
       SEED_DEFAULT_USERS: "true"

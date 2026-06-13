@@ -63,8 +63,12 @@ def admission_slot(task_class: str):
     Deferred ⇒ ``ADMISSION_DEFERRED`` (HTTP 429) with ``Retry-After`` so
     clients back off instead of stacking materialisations past the cgroup
     limit (方案 WP5 接入点③: /rows 变换路径 + 图表重端点)。
+
+    ``allow_wait=False`` (安全审查 P2): 每个请求用新 task_id 且拿 429 即返回,
+    不会重新呈现同一 id —— 不能进排干等位队列,否则会留下孤儿队头连环 429。
     """
-    verdict = admission_gate().try_acquire(task_class, task_id=new_task_id("web"))
+    verdict = admission_gate().try_acquire(
+        task_class, task_id=new_task_id("web"), allow_wait=False)
     if isinstance(verdict, Deferred):
         raise ApiError(
             "ADMISSION_DEFERRED",

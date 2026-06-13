@@ -193,6 +193,41 @@ def test_wp3_missing_projected_column_falls_back_like_legacy():
     assert not ledger2.has_code("DG_PRICE_FALLBACK")
 
 
+def test_wp3_preflight_size_field_sql_injection_blocked():
+    """安全审查 P1: size_field 流入聚合下推 SQL,必须只接受列标识符。
+    WP3.3 把 polars 列访问改为 SQL 文本后,恶意 size_field 不得拼进引擎。"""
+    from quant_factor.preflight import PreflightContext, _safe_column
+
+    # 首道防线:_safe_column 拒绝非标识符
+    for bad in ("circ_mv; DROP TABLE x", "x OR 1=1", "a/**/b", "1; SELECT", ""):
+        with pytest.raises(ValueError, match="非法列名|列标识符"):
+            _safe_column(bad)
+    assert _safe_column("circ_mv") == "circ_mv"
+    assert _safe_column("total_mv") == "total_mv"
+
+    # 端到端:恶意 size_field 经 PreflightContext 不会执行注入(转化为 ValueError)
+    r = FakeReader()
+    ctx = PreflightContext(r, _cfg(), UNI, r.symbols, _cfg().start, _cfg().end)
+    with pytest.raises(ValueError):
+        ctx.bars_field_coverage("circ_mv); DROP", positive=True)
+    # 合法字段照常工作
+    cov, n, n_have, _ = ctx.bars_field_coverage("circ_mv", positive=True)
+    assert n_have == n and cov == 1.0
+
+
+def test_wp3_evalconfig_rejects_bad_size_field():
+    """安全审查 P1 第二道防线: 请求体边界(from_dict)拒绝白名单外 size_field。"""
+    from quant_factor import EvalConfig
+
+    with pytest.raises(ValueError, match="size_field"):
+        EvalConfig.from_dict({"size_field": "circ_mv; DROP TABLE bars"})
+    with pytest.raises(ValueError, match="size_field"):
+        EvalConfig.from_dict({"size_field": "close"})   # 真实列但非市值口径,也拒
+    # 白名单内放行
+    assert EvalConfig.from_dict({"size_field": "total_mv"}).size_field == "total_mv"
+    assert EvalConfig.from_dict({}).size_field == "circ_mv"  # 默认值不受影响
+
+
 def test_wp3_builtin_factors_declare_required_columns():
     from quant_factor.builtin.momentum import Mom, Reversal, TurnoverN
     from quant_factor.builtin.size import LogMktCap

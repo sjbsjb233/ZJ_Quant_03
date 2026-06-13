@@ -26,6 +26,7 @@ table at most once.
 from __future__ import annotations
 
 import datetime as dt
+import re
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -34,6 +35,19 @@ import polars as pl
 from .degradation import DEGRADATION_CODES, DegradationLedger, make_event
 from .neutralize import industry_at_level
 from .universe import UniverseDef, _resolve_flag, rebalance_dates
+
+# WP3.3 把覆盖率检查从 polars 列访问改为聚合下推后,字段名进入 DuckDB SQL 文本。
+# size_field 是用户可控的(EvalConfig.from_dict 透传请求体),必须把它约束成
+# 纯列标识符 —— 否则构成 SQL 注入(安全审查 P1)。列名只可能是
+# [字母/下划线开头 + 字母数字下划线];任何其它形态在到达引擎前就拒绝。
+_SQL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _safe_column(field_name: str) -> str:
+    """Reject anything that isn't a bare column identifier before it reaches SQL."""
+    if not _SQL_IDENTIFIER_RE.match(field_name or ""):
+        raise ValueError(f"非法列名 {field_name!r}:仅允许列标识符(防 SQL 注入)")
+    return field_name
 
 
 # ── coverage / window thresholds (设计 §12.4 — centralised, no code edits to tune)
@@ -158,9 +172,10 @@ class PreflightContext:
         n = len(self.symbols)
         if n == 0:
             return 0.0, 0, 0, []
-        key = ("bars_cov", field, positive)
+        col = _safe_column(field)            # 安全审查 P1:列名进 SQL 前强制校验
+        key = ("bars_cov", col, positive)
         if key not in self._cache:
-            cond = f"{field} IS NOT NULL" + (f" AND {field} > 0" if positive else "")
+            cond = f"{col} IS NOT NULL" + (f" AND {col} > 0" if positive else "")
             try:
                 cur = self.reader.aggregate_current_view(
                     "raw.bars_daily",
