@@ -40,6 +40,9 @@ ERROR_STATUS = {
     "INVALID_NEW_BATCH": 409,
     "UNPROCESSABLE_ENTITY": 422,
     "DATA_UNAVAILABLE": 422,           # requested metric/column not yet ingested
+    "FILTER_REQUIRED_FOR_TRANSFORM": 400,  # bars 变换路径必须先选股票 (内存治理 WP1.3)
+    "TRANSFORM_ROW_CAP_EXCEEDED": 400,     # 变换路径物化行数超硬上限 (内存治理 WP1.3)
+    "ADMISSION_DEFERRED": 429,             # 内存准入闸暂缓 (内存治理 WP5, Retry-After)
     "INTERNAL_ERROR": 500,
     "NOT_IMPLEMENTED": 501,
     "SERVICE_UNAVAILABLE": 503,
@@ -47,14 +50,19 @@ ERROR_STATUS = {
 
 
 class ApiError(Exception):
-    """Raise to return a structured error response."""
+    """Raise to return a structured error response.
+
+    ``headers`` lets a handler attach response headers — used by the admission
+    gate's 429 to carry ``Retry-After`` (内存治理方案 WP5).
+    """
 
     def __init__(self, code: str, message: str, details: dict | None = None,
-                 status_code: int | None = None):
+                 status_code: int | None = None, headers: dict | None = None):
         self.code = code
         self.message = message
         self.details = details or {}
         self.status_code = status_code or ERROR_STATUS.get(code, 400)
+        self.headers = headers or {}
         super().__init__(message)
 
 
@@ -89,6 +97,7 @@ def install_error_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=exc.status_code,
             content=_body(exc.code, exc.message, exc.details, trace_id),
+            headers=exc.headers or None,
         )
 
     @app.exception_handler(RequestValidationError)

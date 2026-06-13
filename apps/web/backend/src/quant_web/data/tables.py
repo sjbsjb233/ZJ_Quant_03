@@ -1,6 +1,7 @@
 """Table browser routes (doc §4.5 / §5.2.4) -- raw rows, full view, row lineage."""
 from __future__ import annotations
 
+import os
 import time
 
 import duckdb
@@ -10,7 +11,7 @@ from quant_data import table_stats
 from quant_data.reader import _date_lit, _str_lit, _ts_lit
 from quant_data.schemas import RAW_TABLES, REFERENCE_TABLES, TS, get_spec
 
-from ..deps import get_current_user, get_reader, get_root
+from ..deps import admission_slot, get_current_user, get_reader, get_root
 from ..errors import ApiError
 from .serialize import table_payload
 
@@ -384,6 +385,22 @@ def _needs_in_memory_pagination(name: str, p: dict) -> bool:
     return False
 
 
+def _is_transform_request(name: str, p: dict) -> bool:
+    """bars-daily requests that re-derive values in memory (复权/重算复权)."""
+    return name == "raw.bars_daily" and (
+        (p.get("adjust") or "none") != "none" or bool(p.get("recompute_adj"))
+    )
+
+
+def _transform_row_cap() -> int:
+    """Hard cap on rows the transform (in-memory) path may materialise.
+
+    Read at call time so ops can resize without a restart (内存治理 WP1.3;
+    测试环境按"缩限不缩机制"调小,默认 200,000)。
+    """
+    return int(os.environ.get("WEB_TRANSFORM_ROW_CAP", "200000"))
+
+
 def _require_filter_for_large_tables(name: str, p: dict) -> None:
     if name not in _REQUIRE_FILTER:
         return
@@ -393,10 +410,41 @@ def _require_filter_for_large_tables(name: str, p: dict) -> None:
     # full-table scan through.
     has_symbols = bool(_parse_symbols(p.get("symbols")))
     has_window = bool(p.get("start") and p.get("end"))
+    # 内存治理 WP1.3 规则①: bars 变换路径 (adjust/recompute_adj) 全范围物化,
+    # 仅日期窗仍可放过"全市场宽窗"(~1.5GB/页击);变换必须给非空 symbols。
+    if _is_transform_request(name, p) and not has_symbols:
+        raise ApiError(
+            "FILTER_REQUIRED_FOR_TRANSFORM",
+            "raw.bars_daily 的复权/重算复权浏览必须先选择股票(symbols)——"
+            "日期窗口不足以约束全市场物化;请先选择股票再启用复权。",
+        )
     if not (has_symbols or has_window):
         raise ApiError(
             "MISSING_PARAMETER",
             f"浏览大表 {name} 必须指定 symbols 或 start+end 日期范围",
+        )
+
+
+def _enforce_transform_row_cap(reader, spec, name: str, p: dict) -> None:
+    """内存治理 WP1.3 规则②: pre-count the in-memory path's working set.
+
+    The legacy (typed-reader + in-memory slice) path materialises every row the
+    pre-filters select before paging; counting first costs one COUNT(*) and
+    rejects the request BEFORE the gigabytes are allocated. The count runs on
+    the same pre-dedup filters the read will use, so it equals the row count
+    the read would materialise (post filters / downsample shrink, never grow).
+    """
+    if not name.startswith("raw."):
+        return  # mutable reference tables are small single files
+    cap = _transform_row_cap()
+    pre, _post = _split_filters(spec, name, p)
+    n = reader.count_current_view(spec, filters=pre or None)
+    if n > cap:
+        raise ApiError(
+            "TRANSFORM_ROW_CAP_EXCEEDED",
+            f"该查询需物化 {n:,} 行,超过变换路径硬上限 {cap:,};"
+            "请缩小日期范围或减少股票数。",
+            details={"rows": n, "cap": cap},
         )
 
 
@@ -446,10 +494,22 @@ def rows(name: str, p: dict = Depends(_all_query_params),
     # Tables/options that can't push pagination into SQL safely (see
     # _needs_in_memory_pagination): fall back to the original typed-reader +
     # in-memory slice path. The P1 forced-filter check above keeps the working
-    # set small enough that materialising it is cheap.
+    # set small enough that materialising it is cheap. 内存治理 WP1.3/WP5:
+    # raw-table transforms additionally (a) pre-count against the row cap and
+    # (b) pass the memory admission gate (Deferred ⇒ 429 + Retry-After) —
+    # reference tables are single small files and skip both.
     if _needs_in_memory_pagination(name, p):
-        tbl = _current_view_table(name, reader, p)
-        columns, items = table_payload(tbl)
+        if name.startswith("raw."):
+            try:
+                _enforce_transform_row_cap(reader, spec, name, p)
+            except ValueError as e:
+                raise ApiError("INVALID_PARAMETER", str(e)) from e
+            with admission_slot("web.rows.transform"):
+                tbl = _current_view_table(name, reader, p)
+                columns, items = table_payload(tbl)
+        else:
+            tbl = _current_view_table(name, reader, p)
+            columns, items = table_payload(tbl)
         return _post_filter_and_page(columns, items, p)
 
     # SQL-pushdown path: one COUNT for total + one paged read. Never

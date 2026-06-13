@@ -18,7 +18,10 @@ test = ["pytest>=8.0"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["quant_data*"]
+# quant_admission (内存治理方案 WP5) ships inside the quant-data distribution:
+# every container already installs quant-data, so the admission gate is
+# importable in web/keeper/factor with zero Dockerfile/compose wiring changes.
+include = ["quant_data*", "quant_admission*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

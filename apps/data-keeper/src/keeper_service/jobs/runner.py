@@ -7,15 +7,20 @@ Ported from quant_web.jobs.runner. Differences:
     quant_data write/QC log emitted by the actor carries the originating trace_id
     (V3 §6.4) — whether the trace came from a forwarded UI command or was minted
     by the scheduler for an autonomous run.
+  - 内存治理 WP5 接入点②: heavy job types pass the quant_admission budget gate
+    before executing (Deferred ⇒ the worker thread waits, heartbeating, until
+    the budget frees up — 决定何时开始,不碰怎么算).
 """
 from __future__ import annotations
 
 import datetime as dt
 import threading
+import time
 import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 
+from quant_admission import AdmissionGate, Grant
 from quant_data import logging as qd_logging
 from sqlalchemy.orm import sessionmaker
 
@@ -23,6 +28,31 @@ from ..db.models import Job
 from ..logging_ctx import new_trace_id, trace_id_var
 
 _log = qd_logging.get_logger("keeper.jobs")
+
+# job type → 准入预算类 (内存治理 WP5; 预算表见 ADMISSION_BUDGETS_JSON)。
+# 重型写 (compaction/migration/vacuum 走 maintenance 类) 按 keeper.compact 记账;
+# 其余按 keeper.job.light 小预算 (排干期一并暂停)。
+_ADMISSION_CLASS = {
+    "maintenance": "keeper.compact",
+    "compaction": "keeper.compact",
+    "migration": "keeper.compact",
+    "vacuum": "keeper.compact",
+}
+_ADMISSION_POLL_S = 2.0
+
+_gate: AdmissionGate | None = None
+_gate_lock = threading.Lock()
+
+
+def _admission_gate() -> AdmissionGate:
+    global _gate
+    if _gate is None:
+        with _gate_lock:
+            if _gate is None:
+                # fail-fast 范围 = keeper 自己的任务类 (预算表全局共享, T-WP5-008)
+                _gate = AdmissionGate.from_env(validate_budgets=(
+                    *set(_ADMISSION_CLASS.values()), "keeper.job.light"))
+    return _gate
 
 
 class JobCancelled(Exception):
@@ -113,7 +143,9 @@ class JobRunner:
         _log.info(f"job.{job_type}.start", job_id=job_id, job_type=job_type)
         started = dt.datetime.utcnow()
         ctx = JobContext(self, job_id, self._root)
+        grant: Grant | None = None
         try:
+            grant = self._acquire_admission(ctx, job_id, job_type)
             result = fn(ctx, **params)
             if self._is_cancelled(job_id):
                 raise JobCancelled(job_id)
@@ -131,9 +163,33 @@ class JobRunner:
             _log.error(f"job.{job_type}.failed", exc=exc, job_id=job_id,
                        job_type=job_type, duration_ms=_ms_since(started))
         finally:
+            if grant is not None:
+                grant.release()
             self._clear_cancel(job_id)
             qd_logging.reset_context(qd_tok)
             trace_id_var.reset(local_tok)
+
+    def _acquire_admission(self, ctx: "JobContext", job_id: str, job_type: str) -> Grant:
+        """内存治理 WP5 接入点②: budget gate before the actor runs.
+
+        Deferred ⇒ wait-and-retry (cancellable). Each retry bumps progress_at
+        (heartbeat) so the reaper's stale-heartbeat回收 (D6) never mistakes a
+        budget-queued job for a hung one; the wait itself is visible in the
+        job log once + the gate's own admission.* app_log chain.
+        """
+        cls = _ADMISSION_CLASS.get(job_type, "keeper.job.light")
+        gate = _admission_gate()
+        logged_wait = False
+        while True:
+            ctx.check_cancel()
+            verdict = gate.try_acquire(cls, task_id=job_id)
+            if isinstance(verdict, Grant):
+                return verdict
+            if not logged_wait:
+                logged_wait = True
+                ctx.log(f"等待内存准入 ({cls}): {verdict.reason}")
+            self._update(job_id, progress_at=dt.datetime.utcnow())  # 心跳防误回收
+            time.sleep(min(_ADMISSION_POLL_S, max(0.5, verdict.suggested_wait_s)))
 
     def _update(self, job_id: str, **fields) -> None:
         with self._sf() as db:

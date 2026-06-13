@@ -14,28 +14,58 @@ We use threads rather than processes because:
 The reserve_interactive setting prevents routine tasks from filling all
 slots — when running_routine >= concurrency - reserve, we only pick from
 the interactive lane.
+
+内存治理接入 (《内存治理总体方案》):
+  - WP5 接入点①: claim 前过 quant_admission 预算闸 — peek → try_acquire →
+    Grant 才 claim;Deferred 跳过该任务,排干模式整轮停手 (只出不进)。
+    取代/吸收 PR #41 的 FACTOR_HEAVY_CONCURRENCY 过渡限速。
+  - WP6: 进程级线程配额 (POLARS_MAX_THREADS / OMP_NUM_THREADS) 必须在
+    polars/numpy 首次 import 之前写入 env — 故放在本模块最顶部。
 """
 from __future__ import annotations
 
-import logging
 import os
-import signal
-import threading
-import time
-from concurrent.futures import Future, ThreadPoolExecutor
 
-from quant_data import logging as qd_logging
-from sqlalchemy.orm import Session
 
-from ..config import ensure_dirs, get_settings
-from ..db import base as _db_base
-from ..db.models import Task
-from ..db.seed import seed_all
-from ..logging_ctx import configure_logging, trace_id_var
-from ..obs import install_obs
-from ..services.run_executor import execute_task
-from . import store
-from .estimator import update_stats
+def _setup_thread_quota() -> None:
+    """CPU 配额 (WP6): polars 线程池与 BLAS 在 import 时定容,只能用 env 配。
+
+    取值 = 可用核 ÷ 重任务槽数 (与 DuckDB PRAGMA threads 同公式);已显式设置
+    的 env 不覆盖 (compose 注入优先)。必须先于任何 polars/numpy import 执行。
+    """
+    try:
+        cores = max(1, len(os.sched_getaffinity(0)))  # type: ignore[attr-defined]
+    except AttributeError:  # macOS dev
+        cores = max(1, os.cpu_count() or 1)
+    slots = int(os.environ.get("QUANT_HEAVY_TASK_SLOTS",
+                               os.environ.get("FACTOR_CONCURRENCY", "4")))
+    per_task = str(max(1, cores // max(1, slots)))
+    os.environ.setdefault("POLARS_MAX_THREADS", per_task)
+    os.environ.setdefault("OMP_NUM_THREADS", per_task)
+
+
+_setup_thread_quota()
+
+import logging  # noqa: E402
+import signal  # noqa: E402
+import threading  # noqa: E402
+import time  # noqa: E402
+from concurrent.futures import Future, ThreadPoolExecutor  # noqa: E402
+
+from quant_admission import AdmissionGate, Deferred, Grant  # noqa: E402
+from quant_data import config as qd_config  # noqa: E402
+from quant_data import logging as qd_logging  # noqa: E402
+from sqlalchemy.orm import Session  # noqa: E402
+
+from ..config import ensure_dirs, get_settings  # noqa: E402
+from ..db import base as _db_base  # noqa: E402
+from ..db.models import Task  # noqa: E402
+from ..db.seed import seed_all  # noqa: E402
+from ..logging_ctx import configure_logging, trace_id_var  # noqa: E402
+from ..obs import install_obs  # noqa: E402
+from ..services.run_executor import execute_task  # noqa: E402
+from . import store  # noqa: E402
+from .estimator import update_stats  # noqa: E402
 
 
 _log = logging.getLogger("factor.dispatcher")
@@ -44,20 +74,40 @@ _log = logging.getLogger("factor.dispatcher")
 _qlog = qd_logging.get_logger("factor.dispatcher")
 _stop = threading.Event()
 
+# 任务类型 → 准入预算类 (内存治理 WP5; 预算表见 ADMISSION_BUDGETS_JSON)。
+# 未列出的类型按 factor.task.light 小预算记账 (排干期一并暂停)。
+_ADMISSION_CLASS = {
+    "evaluation": "factor.eval.daily",
+    "basket_eval": "factor.eval.daily",
+    "correlation": "factor.correlation",
+    "basket_corr": "factor.correlation",
+}
+
+
+def _admission_class(task_type: str) -> str:
+    return _ADMISSION_CLASS.get(task_type, "factor.task.light")
+
 
 def _handle_signal(signum, _frame):  # noqa: ARG001
     _log.warning("dispatcher received signal %s; will stop after in-flight tasks", signum)
     _stop.set()
 
 
-def _run_one(task_id: str, trace_id: str | None) -> dict:
+def _run_one(task_id: str, trace_id: str | None, exclusive: bool = False) -> dict:
     tok = trace_id_var.set(trace_id or "-")
     # bind quant_data's context too so the task's data-layer reads carry the
     # task's trace_id into app_log (V3 §6.4 — autonomous/worker task tracing).
     qd_tok = qd_logging.bind_context(trace_id=trace_id)
+    # 独占 CPU 提升 (WP5 v1.2 可选项): an exclusive grant runs alone — its
+    # DuckDB connections may take the full core set (per-connection PRAGMA;
+    # polars' process pool is import-frozen and can't be raised, by design).
+    thr_tok = qd_config.set_duckdb_thread_override(
+        qd_config.available_cores() if exclusive else None
+    )
     try:
         return execute_task(task_id)
     finally:
+        qd_config.reset_duckdb_thread_override(thr_tok)
         qd_logging.reset_context(qd_tok)
         trace_id_var.reset(tok)
 
@@ -161,6 +211,11 @@ def main() -> None:
 
     pool = ThreadPoolExecutor(max_workers=conc, thread_name_prefix="factor-worker")
     inflight: dict[Future, str] = {}
+    # 内存准入闸 (WP5 接入点①): per-process gate; grants released on finalize.
+    # fail-fast 校验只对本进程会申请的任务类负责 (预算表全局共享下发, T-WP5-008)。
+    gate = AdmissionGate.from_env(validate_budgets=(
+        *set(_ADMISSION_CLASS.values()), "factor.task.light"))
+    grants: dict[str, Grant] = {}
 
     db = _db_base.SessionLocal()
     store.recover_stale(db, stale_sec)
@@ -186,16 +241,23 @@ def main() -> None:
 
     try:
         while not _stop.is_set():
-            # 1) collect finished futures
+            # 1) collect finished futures (+ release their admission grants)
             done = [f for f in list(inflight) if f.done()]
             for f in done:
                 tid = inflight.pop(f)
+                g = grants.pop(tid, None)
+                if g is not None:
+                    g.release()
                 _finalize_future(db, tid, f)
 
             # 2) recover stale running tasks (heartbeat gap)
             store.recover_stale(db, stale_sec)
 
-            # 3) fill up to concurrency
+            # 3) fill up to concurrency — peek → admission gate → claim (WP5).
+            #    Deferred ⇒ the task stays queued untouched; draining ⇒ 只出
+            #    不进, stop filling this round (the queue-head waiter is re-
+            #    offered every poll and goes first when the floor is clear).
+            deferred_ids: set[str] = set()
             while len(inflight) < conc:
                 running_routine = (
                     db.query(Task)
@@ -203,16 +265,40 @@ def main() -> None:
                     .count()
                 )
                 allow_routine = running_routine < (conc - reserve)
-                t = store.claim_next_filtered(db, worker_id, allow_routine)
-                if t is None:
+                cand = store.peek_next_filtered(db, allow_routine, exclude_ids=deferred_ids)
+                if cand is None:
                     break
-                fut = pool.submit(_run_one, t.task_id, t.trace_id)
+                # 安全审查 P2: 我们已持有该 task 的 grant(其 future 仍在跑,但
+                # recover_stale 因心跳过期把它翻回 queued 又被 peek 到)⇒ 不得二次
+                # 准入。二次 grant 会按 task_id 覆盖 _in_flight 记账,使闸把两份
+                # 在跑内存只算一份(正是 06-04 卡死场景),削弱 OOM 防护。跳过它,
+                # 等当前 future 收尾时 _finalize_future 统一处理。
+                if cand.task_id in grants:
+                    deferred_ids.add(cand.task_id)
+                    continue
+                verdict = gate.try_acquire(
+                    _admission_class(cand.task_type), task_id=cand.task_id
+                )
+                if isinstance(verdict, Deferred):
+                    deferred_ids.add(cand.task_id)
+                    if verdict.draining:
+                        break  # 排干模式: 本轮整体停手
+                    continue
+                t = store.claim_task(db, cand.task_id, worker_id)
+                if t is None:  # stale peek (cancelled/raced) — return the budget
+                    verdict.release()
+                    deferred_ids.add(cand.task_id)
+                    continue
+                grants[t.task_id] = verdict
+                fut = pool.submit(_run_one, t.task_id, t.trace_id, verdict.exclusive)
                 inflight[fut] = t.task_id
                 _log.info(
-                    "claimed task %s (type=%s lane=%s)",
+                    "claimed task %s (type=%s lane=%s admission=%s%s)",
                     t.task_id,
                     t.task_type,
                     t.lane,
+                    _admission_class(t.task_type),
+                    " exclusive" if verdict.exclusive else "",
                 )
                 # structured twin, joined to the task's trace_id (V3 §4.3 / §6.4)
                 _tok = qd_logging.bind_context(trace_id=t.trace_id)

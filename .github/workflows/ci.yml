@@ -19,6 +19,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 内存治理护栏 (方案 WP1.2 / §9.6): invariants 是离线全表扫描器,
+      # 服务进程引用 = 复刻 2026-06-01 崩溃循环。与 reader.py 调用守则互为镜像
+      # (注释负责"看到",这里负责"拦住")。
+      - name: guard — apps/ must not reference quant_data.invariants
+        run: |
+          if grep -rnE "from quant_data(\.invariants| import [^#]*\binvariants\b)|quant_data\.invariants" apps/ --include="*.py"; then
+            echo "::error::quant_data.invariants 禁止在服务进程引用 (内存治理方案 WP1.2)"; exit 1
+          fi
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"

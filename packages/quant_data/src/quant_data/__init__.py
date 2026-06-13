@@ -9,14 +9,17 @@ Public surface:
 """
 from __future__ import annotations
 
+# NOTE (内存治理方案 WP1.2): ``invariants`` is deliberately NOT imported or
+# exported here — it is an offline full-table sweeper, forbidden in service
+# processes (see its module docstring; CI greps apps/ for any reference).
 from . import (
     charts,
+    chunking,
     compaction,
     config,
     corporate,
     governance,
     ingest,
-    invariants,
     log_shipper,
     logging,
     metadata,
@@ -48,7 +51,7 @@ __all__ = [
     "quality_log",
     "table_stats",
     "charts",
-    "invariants",
+    "chunking",
     "symbology",
     "compaction",
     "schemas",

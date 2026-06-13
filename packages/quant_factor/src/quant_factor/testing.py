@@ -20,6 +20,16 @@ import pyarrow as pa
 _SECTORS = ["801010", "801020", "801030", "801040"]  # SW level-1 sample codes
 
 
+class _FakeColumnNotInView(ValueError):
+    """Mirrors quant_data.reader.ColumnNotInViewError's contract (a ValueError
+    carrying ``.column``/``.table``) without importing the data layer."""
+
+    def __init__(self, column: str, table: str):
+        self.column = column
+        self.table = table
+        super().__init__(f"列 {column!r} 不在 {table} 的当前视图中(数据尚未包含该列)")
+
+
 class FakeReader:
     """A minimal DataReader stand-in returning pyarrow tables.
 
@@ -104,8 +114,19 @@ class FakeReader:
             self._sector_of[sym] = _SECTORS[i % len(_SECTORS)] if i < n_known else None
 
     # ── bars ─────────────────────────────────────────────────────────────
+    def _bars_columns(self) -> list[str]:
+        cols = ["date", "symbol", "open", "high", "low", "close", "volume", "amount", "adj_factor"]
+        if self.with_vwap:
+            cols.append("vwap")
+        if self.with_total_mv:
+            cols.append("total_mv")
+        if self.with_circ_mv:
+            cols.append("circ_mv")
+        return cols
+
     def read_bars_daily(self, symbols=None, start=None, end=None, adjust="none",
-                        extras_as_columns=None, recompute_adj=False) -> pa.Table:
+                        extras_as_columns=None, recompute_adj=False,
+                        columns=None) -> pa.Table:
         rows = self._bars
         if symbols is not None:
             ss = set(symbols)
@@ -114,14 +135,37 @@ class FakeReader:
             rows = [r for r in rows if r["date"] >= start]
         if end is not None:
             rows = [r for r in rows if r["date"] <= end]
-        cols = ["date", "symbol", "open", "high", "low", "close", "volume", "amount", "adj_factor"]
-        if self.with_vwap:
-            cols.append("vwap")
-        if self.with_total_mv:
-            cols.append("total_mv")
-        if self.with_circ_mv:
-            cols.append("circ_mv")
+        cols = self._bars_columns()
+        if columns is not None:
+            # mirror the real reader's WP2 contract: unknown column → typed
+            # ValueError (ColumnNotInViewError subclasses it); pk auto-union;
+            # request order preserved.
+            for c in columns:
+                if c not in cols:
+                    raise _FakeColumnNotInView(c, "raw.bars_daily")
+            keep = list(dict.fromkeys(columns))
+            for k in ("date", "symbol"):
+                if k not in keep:
+                    keep.append(k)
+            cols = keep
         return _to_table(rows, cols)
+
+    # ── fundamentals (PIT; minimal — bps per symbol, published before window) ──
+    def read_fundamentals(self, symbols=None, as_of_date=None,
+                          extras_as_columns=None, columns=None) -> pa.Table:
+        if as_of_date is None:
+            raise ValueError("read_fundamentals requires as_of_date")
+        pub = self.dates[0]
+        rows = []
+        for i, sym in enumerate(self.symbols):
+            if symbols is not None and sym not in set(symbols):
+                continue
+            if pub <= as_of_date:
+                rows.append({
+                    "symbol": sym, "report_period": pub, "publish_date": pub,
+                    "bps": 3.0 + (i % 5) * 0.5,
+                })
+        return _to_table(rows, ["symbol", "report_period", "publish_date", "bps"])
 
     # ── universe ───────────────────────────────────────────────────────────
     def read_universe(self, symbols=None, start=None, end=None, extras_as_columns=None) -> pa.Table:
@@ -184,6 +228,46 @@ class FakeReader:
         rows = [{"date": d, "market": "XSHG", "is_trading_day": True} for d in self.dates]
         return _to_table(rows, ["date", "market", "is_trading_day"])
 
+    # ── aggregate / metadata primitives (内存治理 WP3.3 — preflight 聚合下推) ──
+    # The real reader pushes these into DuckDB over parquet; the fake runs the
+    # SAME SQL shape over its in-memory tables so preflight exercises the
+    # identical query path ("缩限不缩机制").
+    def _cv_table(self, name: str) -> pa.Table:
+        # NOTE: call the base implementations explicitly — counting spies in
+        # tests override read_bars_daily/read_universe to count *governed*
+        # reads; the fake's internal materialisation (its stand-in for the
+        # engine's parquet scan) must not show up in those counters.
+        if name == "raw.bars_daily":
+            return FakeReader.read_bars_daily(self)
+        if name == "raw.universe":
+            return FakeReader.read_universe(self)
+        raise KeyError(f"FakeReader has no current view for {name}")
+
+    def current_view_columns(self, table_name: str) -> set[str]:
+        return set(self._cv_table(table_name).column_names)
+
+    def aggregate_current_view(self, spec, projection: str, tail: str = "",
+                               filters=None):
+        import re as _re
+
+        import duckdb
+
+        name = spec if isinstance(spec, str) else spec.name
+        con = duckdb.connect()
+        con.register("_fake_cv", self._cv_table(name))
+        where = (" WHERE " + " AND ".join(filters)) if filters else ""
+        sql = (
+            f"WITH cv AS (SELECT * FROM _fake_cv t{where}) "
+            f"SELECT {projection} FROM cv {tail}"
+        )
+        try:
+            return con.execute(sql)
+        except duckdb.BinderException as e:
+            m = _re.search(r'Referenced column "([^"]+)" not found', str(e))
+            if m:
+                raise _FakeColumnNotInView(m.group(1), name) from e
+            raise
+
 
 def _to_table(rows: list[dict], cols: list[str]) -> pa.Table:
     """Build a pyarrow table with stable column order + inferred-but-typed cols.
@@ -199,7 +283,7 @@ def _to_table(rows: list[dict], cols: list[str]) -> pa.Table:
 
 
 def _arrow_type(col: str):
-    if col == "date":
+    if col in {"date", "report_period", "publish_date"}:
         return pa.date32()
     if col in {"level", "listed_days"}:
         return pa.int64()

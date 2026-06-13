@@ -22,7 +22,7 @@ from typing import Any, Callable, Iterable
 import numpy as np
 import polars as pl
 
-from .base import Factor, FactorContext, RunCancelled, _ensure_columns
+from .base import Factor, FactorContext, RunCancelled, _engine_log, _ensure_columns
 from .config import EvalConfig
 from .degradation import DegradationLedger, make_event
 from .neutralize import (
@@ -31,7 +31,7 @@ from .neutralize import (
     neutralize_cross_section,
 )
 from .preprocess import apply_pipeline, zscore
-from .returns import forward_returns
+from .returns import forward_returns, price_columns
 from .trace import MAX_SAMPLE_NAMES, describe as _trace_describe
 from .universe import UniverseDef, rebalance_dates, resolve_universe
 
@@ -136,8 +136,36 @@ class FactorEvaluator:
 
         ctx = FactorContext(self.reader, symbols, cfg.start, cfg.end, ledger=self.ledger)
 
+        # ── 内存治理 WP3: one governed bars read per evaluation ────────────
+        # required_columns 治理 (WP3.1): project the evaluation panel to what
+        # the factor + the收益口径 actually use. Undeclared (存量自定义因子)
+        # ⇒ legacy full-column read; 结果不变,不进台账 — log drives the
+        # declaration backfill (方案 §2.4 / 风险§9.2).
+        req_cols = tuple(getattr(factor, "required_columns", ()) or ())
+        if req_cols:
+            ctx.set_default_columns(sorted(set(req_cols) | price_columns(cfg.return_price)))
+        else:
+            _engine_log("factor.columns.fallback", factor=factor.name,
+                        reason="factor did not declare required_columns")
+            self._log(f"factor {factor.name} 未声明 required_columns,回退全列读取")
+        # THE one full-window bars read (WP3.2): cached in ctx — step 1's
+        # ctx.bars("post"), every horizon's forward returns and step 4 all
+        # derive from this panel. 每评估 bars 全量读: H+3 → 1。
+        panel = ctx.bars(adjust="post")
+
         # ── step 1: compute raw factor values ─────────────────────────────
-        fvals = self._compute_factor(factor, ctx, rebal)
+        try:
+            fvals = self._compute_factor(factor, ctx, rebal)
+        except pl.exceptions.ColumnNotFoundError as e:
+            if req_cols:
+                # 投影面板只含声明列 — 因子用了未声明的列是治理缺口,给出
+                # 修复指引而非裸 polars 错误(内存治理验收 T-WP3-006)。
+                raise ValueError(
+                    f"因子 {factor.name} 的 compute() 使用了未声明的列({e});"
+                    f"已声明 required_columns={list(req_cols)} — 请把该列补进 "
+                    "required_columns(内存治理方案 WP3.1)后重跑。"
+                ) from e
+            raise
         if fvals.height == 0:
             raise ValueError("Factor returned no values — check compute() output")
         _ensure_columns(fvals, ["date", "symbol", "value"], "factor output")
@@ -153,29 +181,27 @@ class FactorEvaluator:
         clean = self._prep_all(factor, ctx, fvals, rebal, cfg)
 
         # ── step 3: IC for each horizon ───────────────────────────────────
+        # WP3.2: every horizon derives from the SAME panel (zero extra reads);
+        # the primary horizon's frame is kept for step 4 (消除冗余重算).
         ic_by_h: dict[int, dict[str, float]] = {}
         ic_series: pl.DataFrame | None = None
+        fr_primary: pl.DataFrame | None = None
         total = len(cfg.horizons)
         for i, h in enumerate(cfg.horizons):
             if self._cancelled():
                 raise RunCancelled()
             self._progress(i, total + 2)
-            fr = forward_returns(
-                self.reader, symbols, cfg.start, cfg.end, h, cfg.return_price,
-                ledger=self.ledger,
-            )
+            fr = forward_returns(panel, h, cfg.return_price, ledger=self.ledger)
             ser = self._ic_series(clean, fr, rebal, cfg.ic_type, factor.direction)
             ic_by_h[int(h)] = self._ic_stats(ser, factor.direction, cfg.rebalance)
             if int(h) == int(cfg.primary_horizon):
                 ic_series = ser
+                fr_primary = fr
 
         if ic_series is None and cfg.horizons:
             # fall back to the first horizon if primary wasn't in the list
             h0 = int(cfg.horizons[0])
-            fr0 = forward_returns(
-                self.reader, symbols, cfg.start, cfg.end, h0, cfg.return_price,
-                ledger=self.ledger,
-            )
+            fr0 = forward_returns(panel, h0, cfg.return_price, ledger=self.ledger)
             ic_series = self._ic_series(clean, fr0, rebal, cfg.ic_type, factor.direction)
 
         # 运行透视 ④(d): per-rebalance-day IC merge (primary horizon only).
@@ -190,14 +216,14 @@ class FactorEvaluator:
         if self._cancelled():
             raise RunCancelled()
         self._progress(total, total + 2)
-        fr_p = forward_returns(
-            self.reader,
-            symbols,
-            cfg.start,
-            cfg.end,
-            cfg.primary_horizon,
-            cfg.return_price,
-            ledger=self.ledger,
+        # WP3.2: reuse step 3's primary-horizon frame (identical inputs ⇒
+        # identical floats); only the primary-not-in-horizons edge re-derives —
+        # from the panel, still zero reads.
+        fr_p = (
+            fr_primary
+            if fr_primary is not None
+            else forward_returns(panel, cfg.primary_horizon, cfg.return_price,
+                                 ledger=self.ledger)
         )
         layers = self._layered(
             clean, fr_p, rebal, cfg.quantiles, factor.direction, cfg.layer_weight,

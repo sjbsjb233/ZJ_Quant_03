@@ -31,6 +31,25 @@ x-logging-env: &logging-env
   LOG_INGEST_URL: http://web-backend:8000/api/v1/logs/ingest
   LOG_INGEST_TOKEN: ${LOG_INGEST_TOKEN:-change-me-log-token}
 
+# ── 内存准入闸 (内存治理方案 WP5) — 三服务共用同一套预算/阈值口径 ──────────
+# 预算表 (MB) = Arrow/polars 物化 + 计算瞬时拷贝 + DuckDB 引擎份额;数字按
+# WP2/3 实测重标定 (方案 §8 阶段三开工前)。reserve = 进程常驻 + 突发预留。
+# DEFERRED/DRAINING 阈值同时喂给闸 (自报 stuck 事件) 与 web 评估器 D16 (规则页)。
+x-admission-env: &admission-env
+  # 留空 = 用 quant_admission.DEFAULT_BUDGETS(与下表逐字一致);要覆盖就在 .env
+  # 设整段 JSON。不在此内联默认 JSON —— compose 的 ${VAR:-…} 遇 JSON 自带的 }
+  # 会被第一个 } 截断成非法值,from_env 再 fallback 回 DEFAULT_BUDGETS,使
+  # 操作员的覆盖静默失效(安全审查 P2)。预算口径(MB):
+  #   factor.eval.daily=600 minute=4500 correlation=400 keeper.compact=800
+  #   web.rows.transform=1200 web.charts.heavy=512 *.light=64
+  ADMISSION_BUDGETS_JSON: ${ADMISSION_BUDGETS_JSON:-}
+  ADMISSION_RESERVE_MB: ${ADMISSION_RESERVE_MB:-1024}
+  ADMISSION_DEFERRED_WARN_MIN: ${ADMISSION_DEFERRED_WARN_MIN:-10}
+  ADMISSION_DRAINING_WARN_MIN: ${ADMISSION_DRAINING_WARN_MIN:-30}
+  # 声明式独占任务类(逗号分隔)。留空 = 用代码默认 "factor.eval.minute"
+  # (from_env 把空串当未设,不会覆盖成空,见 quant_admission §from_env)。
+  ADMISSION_EXCLUSIVE_CLASSES: ${ADMISSION_EXCLUSIVE_CLASSES:-}
+
 services:
   # ── 唯一公网入口 ─────────────────────────────────────────────
   web-frontend:
@@ -65,7 +84,7 @@ services:
       - data-keeper
       - factor-api
     environment:
-      <<: *logging-env
+      <<: [*logging-env, *admission-env]
       QUANT_DATA_ROOT: /data
       # 部署标识 (修复 A1/A2)：顶栏环境徽标 + 状态栏右侧 cluster·env 标签。
       ENVIRONMENT: ${ENVIRONMENT:-PROD}
@@ -77,6 +96,15 @@ services:
       # DuckDB 读护栏：超限报错而非 OOM；spill 到可写卷
       QUANT_DUCKDB_MEMORY_LIMIT: "2GB"
       QUANT_DUCKDB_TEMP_DIR: /state/duck_tmp
+      # CPU 配额 (内存治理 WP6): 每连接线程 = 核 ÷ 重任务槽,消 N× 超卖
+      QUANT_DUCKDB_THREADS: ${WEB_DUCKDB_THREADS:-auto}
+      QUANT_HEAVY_TASK_SLOTS: ${VIZ_MAX_CONCURRENT_SCANS:-3}
+      OMP_NUM_THREADS: ${WEB_OMP_THREADS:-1}
+      # /rows 变换路径(复权/重算复权)内存物化行数硬上限 (内存治理 WP1.3):
+      # 超过即 4xx 引导缩小范围,而非吃满堆。按 web-backend mem_limit 调。
+      WEB_TRANSFORM_ROW_CAP: ${WEB_TRANSFORM_ROW_CAP:-200000}
+      # 重读端点并发信号量上限 (2026-06-01 P0;同时作为 DuckDB 重任务槽口径)。
+      VIZ_MAX_CONCURRENT_SCANS: ${VIZ_MAX_CONCURRENT_SCANS:-3}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost,http://localhost:80}
       JWT_SECRET: ${JWT_SECRET:-change-me-in-prod}
       SEED_DEFAULT_USERS: "true"
@@ -136,15 +164,21 @@ services:
     # instead of thrashing. Tunable via env (see .env.example).
     mem_limit: ${DATA_KEEPER_MEM_LIMIT:-8g}
     memswap_limit: ${DATA_KEEPER_MEM_LIMIT:-8g}
+    # CPU 配额 (内存治理 WP6): 写者重活 (compaction/migration) 不与查询争满核。
+    cpus: ${DATA_KEEPER_CPUS:-2}
     # 关闭 core dump:崩溃只重启,不向宿主系统盘写出数十 G 的 core (2026-06-01 P0)。
     ulimits:
       core: 0
     environment:
-      <<: *logging-env
+      <<: [*logging-env, *admission-env]
       QUANT_DATA_ROOT: /data
       # DuckDB 内存护栏：超限 spill 到 sdb(/keeper-store 在 10TB 盘)而非 OOM。
       QUANT_DUCKDB_MEMORY_LIMIT: ${KEEPER_DUCKDB_MEMORY_LIMIT:-2GB}
       QUANT_DUCKDB_TEMP_DIR: /keeper-store/duck_tmp
+      # CPU 配额 (WP6): keeper jobs 线程池默认 4 → 每连接核数随之缩
+      QUANT_DUCKDB_THREADS: ${KEEPER_DUCKDB_THREADS:-auto}
+      QUANT_HEAVY_TASK_SLOTS: ${KEEPER_HEAVY_TASK_SLOTS:-4}
+      OMP_NUM_THREADS: ${KEEPER_OMP_THREADS:-1}
       KEEPER_DB_URL: sqlite:////keeper-store/keeper.db
       ENABLE_SCHEDULER: "${ENABLE_SCHEDULER:-true}"   # 进程内调度线程; 设 false 即关 (回滚位)
       TZ: Asia/Shanghai                               # 调度按本地时区
@@ -185,17 +219,23 @@ services:
     # an 8GB core into the unmapped /app layer (2026-06-01 disk-full incident).
     mem_limit: ${FACTOR_API_MEM_LIMIT:-6g}
     memswap_limit: ${FACTOR_API_MEM_LIMIT:-6g}
+    # CPU 配额 (内存治理 WP6)
+    cpus: ${FACTOR_API_CPUS:-2}
     # 关闭 core dump:崩溃只重启,不向宿主系统盘写出数十 G 的 core (2026-06-01 P0)。
     ulimits:
       core: 0
     depends_on:
       - data-keeper
     environment:
-      <<: *logging-env
+      <<: [*logging-env, *admission-env]
       QUANT_DATA_ROOT: /data
       # DuckDB 内存护栏：超限 spill 到 sdb(/factor-store 在 10TB 盘)而非 OOM。
       QUANT_DUCKDB_MEMORY_LIMIT: ${FACTOR_DUCKDB_MEMORY_LIMIT:-2GB}
       QUANT_DUCKDB_TEMP_DIR: /factor-store/duck_tmp
+      # CPU 配额 (WP6)
+      QUANT_DUCKDB_THREADS: ${FACTOR_DUCKDB_THREADS:-auto}
+      QUANT_HEAVY_TASK_SLOTS: ${FACTOR_CONCURRENCY:-4}
+      OMP_NUM_THREADS: ${FACTOR_API_OMP_THREADS:-1}
       FACTOR_STORE_ROOT: /factor-store
       FACTOR_DB_URL: sqlite:////factor-store/factor.db
       FACTOR_ROLE: api
@@ -221,17 +261,28 @@ services:
     # with FACTOR_CONCURRENCY. Was unbounded → 2026-06-01 core-dumps on "/".
     mem_limit: ${FACTOR_WORKER_MEM_LIMIT:-12g}
     memswap_limit: ${FACTOR_WORKER_MEM_LIMIT:-12g}
+    # CPU 配额 (内存治理 WP6): 计算重镇占大头;worker 进程内再按
+    # 核÷FACTOR_CONCURRENCY 给 DuckDB/polars/BLAS 配每任务线程,合计 1×。
+    cpus: ${FACTOR_WORKER_CPUS:-4}
     # 关闭 core dump:崩溃只重启,不向宿主系统盘写出数十 G 的 core (2026-06-01 P0)。
     ulimits:
       core: 0
     depends_on:
       - factor-api
     environment:
-      <<: *logging-env
+      <<: [*logging-env, *admission-env]
       QUANT_DATA_ROOT: /data
       # DuckDB 内存护栏：超限 spill 到 sdb(/factor-store 在 10TB 盘)而非 OOM。
+      # 方案 WP5: memory_limit 是每连接的 —— 总引擎预算 ÷ 重任务槽数。
       QUANT_DUCKDB_MEMORY_LIMIT: ${FACTOR_DUCKDB_MEMORY_LIMIT:-2GB}
       QUANT_DUCKDB_TEMP_DIR: /factor-store/duck_tmp
+      # CPU 配额 (WP6): 三个超卖源一起按 核÷槽 配 —— DuckDB (PRAGMA threads)、
+      # polars (POLARS_MAX_THREADS, import 前生效)、BLAS (OMP_NUM_THREADS)。
+      # 留空 ⇒ dispatcher 入口按 cores÷QUANT_HEAVY_TASK_SLOTS 自动推。
+      QUANT_DUCKDB_THREADS: ${FACTOR_DUCKDB_THREADS:-auto}
+      QUANT_HEAVY_TASK_SLOTS: ${FACTOR_CONCURRENCY:-4}
+      POLARS_MAX_THREADS: ${FACTOR_POLARS_THREADS:-1}
+      OMP_NUM_THREADS: ${FACTOR_OMP_THREADS:-1}
       FACTOR_STORE_ROOT: /factor-store
       FACTOR_DB_URL: sqlite:////factor-store/factor.db
       FACTOR_ROLE: worker

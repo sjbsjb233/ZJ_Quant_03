@@ -8,6 +8,19 @@ joined at read time or written back into bars.adj_factor via a corrective batch.
 
 Pre-adjustment convention: the most recent bar is unadjusted (factor = 1.0); the
 factor for earlier bars is the cumulative product of per-event ratios.
+
+内存治理 (《内存治理总体方案》WP1.1): the legacy implementation read the WHOLE
+bars table with no date filter and ``.to_pylist()``-ed it into Python dicts
+(~1.5–2KB/row ⇒ ~8GB on prod, the web-container P0). The computation is now
+split so bars NEVER leave the engine as Python objects:
+
+  ① prev_close per event  — one in-engine pass over the bars current view
+     (only ``symbol/date/close`` are scanned), output = one row per event;
+  ② per-event ratio + per-interval cumulative factor — pure Python over the
+     tiny event list, using the *exact legacy fold order* so the output floats
+     are bit-identical to the historical implementation (no log/exp detour);
+  ③ broadcast intervals onto (symbol, date) — one in-engine interval join,
+     materialising nothing beyond the 3-column result table itself.
 """
 from __future__ import annotations
 
@@ -15,10 +28,39 @@ import bisect
 
 import pyarrow as pa
 
-from .reader import DataReader
+from .logging import get_logger
+from .reader import DataReader, _in_clause, _to_date
+
+_log = get_logger("quant_data.corporate")
 
 # action types that move the price on the ex-date
 _PRICE_AFFECTING = {"cash_dividend", "stock_dividend", "transfer", "rights_issue", "split"}
+
+_BARS_TABLE = "raw.bars_daily"
+
+
+def _event_quality_warning(ev: dict) -> str | None:
+    """脏事件检测 —— **纯诊断**,不改变计算(终审 🟠-1 修正)。
+
+    红线是"复权因子与改造前逐字节一致"。``_event_ratio`` 是新旧实现共用的
+    同一函数:0/负拆股、负权益等已被其内建护栏(``denom<=0`` / ``adj_prev<=0``
+    → 1.0)天然无害化,新旧结果本就相同。所以这里只**记台账**(不静默)、
+    **不丢弃事件** —— 丢弃才会产生与旧系统的分歧(尤其负现金分红 legacy 折进
+    >1 因子,丢弃则变 1.0)。脏数据的拒写/治理是 quality.py(入库)与 invariants
+    INV-011 这条专线的职责,内存改造不在读侧偷改研究口径。
+
+    注意:**不再把"除权日晚于末 bar"当脏数据** —— 那是已公告未除权的合法
+    分红(生产常见),legacy 把它折进全部历史 bar,新实现亦然(逐字节一致)。
+    """
+    for fld in ("cash_per_share", "stock_per_10", "transfer_per_10",
+                "rights_ratio", "rights_price"):
+        v = ev.get(fld)
+        if v is not None and v < 0:
+            return f"negative_{fld}"
+    split = ev.get("split_ratio")
+    if split is not None and split <= 0:
+        return "non_positive_split_ratio"  # 0/负拆股:_event_ratio 已无害化为 1.0
+    return None
 
 
 def _event_ratio(prev_close: float, ev: dict) -> float:
@@ -39,11 +81,171 @@ def _event_ratio(prev_close: float, ev: dict) -> float:
     return adj_prev / prev_close
 
 
+def _empty_factors() -> pa.Table:
+    return pa.table(
+        {
+            "symbol": pa.array([], pa.string()),
+            "date": pa.array([], pa.date32()),
+            "adj_factor": pa.array([], pa.float64()),
+        }
+    )
+
+
+def _price_events(reader: DataReader, symbols) -> dict[str, list[dict]]:
+    """Price-affecting corporate actions grouped per symbol (small table)."""
+    actions = reader.current_view("raw.corporate_actions").to_pylist()
+    sym_set = set(symbols) if symbols is not None else None
+    out: dict[str, list[dict]] = {}
+    for a in actions:
+        if a["action_type"] not in _PRICE_AFFECTING:
+            continue
+        if sym_set is not None and a["symbol"] not in sym_set:
+            continue
+        out.setdefault(a["symbol"], []).append(a)
+    return out
+
+
+def _prev_closes(reader: DataReader, events_by_symbol, bar_filters) -> dict:
+    """close of the last bar STRICTLY before each event's ex-date — in-engine.
+
+    Output is one row per distinct (symbol, ex_date); a pair with no bar before
+    the ex-date is simply absent (the legacy ``bisect ... i < 0 → skip``).
+    NULL closes are kept (legacy looked the close up by date, NULL included).
+    """
+    pairs = sorted(
+        {(a["symbol"], a["action_date"]) for evs in events_by_symbol.values() for a in evs}
+    )
+    if not pairs:
+        return {}
+    reader._con.register(
+        "_caf_events",
+        pa.table(
+            {
+                "s": pa.array([p[0] for p in pairs], pa.string()),
+                "ad": pa.array([p[1] for p in pairs], pa.date32()),
+            }
+        ),
+    )
+    cur = reader.aggregate_current_view(
+        _BARS_TABLE,
+        projection="ev.s AS symbol, ev.ad AS action_date, close AS prev_close",
+        tail=(
+            "JOIN _caf_events ev ON symbol = ev.s AND date < ev.ad "
+            "QUALIFY ROW_NUMBER() OVER (PARTITION BY ev.s, ev.ad ORDER BY date DESC) = 1"
+        ),
+        filters=bar_filters or None,
+    )
+    return {(s, _to_date(ad)): pc for s, ad, pc in cur.fetchall()}
+
+
+def _warn_dirty_events(events_by_symbol) -> int:
+    """记脏事件台账(不静默),但**不丢弃** —— 计算对 legacy 逐字节一致。
+
+    返回告警条数(供测试断言"看见了"且"计算未变")。
+    """
+    n = 0
+    for sym, evs in events_by_symbol.items():
+        for ev in evs:
+            reason = _event_quality_warning(ev)
+            if reason is not None:
+                n += 1
+                _log.warn("corporate.event.invalid", symbol=sym,
+                          action_date=str(ev["action_date"]),
+                          action_type=ev["action_type"], reason=reason)
+    return n
+
+
+def _cumulative_intervals(events_by_symbol, prev_close):
+    """Per-symbol piecewise-constant factor intervals, legacy fold order.
+
+    The factor function d ↦ ∏(ratio | ex_date > d) is constant between event
+    dates. For distinct ex-dates x_1 < … < x_k the interval [x_{j-1}, x_j)
+    carries the product of ratios of events at x_j..x_k, folded latest-first
+    exactly like the legacy backwards walk (multiplication sequence preserved
+    ⇒ identical floats); d ≥ x_k falls through to COALESCE(…, 1.0).
+    """
+    iv_sym: list[str] = []
+    iv_lo: list = []
+    iv_hi: list = []
+    iv_cum: list[float] = []
+    for sym, events in events_by_symbol.items():
+        events = sorted(events, key=lambda e: e["action_date"])
+        points = [
+            (ev["action_date"], _event_ratio(prev_close[(sym, ev["action_date"])], ev))
+            for ev in events
+            if (sym, ev["action_date"]) in prev_close
+        ]
+        if not points:
+            continue
+        distinct = sorted({d for d, _ in points})
+        cum_by_hi: dict = {}
+        factor, i = 1.0, len(points) - 1
+        for j in range(len(distinct) - 1, -1, -1):
+            hi = distinct[j]
+            while i >= 0 and points[i][0] >= hi:
+                factor *= points[i][1]
+                i -= 1
+            cum_by_hi[hi] = factor
+        for j, hi in enumerate(distinct):
+            iv_sym.append(sym)
+            iv_lo.append(distinct[j - 1] if j > 0 else None)
+            iv_hi.append(hi)
+            iv_cum.append(cum_by_hi[hi])
+    return pa.table(
+        {
+            "s": pa.array(iv_sym, pa.string()),
+            "lo": pa.array(iv_lo, pa.date32()),
+            "hi": pa.array(iv_hi, pa.date32()),
+            "cum": pa.array(iv_cum, pa.float64()),
+        }
+    )
+
+
 def compute_adj_factors(symbols=None, reader: DataReader | None = None, root=None) -> pa.Table:
     """Return (symbol, date, adj_factor) pre-adjustment factors.
 
     factor[d] = product of event ratios for every price-affecting action with
     ex-date strictly after d, so the latest available bar has factor 1.0.
+
+    WP1.1: computed in-engine (see module docstring) — peak Python-heap cost is
+    the event list plus the 3-column result; bars are never converted to Python
+    objects. Interface and output schema are unchanged; rows come back ordered
+    by (symbol, date) ascending (the legacy emitted dates descending — callers
+    join/dict by key, order was never part of the contract).
+    """
+    reader = reader or DataReader(root=root)
+    bar_filters = []
+    if (c := _in_clause("t.symbol", symbols)):
+        bar_filters.append(c)
+    # Early-exit keeps the empty-view path off the aggregate SQL (whose empty
+    # fallback has no `cv` relation for the joins below to reference).
+    if reader.count_current_view(_BARS_TABLE, filters=bar_filters or None) == 0:
+        return _empty_factors()
+
+    events_by_symbol = _price_events(reader, symbols)
+    _warn_dirty_events(events_by_symbol)        # 诊断台账,不改变计算(逐字节一致)
+    prev_close = _prev_closes(reader, events_by_symbol, bar_filters)
+    intervals = _cumulative_intervals(events_by_symbol, prev_close)
+
+    reader._con.register("_caf_iv", intervals)
+    cur = reader.aggregate_current_view(
+        _BARS_TABLE,
+        projection="symbol, date, COALESCE(iv.cum, 1.0) AS adj_factor",
+        tail=(
+            "LEFT JOIN _caf_iv iv ON symbol = iv.s AND date < iv.hi "
+            "AND (iv.lo IS NULL OR date >= iv.lo) ORDER BY symbol, date"
+        ),
+        filters=bar_filters or None,
+    )
+    return cur.fetch_arrow_table()
+
+
+def _compute_adj_factors_legacy(
+    symbols=None, reader: DataReader | None = None, root=None
+) -> pa.Table:
+    """旧实现 — 仅供 golden 对照 (T-WP1-001),验收后删除。
+
+    ⚠ 全表 ``.to_pylist()``,生产规模 ~8GB Python 堆;禁止任何业务调用。
     """
     reader = reader or DataReader(root=root)
     bars = reader.read_bars_daily(symbols=symbols, adjust="none").to_pylist()

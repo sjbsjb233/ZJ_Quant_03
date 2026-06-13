@@ -63,6 +63,11 @@ class EvalConfig:
         d["horizons"] = list(self.horizons)
         return d
 
+    # 市值口径白名单。size_field 会流入数据层 SQL(preflight 聚合下推),且
+    # ln_size 只认这两个值 —— 在请求体边界就拒绝其它输入,既给清晰报错也作为
+    # 防 SQL 注入的第二道防线(安全审查 P1;首道在 preflight._safe_column)。
+    SIZE_FIELDS = ("circ_mv", "total_mv")
+
     @classmethod
     def from_dict(cls, d: dict[str, Any] | None) -> "EvalConfig":
         d = dict(d or {})
@@ -73,6 +78,9 @@ class EvalConfig:
             d["end"] = dt.date.fromisoformat(d["end"])
         if "horizons" in d and not isinstance(d["horizons"], tuple):
             d["horizons"] = tuple(int(x) for x in d["horizons"])
+        if "size_field" in d and d["size_field"] not in cls.SIZE_FIELDS:
+            raise ValueError(
+                f"size_field 必须是 {cls.SIZE_FIELDS} 之一,收到 {d['size_field']!r}")
         # Strip extras (kept verbatim)
         known = {f.name for f in cls.__dataclass_fields__.values()}
         extras = {k: v for k, v in d.items() if k not in known}

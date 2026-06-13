@@ -1,6 +1,7 @@
 """FastAPI dependencies: settings, data root, DataReader, current user, RBAC, auditor."""
 from __future__ import annotations
 
+import contextlib
 import os
 import threading
 import uuid
@@ -9,6 +10,7 @@ from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
+from quant_admission import AdmissionGate, Deferred, new_task_id
 from quant_data import DataReader
 
 from .audit.log import Auditor
@@ -36,12 +38,68 @@ _HEAVY_TIMEOUT = float(os.getenv("VIZ_SLOT_TIMEOUT_SEC", "8"))
 _heavy_sema = threading.BoundedSemaphore(_HEAVY_SLOTS)
 
 
+# ── 内存准入闸 (内存治理方案 WP5 接入点③) ────────────────────────────────────
+# Process-wide singleton: the gate only guards THIS process's task stacking
+# (the cgroup isolates everything else), so one gate per backend process.
+_admission_gate: AdmissionGate | None = None
+_admission_init_lock = threading.Lock()
+
+
+def admission_gate() -> AdmissionGate:
+    global _admission_gate
+    if _admission_gate is None:
+        with _admission_init_lock:
+            if _admission_gate is None:
+                # fail-fast 范围 = web 自己的任务类 (预算表全局共享, T-WP5-008)
+                _admission_gate = AdmissionGate.from_env(
+                    validate_budgets=("web.rows.transform", "web.charts.heavy"))
+    return _admission_gate
+
+
+@contextlib.contextmanager
+def admission_slot(task_class: str):
+    """Acquire a memory-admission grant for a heavy request, or 429.
+
+    Deferred ⇒ ``ADMISSION_DEFERRED`` (HTTP 429) with ``Retry-After`` so
+    clients back off instead of stacking materialisations past the cgroup
+    limit (方案 WP5 接入点③: /rows 变换路径 + 图表重端点)。
+
+    ``allow_wait=False`` (安全审查 P2): 每个请求用新 task_id 且拿 429 即返回,
+    不会重新呈现同一 id —— 不能进排干等位队列,否则会留下孤儿队头连环 429。
+    """
+    verdict = admission_gate().try_acquire(
+        task_class, task_id=new_task_id("web"), allow_wait=False)
+    if isinstance(verdict, Deferred):
+        raise ApiError(
+            "ADMISSION_DEFERRED",
+            "内存预算不足,请求暂缓;请稍后重试"
+            + ("(资源排干中)" if verdict.draining else ""),
+            details={
+                "task_class": task_class,
+                "est_mb": verdict.est_mb,
+                "in_flight_mb": verdict.in_flight_mb,
+                "reason": verdict.reason,
+            },
+            headers={"Retry-After": str(max(1, int(verdict.suggested_wait_s)))},
+        )
+    try:
+        yield verdict
+    finally:
+        verdict.release()
+
+
 def heavy_query_slot():
-    """Gate a heavy read endpoint; 503 if the gate is saturated past the timeout."""
+    """Gate a heavy read endpoint; 503 if the gate is saturated past the timeout.
+
+    内存治理 WP5: the semaphore caps *concurrency*, the admission slot caps
+    *memory budget* — charts/viz heavy endpoints pass both through this one
+    dependency (Deferred ⇒ 429 + Retry-After; saturation ⇒ 503 as before).
+    """
     if not _heavy_sema.acquire(timeout=_HEAVY_TIMEOUT):
         raise ApiError("SERVICE_UNAVAILABLE", "数据服务繁忙,请稍后重试")
     try:
-        yield
+        with admission_slot("web.charts.heavy"):
+            yield
     finally:
         _heavy_sema.release()
 

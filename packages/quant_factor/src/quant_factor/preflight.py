@@ -26,6 +26,7 @@ table at most once.
 from __future__ import annotations
 
 import datetime as dt
+import re
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -34,6 +35,19 @@ import polars as pl
 from .degradation import DEGRADATION_CODES, DegradationLedger, make_event
 from .neutralize import industry_at_level
 from .universe import UniverseDef, _resolve_flag, rebalance_dates
+
+# WP3.3 把覆盖率检查从 polars 列访问改为聚合下推后,字段名进入 DuckDB SQL 文本。
+# size_field 是用户可控的(EvalConfig.from_dict 透传请求体),必须把它约束成
+# 纯列标识符 —— 否则构成 SQL 注入(安全审查 P1)。列名只可能是
+# [字母/下划线开头 + 字母数字下划线];任何其它形态在到达引擎前就拒绝。
+_SQL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _safe_column(field_name: str) -> str:
+    """Reject anything that isn't a bare column identifier before it reaches SQL."""
+    if not _SQL_IDENTIFIER_RE.match(field_name or ""):
+        raise ValueError(f"非法列名 {field_name!r}:仅允许列标识符(防 SQL 注入)")
+    return field_name
 
 
 # ── coverage / window thresholds (设计 §12.4 — centralised, no code edits to tune)
@@ -100,9 +114,16 @@ class PreflightBlocked(Exception):
 
 # ─────────────────────────────────────────────────────────────────────────────
 class PreflightContext:
-    """Everything a check needs + memoised data accessors.
+    """Everything a check needs + memoised AGGREGATE accessors.
 
-    ``bars()`` / ``universe()`` are read at most once across all checks.
+    内存治理 (《内存治理总体方案》WP3.3): coverage/existence questions are
+    counting questions — they now push down through the reader's
+    ``aggregate_current_view`` / ``current_view_columns`` (the 06-01-proven
+    primitives) instead of materialising full bars/universe frames (旧实现
+    每次 preflight 物化 ~3.15GB)。 Each aggregate is memoised so the whole
+    gate touches each table-question at most once. Thresholds, blocking
+    semantics and event evidence are unchanged — the numbers are the same
+    counts, computed in the engine.
     """
 
     def __init__(self, reader, cfg, uni_def, symbols, start, end):
@@ -116,49 +137,112 @@ class PreflightContext:
             self.uni: dict = dict(uni_def.__dict__)
         else:
             self.uni = dict(uni_def or {})
-        self._bars: pl.DataFrame | None = None
-        self._universe: pl.DataFrame | None = None
+        self._uni_cols: set[str] | None = None
+        self._uni_dates: list | None = None
+        self._cache: dict = {}
 
-    def bars(self) -> pl.DataFrame:
-        if self._bars is None:
-            tbl = self.reader.read_bars_daily(
-                symbols=self.symbols or None,
-                start=self.start,
-                end=self.end,
-                adjust="none",
+    # ── SQL filter fragments (escaped literals; dates are dt.date) ───────
+    def _window_filters(self, time_col: str = "date") -> list[str]:
+        f = []
+        if self.start is not None:
+            f.append(f"t.{time_col} >= DATE '{self.start.isoformat()}'")
+        if self.end is not None:
+            f.append(f"t.{time_col} <= DATE '{self.end.isoformat()}'")
+        return f
+
+    def _symbol_filter(self) -> list[str]:
+        if not self.symbols:
+            return []
+        quoted = ",".join("'" + s.replace("'", "''") + "'" for s in self.symbols)
+        return [f"t.symbol IN ({quoted})"]
+
+    # ── bars-side coverage (PF_NEU_SIZE / PF_RET_PRICE) ──────────────────
+    def bars_field_coverage(
+        self, field: str, *, positive: bool
+    ) -> tuple[float, int, int, list[str]]:
+        """Fraction of ctx.symbols with ≥1 usable `field` value in-window.
+
+        `positive=True` additionally requires value > 0 (market-cap fields).
+        Returns (coverage, n_symbols, n_have, sample_missing) — same shape and
+        numbers as the legacy frame-based helper, computed by GROUP BY symbol
+        in the engine. A column the data doesn't carry (ColumnNotInViewError,
+        a ValueError) counts as zero coverage, same as the legacy
+        ``field not in df.columns`` branch.
+        """
+        n = len(self.symbols)
+        if n == 0:
+            return 0.0, 0, 0, []
+        col = _safe_column(field)            # 安全审查 P1:列名进 SQL 前强制校验
+        key = ("bars_cov", col, positive)
+        if key not in self._cache:
+            cond = f"{col} IS NOT NULL" + (f" AND {col} > 0" if positive else "")
+            try:
+                cur = self.reader.aggregate_current_view(
+                    "raw.bars_daily",
+                    projection="symbol",
+                    tail=f"WHERE {cond} GROUP BY symbol",
+                    filters=(self._symbol_filter() + self._window_filters()) or None,
+                )
+                self._cache[key] = {r[0] for r in cur.fetchall()}
+            except ValueError:  # column not in current view → zero coverage
+                self._cache[key] = None
+        have_set = self._cache[key]
+        if have_set is None:
+            return 0.0, n, 0, list(self.symbols[:5])
+        missing = [s for s in self.symbols if s not in have_set]
+        return len(have_set) / n, n, len(have_set), missing[:8]
+
+    # ── universe-side aggregates (PF_UNI_* / PF_WINDOW) ───────────────────
+    def universe_columns(self) -> set[str]:
+        if self._uni_cols is None:
+            self._uni_cols = set(self.reader.current_view_columns("raw.universe"))
+        return self._uni_cols
+
+    def universe_flag_true_rows(self, cols: list[str]) -> int:
+        """COUNT of in-window universe rows where any of `cols` is true."""
+        if not cols:
+            return 0
+        key = ("flag_rows", tuple(cols))
+        if key not in self._cache:
+            # 纵深防御(终审 🟡-5):cols 源自 preset_flag(用户可控),虽已被
+            # universe_columns() 物理列白名单挡过,这里再过列标识符校验,与
+            # bars_field_coverage 一致——白名单 + 校验双保险。
+            expr = " OR ".join(f"{_safe_column(c)} = true" for c in cols)
+            try:
+                cur = self.reader.aggregate_current_view(
+                    "raw.universe", projection="COUNT(*)",
+                    tail=f"WHERE {expr}",
+                    filters=self._window_filters() or None,
+                )
+                self._cache[key] = int(cur.fetchone()[0])
+            except ValueError:
+                self._cache[key] = 0
+        return self._cache[key]
+
+    def universe_nonnull_count(self, col: str) -> int:
+        """COUNT of non-null `col` values in the in-window universe view."""
+        key = ("nonnull", col)
+        if key not in self._cache:
+            safe = _safe_column(col)        # 纵深防御(终审 🟡-5)
+            try:
+                cur = self.reader.aggregate_current_view(
+                    "raw.universe", projection=f"COUNT({safe})",
+                    filters=self._window_filters() or None,
+                )
+                self._cache[key] = int(cur.fetchone()[0])
+            except ValueError:
+                self._cache[key] = 0
+        return self._cache[key]
+
+    def universe_dates(self) -> list:
+        """Sorted distinct in-window universe dates (tiny: ~244 rows/year)."""
+        if self._uni_dates is None:
+            cur = self.reader.aggregate_current_view(
+                "raw.universe", projection="DISTINCT date", tail="ORDER BY date",
+                filters=self._window_filters() or None,
             )
-            self._bars = pl.from_arrow(tbl)
-        return self._bars
-
-    def universe(self) -> pl.DataFrame:
-        if self._universe is None:
-            tbl = self.reader.read_universe(start=self.start, end=self.end)
-            self._universe = pl.from_arrow(tbl)
-        return self._universe
-
-
-# ── coverage helpers ────────────────────────────────────────────────────────
-def _field_symbol_coverage(
-    df: pl.DataFrame, symbols: list[str], field: str, *, positive: bool
-) -> tuple[float, int, int, list[str]]:
-    """Fraction of `symbols` that have ≥1 usable value in `field`.
-
-    `positive=True` additionally requires value > 0 (market-cap fields).
-    Returns (coverage, n_symbols, n_have, sample_missing).
-    """
-    n = len(symbols)
-    if n == 0:
-        return 0.0, 0, 0, []
-    if df.height == 0 or field not in df.columns:
-        return 0.0, n, 0, list(symbols[:5])
-    cond = pl.col(field).is_not_null()
-    if positive:
-        cond = cond & (pl.col(field) > 0)
-    have = df.filter(cond).select("symbol").unique()["symbol"].to_list()
-    have_set = set(have)
-    missing = [s for s in symbols if s not in have_set]
-    cov = len(have_set) / n
-    return cov, n, len(have_set), missing[:8]
+            self._uni_dates = [r[0] for r in cur.fetchall()]
+        return self._uni_dates
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -229,9 +313,7 @@ class _SizeCoverageCheck:
     def run(self, ctx: PreflightContext) -> CheckResult:
         thr = PREFLIGHT_THRESHOLDS["PF_NEU_SIZE"]
         field = ctx.cfg.size_field
-        cov, n, n_have, missing = _field_symbol_coverage(
-            ctx.bars(), ctx.symbols, field, positive=True
-        )
+        cov, n, n_have, missing = ctx.bars_field_coverage(field, positive=True)
         if cov >= thr:
             return CheckResult(self.id, "pass", info={
                 "coverage": round(cov, 4), "threshold": thr,
@@ -265,9 +347,7 @@ class _VwapCoverageCheck:
 
     def run(self, ctx: PreflightContext) -> CheckResult:
         thr = PREFLIGHT_THRESHOLDS["PF_RET_PRICE"]
-        cov, n, n_have, missing = _field_symbol_coverage(
-            ctx.bars(), ctx.symbols, "vwap", positive=True
-        )
+        cov, n, n_have, missing = ctx.bars_field_coverage("vwap", positive=True)
         if cov >= thr:
             return CheckResult(self.id, "pass", info={
                 "coverage": round(cov, 4), "threshold": thr,
@@ -304,14 +384,9 @@ class _UniverseFlagCheck:
     def run(self, ctx: PreflightContext) -> CheckResult:
         flag = _resolve_flag(ctx.uni.get("preset_flag"))
         cols = list(flag) if isinstance(flag, tuple) else [flag]
-        uni = ctx.universe()
-        present = [c for c in cols if c in uni.columns]
-        n_true = 0
-        if present and uni.height > 0:
-            expr = pl.col(present[0]) == True  # noqa: E712
-            for c in present[1:]:
-                expr = expr | (pl.col(c) == True)  # noqa: E712
-            n_true = uni.filter(expr).height
+        # WP3.3: existence via parquet footers, hit-count via COUNT pushdown.
+        present = [c for c in cols if c in ctx.universe_columns()]
+        n_true = ctx.universe_flag_true_rows(present) if present else 0
         if present and n_true > 0:
             return CheckResult(self.id, "pass", info={
                 "cov_text": f"成分 flag 命中 {n_true} 行",
@@ -351,10 +426,10 @@ class _UniverseColumnCheck:
         return self._enabled(ctx)
 
     def run(self, ctx: PreflightContext) -> CheckResult:
-        uni = ctx.universe()
+        # WP3.3: column existence (footers) + non-null count (pushdown).
         have = None
         for c in self.columns:
-            if c in uni.columns and uni.filter(pl.col(c).is_not_null()).height > 0:
+            if c in ctx.universe_columns() and ctx.universe_nonnull_count(c) > 0:
                 have = c
                 break
         if have is not None:
@@ -449,9 +524,12 @@ class _WindowCheck:
         return True
 
     def run(self, ctx: PreflightContext) -> CheckResult:
-        uni = ctx.universe()
-        n_days = uni.select("date").unique().height if uni.height else 0
-        rebal = rebalance_dates(uni, ctx.cfg.rebalance) if uni.height else []
+        # WP3.3: only the distinct date list is needed (~244 rows/year) — the
+        # tiny frame feeds rebalance_dates so its stepping logic stays shared.
+        dates = ctx.universe_dates()
+        n_days = len(dates)
+        uni_dates = pl.DataFrame({"date": dates}, schema={"date": pl.Date})
+        rebal = rebalance_dates(uni_dates, ctx.cfg.rebalance) if n_days else []
         n_rebal = len(rebal)
         max_h = max(ctx.cfg.horizons) if ctx.cfg.horizons else 1
         min_rebal = int(PREFLIGHT_THRESHOLDS["PF_WINDOW_MIN_REBAL"])
