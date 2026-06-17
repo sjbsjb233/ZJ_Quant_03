@@ -230,12 +230,16 @@ def _cap_size(artifact: dict, max_mb: int) -> dict:
     if _size() <= limit:
         artifact["profiling"]["downsampled"] = "times_dropped"
         return artifact
-    # ② stride-thin the speedscope samples until it fits
+    # ② stride-thin the speedscope samples until it fits. Each pass halves the
+    # already-thinned list, so the *cumulative* decimation factor is the product
+    # of the per-pass strides (2·4·8…); track it so每 sample 的权重反映它代表的原
+    # 始样本数, 并同步 endValue (speedscope 的值轴 = 权重之和).
     prof = artifact["profiles"][0]
-    stride = 2
-    while _size() > limit and stride < 64:
-        prof["samples"] = prof["samples"][::stride]
-        prof["weights"] = [stride] * len(prof["samples"])
-        stride *= 2
-    artifact["profiling"]["downsampled"] = f"stride>{stride}"
+    cum = 1
+    while _size() > limit and cum < 64:
+        prof["samples"] = prof["samples"][::2]
+        cum *= 2
+        prof["weights"] = [cum] * len(prof["samples"])
+        prof["endValue"] = cum * len(prof["samples"])
+    artifact["profiling"]["downsampled"] = f"stride>{cum}"
     return artifact

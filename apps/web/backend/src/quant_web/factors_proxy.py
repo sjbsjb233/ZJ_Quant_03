@@ -69,7 +69,10 @@ def _filter_request_headers(req: Request, user) -> dict[str, str]:
 def _filter_response_headers(resp: httpx.Response) -> list[tuple[str, str]]:
     out = []
     for k, v in resp.headers.items():
-        if k.lower() in _HOP_BY_HOP or k.lower() == "content-encoding":
+        # drop hop-by-hop + content-encoding, and x-trace-id (web's TraceIdMiddleware
+        # re-stamps the canonical one, so passing factor-api's echo through would
+        # duplicate it — mirrors keeper_proxy).
+        if k.lower() in _HOP_BY_HOP or k.lower() in ("content-encoding", "x-trace-id"):
             continue
         out.append((k, v))
     return out
@@ -90,13 +93,29 @@ async def proxy_factors(
     return await _do_proxy("/factors" + path, request, user)
 
 
+# SSE-aware auth is confined to the GET run-log stream: EventSource can't set an
+# Authorization header, so this single GET route accepts the ?token= query param.
+# It must be declared *before* the generic /runs{path:path} route so it wins the
+# match (安全审查 P2: token-in-URL 只允许只读 GET 流, 不得用于改写运行的方法).
+@factors_proxy_router.api_route(
+    "/runs/{run_id}/logs/stream",
+    methods=["GET"],
+)
+async def proxy_run_log_stream(
+    run_id: str,
+    request: Request,
+    user=Depends(get_current_user_sse),
+):
+    return await _do_proxy(f"/runs/{run_id}/logs/stream", request, user)
+
+
 @factors_proxy_router.api_route(
     "/runs{path:path}",
     methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
 )
-async def proxy_runs(path: str, request: Request, user=Depends(get_current_user_sse)):
-    # SSE-aware auth: /runs/{id}/logs/stream is consumed by EventSource, which
-    # can't set an Authorization header — accept the ?token= query param too.
+async def proxy_runs(path: str, request: Request, user=Depends(get_current_user)):
+    # State-changing run routes (POST /runs, /runs/{id}/cancel|retry) require a
+    # header-borne JWT — the ?token= fallback is restricted to the GET stream above.
     return await _do_proxy("/runs" + path, request, user)
 
 
@@ -169,7 +188,10 @@ async def _do_proxy(path: str, request: Request, user) -> Response:
     base = _factor_api_base()
     url = base.rstrip("/") + path
     headers = _filter_request_headers(request, user)
-    params = list(request.query_params.multi_items())
+    # Strip the access JWT from the forwarded query string: web already validated
+    # it, and identity travels onward via X-Forwarded-User/-Role headers. Leaving
+    # ?token= in would leak the token into factor-api's request logs (安全审查 P2).
+    params = [(k, v) for k, v in request.query_params.multi_items() if k != "token"]
     body = await request.body()
 
     accept = request.headers.get("accept", "")
@@ -215,18 +237,27 @@ async def _stream_response(
     """SSE-friendly streamed proxy — used by /runs/{id}/logs/stream."""
 
     async def gen() -> AsyncGenerator[bytes, None]:
-        async with httpx.AsyncClient(timeout=None) as client:
-            async with client.stream(
-                method,
-                url,
-                content=body if body else None,
-                params=params,
-                headers=headers,
-            ) as r:
-                async for chunk in r.aiter_raw():
-                    if not chunk:
-                        continue
-                    yield chunk
+        # The connection opens lazily on first iteration — by now Starlette has
+        # already sent 200 + SSE headers, so an upstream ConnectError here can't
+        # become a 503. Catch it and emit a terminal SSE error event so the stream
+        # closes cleanly instead of raising mid-body (会触发 EventSource 重连风暴).
+        try:
+            async with httpx.AsyncClient(timeout=None) as client:
+                async with client.stream(
+                    method,
+                    url,
+                    content=body if body else None,
+                    params=params,
+                    headers=headers,
+                ) as r:
+                    async for chunk in r.aiter_raw():
+                        if not chunk:
+                            continue
+                        yield chunk
+        except httpx.RequestError as e:
+            _log.error("factor-api stream proxy error: %s -> %s", url, e)
+            yield b"event: error\ndata: upstream unavailable\n\n"
+            return
 
     return StreamingResponse(
         gen(),

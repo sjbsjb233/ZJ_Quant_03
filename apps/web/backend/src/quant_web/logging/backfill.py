@@ -26,17 +26,25 @@ _COLS = ("level", "logger", "event", "source", "trace_id", "request_id", "sessio
 
 
 def _parse_ts(value) -> dt.datetime | None:
+    # 全系统以 naive UTC 存储/比较 (datetime.utcnow)，所以 tz-aware 的输入必须先
+    # 折算成 UTC 再去掉时区,而不是文本截断偏移量(那样会把本地墙钟当成 UTC,
+    # 且只处理 "+" 偏移、丢掉 "-" 偏移的记录)。
     if isinstance(value, dt.datetime):
+        if value.tzinfo is not None:
+            value = value.astimezone(dt.timezone.utc)
         return value.replace(tzinfo=None)
     if not isinstance(value, str) or not value:
         return None
-    s = value.strip().rstrip("Z").replace("T", " ")
-    if "+" in s[11:]:
-        s = s[:11] + s[11:].split("+")[0]
+    s = value.strip()
+    # fromisoformat (Py3.11+) 接受尾随的 "Z" 与 ±HH:MM 偏移;去掉亚秒部分,
+    # 但保留偏移文本以便正确折算。
     try:
-        return dt.datetime.fromisoformat(s.strip().split(".")[0])
+        parsed = dt.datetime.fromisoformat(s)
     except ValueError:
         return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(dt.timezone.utc)
+    return parsed.replace(tzinfo=None)
 
 
 def _key(ts: dt.datetime, source, event, trace_id, message) -> tuple:

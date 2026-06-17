@@ -99,9 +99,9 @@ function UploadCard() {
         </div>
 
         {source && (
-          <button className="btn sm" onClick={() => validate.mutate()} disabled={validate.isLoading}
+          <button className="btn sm" onClick={() => validate.mutate()} disabled={validate.isPending}
             style={{ alignSelf: 'flex-start' }}>
-            {validate.isLoading ? '校验中…' : '🔍 校验'}
+            {validate.isPending ? '校验中…' : '🔍 校验'}
           </button>
         )}
 
@@ -112,10 +112,10 @@ function UploadCard() {
             {report?.ok ? '校验通过 · 可上传为待审核版本 (默认未启用)' : '请先通过校验'}
           </span>
           <div style={{ flex: 1 }} />
-          <button className="btn sm" disabled={!report?.ok || upload.isLoading || !pyFile}
+          <button className="btn sm" disabled={!report?.ok || upload.isPending || !pyFile}
             onClick={() => upload.mutate()}
             style={{ background: 'var(--fg)', color: 'var(--bg)', borderColor: 'var(--fg)' }}>
-            {upload.isLoading ? '上传中…' : '上传为待审核版本'}
+            {upload.isPending ? '上传中…' : '上传为待审核版本'}
           </button>
         </div>
       </div>
@@ -199,7 +199,7 @@ function ScanCard() {
         <>
           <input value={path} onChange={(e) => setPath(e.target.value)} placeholder="路径 (留空 = 默认)"
             style={{ width: 220, height: 22, padding: '0 7px', background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 3, fontFamily: 'var(--font-mono)', fontSize: 11, marginRight: 8 }} />
-          <button className="btn ghost sm" onClick={() => scan.mutate()} style={{ fontSize: 10 }}>{scan.isLoading ? '扫描中…' : '⟳ 扫描'}</button>
+          <button className="btn ghost sm" onClick={() => scan.mutate()} style={{ fontSize: 10 }}>{scan.isPending ? '扫描中…' : '⟳ 扫描'}</button>
         </>
       }>
       {!scanResult && <MiniEmpty label="点「⟳ 扫描」开始" />}

@@ -1,6 +1,8 @@
 """Auth routes (doc §3.2 /auth, §9.1): login / refresh / logout / me."""
 from __future__ import annotations
 
+import os
+
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -14,10 +16,15 @@ from .security import (
     create_access_token,
     create_refresh_token,
     decode_token,
+    hash_password,
     verify_password,
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+# 当用户名不存在时,对该常量哈希做一次等价的 PBKDF2 校验,
+# 使失败路径与正常路径耗时相当,避免通过响应时延枚举用户名。
+_DUMMY_HASH = hash_password(os.urandom(16).hex())
 
 
 class LoginRequest(BaseModel):
@@ -45,7 +52,13 @@ def user_to_dict(u: User) -> dict:
 def login(body: LoginRequest, request: Request, db: Session = Depends(get_db)):
     ip = request.client.host if request.client else None
     user = db.query(User).filter(User.username == body.username).first()
-    if user is None or not verify_password(body.password, user.password_hash):
+    # 用户不存在时也走一次哈希校验,保持失败路径耗时一致(防用户名枚举时序侧信道)。
+    if user is None:
+        verify_password(body.password, _DUMMY_HASH)
+        ok = False
+    else:
+        ok = verify_password(body.password, user.password_hash)
+    if not ok:
         app_logger.warn("auth.login.failed", username=body.username,
                         reason="bad_credentials", ip=ip)
         raise ApiError("UNAUTHENTICATED", "用户名或密码错误")

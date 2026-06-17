@@ -46,6 +46,36 @@ def _revision_items(db: Session, basket_id: str, revision: int) -> dict[str, dic
     return out
 
 
+def _latest_full_summaries(
+    db: Session, brun: BasketRun, item_defs: dict[str, dict]
+) -> dict[str, dict]:
+    """部分重算(repair)回填用:取同 basket/revision 最近一份覆盖整篮的快照的
+    item_summaries(仅保留仍在 revision 内的 item)。无可用快照则返回空 dict。
+
+    非 repair(full/incremental/corr_only)不回填:full 本就覆盖整集,回填反而会
+    把全量重建意图丢弃的旧 item 复活。
+    """
+    if brun.mode != "repair":
+        return {}
+    full_ids = set(item_defs.keys())
+    if not full_ids:
+        return {}
+    prior = (
+        db.query(BasketSnapshot)
+        .filter(BasketSnapshot.basket_id == brun.basket_id,
+                BasketSnapshot.revision == brun.revision,
+                BasketSnapshot.brun_id != brun.brun_id)
+        .order_by(BasketSnapshot.created_at.desc())
+        .all()
+    )
+    for snap in prior:
+        summ = snap.item_summaries or {}
+        # 「完整」= 覆盖该 revision 当前全部 item。
+        if full_ids.issubset(set(summ.keys())):
+            return {iid: dict(row) for iid, row in summ.items() if iid in full_ids}
+    return {}
+
+
 def build_snapshot(
     db: Session, brun: BasketRun, *, corr_json: dict | None = None
 ) -> str:
@@ -61,15 +91,10 @@ def build_snapshot(
     )
 
     item_summaries: dict[str, dict] = {}
-    excluded: list[dict] = []
-    abs_ics: list[float] = []
-    icirs: list[float] = []
-    ok_cnt = deg_cnt = fail_cnt = 0
     as_of: dt.date | None = None
     min_periods = basket.corr_min_periods if basket else 12
 
     for bri in bris:
-        idef = item_defs.get(bri.item_id, {})
         run = db.get(FactorRun, bri.run_id) if bri.run_id else None
         st = db.get(BasketItemState, bri.item_key)
         summ = dict((run.summary if run else None) or {})
@@ -95,6 +120,26 @@ def build_snapshot(
         })
         item_summaries[bri.item_id] = row
 
+    # repair 等部分重算只为重算子集创建 BasketRunItem,build_snapshot 因此只看到子集。
+    # 用同 basket/revision 的上一份完整快照回填未重算 item,本次重算结果覆盖其上,
+    # 否则部分重算产出的「最新快照」会丢掉全部原本成功的 item(优选/筛选台账被截断)。
+    prev = _latest_full_summaries(db, brun, item_defs)
+    if prev:
+        merged = dict(prev)
+        merged.update(item_summaries)  # 本次重算结果优先
+        item_summaries = merged
+
+    # 聚合(excluded / 计数 / 分位)在合并后的整篮 item 集上计算,而非仅重算子集。
+    excluded: list[dict] = []
+    abs_ics: list[float] = []
+    icirs: list[float] = []
+    ok_cnt = deg_cnt = fail_cnt = 0
+    for item_id, row in item_summaries.items():
+        idef = item_defs.get(item_id, {})
+        status = row.get("status") or "failed"
+        deg_level = row.get("degradation_level", "none")
+        settled_n = int(row.get("settled_n") or 0)
+
         if status == "success":
             ok_cnt += 1
         elif status == "degraded":
@@ -105,24 +150,24 @@ def build_snapshot(
 
         # excluded-from-correlation rules (§8.3)
         if status == "failed":
-            excluded.append({"item_id": bri.item_id, "label": idef.get("label"),
+            excluded.append({"item_id": item_id, "label": idef.get("label"),
                              "reason": "failed"})
         elif deg_level == "severe" and not (basket and basket.acknowledge_degraded):
-            excluded.append({"item_id": bri.item_id, "label": idef.get("label"),
+            excluded.append({"item_id": item_id, "label": idef.get("label"),
                              "reason": "severe_degraded"})
         elif settled_n < min_periods:
-            excluded.append({"item_id": bri.item_id, "label": idef.get("label"),
+            excluded.append({"item_id": item_id, "label": idef.get("label"),
                              "reason": "insufficient_settled", "settled_n": settled_n})
 
         if status in ("success", "degraded"):
-            ric = summ.get("rank_ic_mean")
+            ric = row.get("rank_ic_mean")
             if ric is not None:
                 abs_ics.append(abs(float(ric)))
-            ic = summ.get("icir_annual")
+            ic = row.get("icir_annual")
             if ic is not None:
                 icirs.append(float(icir_safe(ic)))
 
-    total = len(bris) or 1
+    total = len(item_summaries) or 1
     # redundancy = share of |ρ|>θ pairs among computed pairs
     redundancy = 0.0
     if corr_json:
@@ -137,7 +182,7 @@ def build_snapshot(
         "ok_count": ok_cnt,
         "degraded_count": deg_cnt,
         "failed_count": fail_cnt,
-        "total": len(bris),
+        "total": len(item_summaries),
         "abs_ic_p50": _pct(abs_ics, 50),
         "abs_ic_p90": _pct(abs_ics, 90),
         "icir_p50": _pct(icirs, 50),

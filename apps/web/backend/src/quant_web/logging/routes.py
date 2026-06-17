@@ -39,6 +39,7 @@ from ..deps import ALL_SOURCES, allowed_sources_for, require_admin, require_log_
 from ..errors import ApiError
 from ..pagination import paginate
 from . import sse
+from .redact import redact
 from .store import get_store
 
 router = APIRouter(prefix="/logs", tags=["logs"])
@@ -490,7 +491,11 @@ def ingest_service_logs(
         rec["source"] = src if src in _ALLOWED_INGEST_SOURCES else "data"
         # bound the heavy text/JSON columns so a runaway service can't bloat the DB
         if rec.get("extra") is not None:
-            rec["extra"] = _truncate(rec["extra"], _MAX_EXTRA_BYTES)
+            # 先脱敏再截断: 超过 16KB 的 extra 会被 _truncate 序列化成字符串,
+            # 而 store.enqueue 的 redact 不会递归进字符串 → 必须在仍是 dict 时
+            # 先脱敏,否则敏感键值会原文落库/SSE 外泄 (§7.6 隐私安全)。
+            rec["extra"] = _truncate(redact(rec["extra"], settings.sensitive_keys),
+                                     _MAX_EXTRA_BYTES)
         if rec.get("stack") is not None:
             rec["stack"] = _truncate_text(rec["stack"], _MAX_STACK_BYTES)
         if rec.get("message") is not None:
@@ -535,7 +540,10 @@ def ingest_client(body: ClientLogBatch, request: Request, token: str | None = No
             "actor": user.username,                     # never trust client-supplied actor
             "route": (rec.get("route") or None) and str(rec["route"])[:255],
             "message": _truncate_text(rec.get("message"), _MAX_EXTRA_BYTES),
-            "extra": _truncate(extra, _MAX_EXTRA_BYTES),
+            # 先脱敏再截断: 超过 16KB 的 extra 会被 _truncate 序列化成字符串,
+            # 而 store.enqueue 的 redact 不递归进字符串 → 在仍是 dict 时先脱敏
+            # (否则大 payload 里敏感键值原文落库/SSE 外泄, §7.6 隐私安全)。
+            "extra": _truncate(redact(extra, settings.sensitive_keys), _MAX_EXTRA_BYTES),
             "exc_type": (rec.get("exc_type") or None) and str(rec["exc_type"])[:128],
             "exc_message": _truncate_text(rec.get("exc_message"), _MAX_EXTRA_BYTES),
             "stack": _truncate_text(rec.get("stack"), _MAX_STACK_BYTES),

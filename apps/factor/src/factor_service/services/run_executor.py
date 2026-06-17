@@ -755,6 +755,11 @@ def _run_correlation(db, t: Task) -> dict[str, Any]:
             write_correlation_cache(t.task_id, result)
             m["n_factors"] = len(fids)
             m["matrix_size"] = len(fids) * len(fids)
+    except RunCancelled:
+        # 用户主动取消:终态=canceled,绝不当作 failed 触发自动重试
+        # (与 _run_evaluation / run_basket_eval 的取消处理对齐)。
+        _qlog.warn("correlation.canceled", task_id=t.task_id, n_factors=len(fids))
+        return {"task_id": t.task_id, "status": "canceled"}
     except Exception as e:  # noqa: BLE001
         _qlog.error("correlation.failed", exc=e, task_id=t.task_id, n_factors=len(fids))
         raise

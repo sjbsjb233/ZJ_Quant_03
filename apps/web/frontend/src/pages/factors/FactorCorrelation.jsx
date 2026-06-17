@@ -45,7 +45,7 @@ export default function FactorCorrelation() {
     queryKey: ['correlation', taskId],
     queryFn: () => endpoints.correlationResult(taskId),
     enabled: !!taskId,
-    refetchInterval: (data) => (data?.status === 'success' ? false : 2500),
+    refetchInterval: (q) => (q.state.data?.status === 'success' ? false : 2500),
   });
   const r = resultQ.data?.status === 'success' ? resultQ.data : null;
 
@@ -63,10 +63,10 @@ export default function FactorCorrelation() {
             <button className="btn ghost sm"
               onClick={() => window.open(`/api/v1/factors/correlation/${taskId}?format=csv`, '_blank')}>导出 CSV</button>
           )}
-          <button className="btn sm" data-testid="corr-submit" disabled={selected.length < 2 || submit.isLoading}
+          <button className="btn sm" data-testid="corr-submit" disabled={selected.length < 2 || submit.isPending}
             onClick={() => submit.mutate()}
             style={{ background: 'var(--fg)', color: 'var(--bg)', borderColor: 'var(--fg)' }}>
-            {submit.isLoading ? '提交中…' : '+ 新建分析 → 队列'}
+            {submit.isPending ? '提交中…' : '+ 新建分析 → 队列'}
           </button>
         </>
       }

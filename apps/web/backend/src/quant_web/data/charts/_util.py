@@ -2,8 +2,17 @@
 from __future__ import annotations
 
 import datetime as dt
+import math
 
 from ...errors import ApiError
+
+
+def _fin(value):
+    """NaN/±Inf 浮点会序列化成非法 JSON(NaN/Infinity 字面量),前端 fetch().json() 直接报错。
+    这里把非有限浮点统一归一为 None,与 data/serialize.jsonify 的处理保持一致。"""
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
 
 _EPOCH = dt.datetime(1970, 1, 1)
 
@@ -95,25 +104,27 @@ def candle(row: dict, include_extras: bool = False) -> dict:
     ingested = row.get("_ingested_at")
     out = {
         "timestamp": to_ms(time_val),
-        "open": row.get("open"),
-        "high": row.get("high"),
-        "low": row.get("low"),
-        "close": row.get("close"),
-        "volume": row.get("volume"),
+        "open": _fin(row.get("open")),
+        "high": _fin(row.get("high")),
+        "low": _fin(row.get("low")),
+        "close": _fin(row.get("close")),
+        "volume": _fin(row.get("volume")),
         # 市值副图 / 报价头 TURN·MKT.CAP / hover provenance (VIZ Layer v2 §6.1 / §1.2).
         # These ride on the K-line payload (the §1.2 provenance exception) -- never
         # on the pure-analysis market/industry routes.
-        "amount": row.get("amount"),
-        "total_mv": row.get("total_mv"),
-        "circ_mv": row.get("circ_mv"),
-        "turnover": row.get("turnover"),
+        "amount": _fin(row.get("amount")),
+        "total_mv": _fin(row.get("total_mv")),
+        "circ_mv": _fin(row.get("circ_mv")),
+        "turnover": _fin(row.get("turnover")),
         "_batch_id": row.get("_batch_id"),
         "_source": row.get("_source"),
         "_ingested_at": ingested.isoformat() if hasattr(ingested, "isoformat") else ingested,
     }
     if include_extras:
         ex = row.get("_extras")
-        if isinstance(ex, list):  # arrow MAP cell
-            ex = {str(k): v for k, v in ex}
+        if isinstance(ex, list):  # arrow MAP cell — 值同样过 _fin,避免 _extras 里的 NaN/Inf 漏网
+            ex = {str(k): _fin(v) for k, v in ex}
+        elif isinstance(ex, dict):
+            ex = {str(k): _fin(v) for k, v in ex.items()}
         out["_extras"] = ex
     return out

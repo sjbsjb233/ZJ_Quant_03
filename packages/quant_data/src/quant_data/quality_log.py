@@ -22,6 +22,14 @@ def _next_id(rows: list[dict]) -> int:
     return (max((r["id"] for r in rows), default=0) or 0) + 1
 
 
+def _naive_utc(value: dt.datetime | None) -> dt.datetime | None:
+    """把可能带时区的 datetime 归一成 naive UTC,以匹配 ``ids.utc_now()``
+    写入的 naive TIMESTAMP 列;否则 aware/naive 比较会抛 TypeError。"""
+    if value is not None and value.tzinfo is not None:
+        return value.astimezone(dt.timezone.utc).replace(tzinfo=None)
+    return value
+
+
 @c.locked
 def record_issues(batch_id: str, target_table: str, issues, root=None) -> list[dict]:
     """Append a batch's quality findings. ``issues`` are quality.QualityIssue
@@ -73,6 +81,8 @@ def list_issues(
     """Filtered issues, most-recently-detected first. ``level`` may be a single
     value or an iterable of values."""
     levels = {level} if isinstance(level, str) else (set(level) if level else None)
+    start = _naive_utc(start)
+    end = _naive_utc(end)
     rows = c.load(QUALITY_ISSUES, root)
     out = [
         r for r in rows
@@ -96,6 +106,7 @@ def get_issue(issue_id: int, root=None) -> dict | None:
 def acknowledge(issue_id: int, by: str, reason: str | None = None,
                 expires_at: dt.datetime | None = None, acknowledged: bool = True,
                 root=None) -> dict:
+    expires_at = _naive_utc(expires_at)
     rows = c.load(QUALITY_ISSUES, root)
     row = c.require(QUALITY_ISSUES, rows, (issue_id,))
     row.update(

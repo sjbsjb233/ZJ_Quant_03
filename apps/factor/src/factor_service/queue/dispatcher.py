@@ -160,6 +160,11 @@ def _finalize_future(db: Session, task_id: str, fut: Future) -> None:
             t.error = res.get("reason") or t.error or "run_failed"
         elif run_status == "canceled":
             t.status = "canceled"
+        elif run_status in ("missing", "unknown_type"):
+            # 没有真正干活: Task 行中途消失 / task_type 损坏 —— 绝不能记成
+            # success (否则 today_done 虚高, 掩盖丢数据或配置错). 记失败。
+            t.status = "failed"
+            t.error = res.get("reason") or run_status
         else:
             t.status = "success"  # success or degraded (the run completed)
         t.finished_at = t.finished_at or _now_utc()

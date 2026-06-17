@@ -10,9 +10,26 @@ ledger does not log its own plumbing.
 from __future__ import annotations
 
 import time
+from urllib.parse import parse_qsl, urlencode
 
 from ..config import get_settings
 from ..logging import app_logger
+
+# query string 中需脱敏的键 —— SSE 流 (run-log/logs) 把访问 JWT 放在 ?token= 上,
+# 直接落库/写 JSONL/推 SSE 会泄漏可用的 bearer token。键名脱敏看不到 query 这层
+# (它是 query 键的扁平字符串值),故在记录前对 query 自身做值级脱敏。
+_QUERY_REDACT_KEYS = {"token", "access_token", "refresh_token", "secret", "password"}
+
+
+def _scrub_query(query_string: str) -> str | None:
+    """对 query string 做值级脱敏,敏感键的值替换为 ***。"""
+    if not query_string:
+        return None
+    pairs = parse_qsl(query_string, keep_blank_values=True)
+    if not pairs:
+        return query_string
+    scrubbed = [(k, "***" if k.lower() in _QUERY_REDACT_KEYS else v) for k, v in pairs]
+    return urlencode(scrubbed)
 
 _SKIP_EXACT = {
     "/api/v1/health",
@@ -48,7 +65,7 @@ class RequestLogMiddleware:
         client = scope.get("client")
         ip = client[0] if client else None
         ua = headers.get(b"user-agent", b"").decode("latin-1") or None
-        query = scope.get("query_string", b"").decode("latin-1") or None
+        query = _scrub_query(scope.get("query_string", b"").decode("latin-1"))
 
         app_logger.info("http.request.received", method=method, path=path,
                         query=query, ip=ip, ua=ua)

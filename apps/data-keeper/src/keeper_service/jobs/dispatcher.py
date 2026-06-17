@@ -20,6 +20,7 @@ import signal
 import threading
 import time
 
+from quant_admission import Grant
 from quant_data import logging as qd_logging
 
 from ..config import ensure_dirs, get_settings
@@ -28,7 +29,7 @@ from ..db.models import Job
 from ..logging_ctx import configure_logging, trace_id_var
 from ..obs import install_obs
 from . import actors
-from .runner import JobContext, JobRunner
+from .runner import JobCancelled, JobContext, JobRunner
 
 _log = qd_logging.get_logger("keeper.dispatcher")
 _stop = threading.Event()
@@ -57,8 +58,10 @@ def _claim_one(db, worker_id: str) -> Job | None:
            .order_by(Job.created_at.asc()).first())
     if job is None:
         return None
+    now = dt.datetime.utcnow()
     job.status = "running"
-    job.started_at = dt.datetime.utcnow()
+    job.started_at = now
+    job.progress_at = now    # 心跳, 与 in-process runner 一致 (回收线程 D6)
     job.initiated_by = job.initiated_by or worker_id
     db.commit()
     return job
@@ -89,16 +92,28 @@ def main() -> None:
             continue
         tok = trace_id_var.set(trace_id)
         qd_tok = qd_logging.bind_context(trace_id=trace_id)
+        ctx = JobContext(runner, job_id, s.quant_data_root)
+        grant: Grant | None = None
         try:
-            ctx = JobContext(runner, job_id, s.quant_data_root)
+            # 与 in-process JobRunner._run 同样的 WP5 准入闸: 重型写在专属预算下
+            # 排队/限流, 独立容器部署不再缺失 OOM 防护。
+            grant = runner._acquire_admission(ctx, job_id, job_type)
             result = fn(ctx, **params)
+            if runner._is_cancelled(job_id):
+                raise JobCancelled(job_id)
             runner._update(job_id, status="success", result=result or {},
                            finished_at=dt.datetime.utcnow())
+        except JobCancelled:
+            runner._update(job_id, status="cancelled", finished_at=dt.datetime.utcnow())
+            _log.warn("dispatcher.job.cancelled", job_id=job_id, job_type=job_type)
         except Exception as exc:  # noqa: BLE001
             runner._update(job_id, status="failed", error=str(exc),
                            finished_at=dt.datetime.utcnow())
             _log.error("dispatcher.job.failed", exc=exc, job_id=job_id, job_type=job_type)
         finally:
+            if grant is not None:
+                grant.release()
+            runner._clear_cancel(job_id)
             qd_logging.reset_context(qd_tok)
             trace_id_var.reset(tok)
 

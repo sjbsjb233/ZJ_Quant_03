@@ -7,6 +7,7 @@ headers. Bigints beyond JS's safe range are stringified when ``strict_int``.
 from __future__ import annotations
 
 import datetime as dt
+import math
 
 import pyarrow as pa
 
@@ -49,6 +50,10 @@ def jsonify(value, strict_int: bool = False):
         return [jsonify(v, strict_int) for v in value]
     if strict_int and isinstance(value, int) and abs(value) > _JS_MAX_SAFE:
         return str(value)
+    # NaN/±Inf 不是合法 JSON token,默认编码器会写出裸 NaN/Infinity,
+    # 导致前端 fetch().json() 整段解析失败 -> 统一降级为 null
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
     return value
 
 

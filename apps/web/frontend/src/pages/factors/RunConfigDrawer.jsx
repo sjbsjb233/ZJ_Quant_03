@@ -254,7 +254,7 @@ export default function RunConfigDrawer({ factorId, onClose, onSubmitted, initia
         <div style={{ flex: 1 }} />
         <button className="btn ghost sm" onClick={onClose}>取消</button>
         <button className="btn sm" data-testid="newrun-submit"
-          disabled={submit.isLoading || blockedSubmit}
+          disabled={submit.isPending || blockedSubmit}
           title={pf && !pf.runnable ? '前置校验未通过,无法提交' : (needAck && !degradeAck ? '请先确认降级运行' : '')}
           onClick={() => submit.mutate()}
           style={{
@@ -263,7 +263,7 @@ export default function RunConfigDrawer({ factorId, onClose, onSubmitted, initia
             borderColor: blockedSubmit ? 'var(--border)' : 'var(--fg)',
             cursor: blockedSubmit ? 'not-allowed' : 'pointer',
           }}>
-          {submit.isLoading ? '提交中…'
+          {submit.isPending ? '提交中…'
             : (pf && !pf.runnable) ? '已阻断'
             : needAck ? '确认降级运行' : '提交 → 进队列'}
         </button>

@@ -32,9 +32,12 @@ _log = qd_logging.get_logger("keeper.jobs")
 # job type → 准入预算类 (内存治理 WP5; 预算表见 ADMISSION_BUDGETS_JSON)。
 # 重型写 (compaction/migration/vacuum 走 maintenance 类) 按 keeper.compact 记账;
 # 其余按 keeper.job.light 小预算 (排干期一并暂停)。
+# key 是 job_type 的子串 (与 reaper.timeout_minutes_for 的最长匹配一致), 因为实际
+# 提交的 job_type 是 scheduled_maintenance / compact / field_migration / vacuum —— 用
+# 精确 dict.get 会让其中三类漏配, 落到 keeper.job.light, 绕过最重写的准入闸。
 _ADMISSION_CLASS = {
     "maintenance": "keeper.compact",
-    "compaction": "keeper.compact",
+    "compact": "keeper.compact",
     "migration": "keeper.compact",
     "vacuum": "keeper.compact",
 }
@@ -42,6 +45,16 @@ _ADMISSION_POLL_S = 2.0
 
 _gate: AdmissionGate | None = None
 _gate_lock = threading.Lock()
+
+
+def _admission_class_for(job_type: str) -> str:
+    """按 job_type 的最长子串匹配准入预算类 (与 reaper.timeout_minutes_for 一致),
+    缺省 keeper.job.light。子串匹配避免 dict 顺序歧义并兼容带前缀的实际 job_type。"""
+    t = (job_type or "").lower()
+    matches = [(key, cls) for key, cls in _ADMISSION_CLASS.items() if key in t]
+    if matches:
+        return max(matches, key=lambda kv: len(kv[0]))[1]
+    return "keeper.job.light"
 
 
 def _admission_gate() -> AdmissionGate:
@@ -83,7 +96,7 @@ class JobContext:
         self.runner._append_log(self.job_id, f"[{ts}] {message}")
 
     def check_cancel(self) -> None:
-        if self.runner._is_cancelled(self.job_id):
+        if self.runner._stopping or self.runner._is_cancelled(self.job_id):
             raise JobCancelled(f"job {self.job_id} cancelled")
 
 
@@ -94,6 +107,7 @@ class JobRunner:
         self._pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="job")
         self._cancel: set[str] = set()
         self._cancel_lock = threading.Lock()
+        self._stopping = False   # 停机时让在途 actor 在下一个 check_cancel 协作退出
 
     def _is_cancelled(self, job_id: str) -> bool:
         with self._cancel_lock:
@@ -130,6 +144,12 @@ class JobRunner:
                 return False
         self._mark_cancel(job_id)
         return True
+
+    def stop(self, wait: bool = True) -> None:
+        """优雅停机: 协作式取消在途任务并 drain 线程池, 让一次干净的 SIGTERM
+        不把半写的 parquet 弃在中途, 也不泄漏 executor 线程 (热重载会累积)。"""
+        self._stopping = True   # 在途 actor 下一个 check_cancel 即 raise JobCancelled
+        self._pool.shutdown(wait=wait, cancel_futures=True)
 
     # -- internals -----------------------------------------------------------
     def _run(self, job_id: str, job_type: str, fn: Callable, params: dict,
@@ -177,7 +197,7 @@ class JobRunner:
         budget-queued job for a hung one; the wait itself is visible in the
         job log once + the gate's own admission.* app_log chain.
         """
-        cls = _ADMISSION_CLASS.get(job_type, "keeper.job.light")
+        cls = _admission_class_for(job_type)
         gate = _admission_gate()
         logged_wait = False
         while True:

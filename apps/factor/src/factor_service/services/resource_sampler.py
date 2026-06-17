@@ -338,23 +338,37 @@ class ResourceSampler:
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=2.0)
-        self._writer.close()
+        self._alive = False
+        # 只有线程确实退出后才收尾(关 writer、清引用、复位 stop 事件以允许干净重启)。
+        # 若 join 超时——线程仍卡在 _tick 的同步 NDJSON 写(磁盘 stall 可触发)——绝不能
+        # clear() stop 事件: 那会"复活"残留线程继续采样, 还会重开刚 close 的 writer;
+        # 也不 null _thread, 以免 start() 再起一个并发线程。残留线程会在 _stop 仍 set
+        # 时于下一轮自行退出, 并在 _loop 的 finally 里关掉自己的 writer。
+        if self._thread is None or not self._thread.is_alive():
+            self._writer.close()
+            self._thread = None
+            self._stop.clear()
 
     def alive(self) -> bool:
         return self._alive and (self._thread is not None and self._thread.is_alive())
 
     # ── the loop ─────────────────────────────────────────────────────────
     def _loop(self) -> None:
-        while not self._stop.is_set():
-            t0 = time.time()
-            try:
-                self._tick()
-            except Exception:  # noqa: BLE001 - 失败安全红线: warn only, never raise
-                _log.warning("resource sampler tick failed (non-fatal)", exc_info=True)
-            # account for tick cost so cadence stays ~1Hz under light load
-            elapsed = time.time() - t0
-            self._stop.wait(max(0.0, self._interval - elapsed))
-        self._alive = False
+        try:
+            while not self._stop.is_set():
+                t0 = time.time()
+                try:
+                    self._tick()
+                except Exception:  # noqa: BLE001 - 失败安全红线: warn only, never raise
+                    _log.warning("resource sampler tick failed (non-fatal)", exc_info=True)
+                # account for tick cost so cadence stays ~1Hz under light load
+                elapsed = time.time() - t0
+                self._stop.wait(max(0.0, self._interval - elapsed))
+        finally:
+            # 线程自己负责退出时关闭 writer —— 即便 stop() 因 join 超时未代为收尾,
+            # 残留线程最终退出时也能干净关闭(close 幂等, 与 stop() 重复调用安全)。
+            self._alive = False
+            self._writer.close()
 
     def _tick(self) -> None:
         now = time.time()

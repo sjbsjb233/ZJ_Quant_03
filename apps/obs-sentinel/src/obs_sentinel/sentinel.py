@@ -326,13 +326,16 @@ class Sentinel:
         cutoff = time.time() - hours * 3600
         out: list[dict] = []
         for task, info in tasks.items():
-            last = _parse_iso((info or {}).get("last_success_at")) if isinstance(info, dict) else None
+            # info 契约外 (非 dict 的真值, 如字符串 'pending') 也不能让 .get 抛 AttributeError
+            # 逃出 _deadman 而中断整轮 scan_once —— 统一收敛成 {} 再取值。
+            info_d = info if isinstance(info, dict) else {}
+            last = _parse_iso(info_d.get("last_success_at"))
             overdue = (last is not None and last < cutoff) or (last is None and uptime > hours * 3600)
             if overdue:
                 out.append(self._cond("D7.deadman", "error", "data", task,
                                       f"死人开关 · {task} 超 {hours}h 无成功",
                                       {"task": task, "hours": hours,
-                                       "last_success_at": (info or {}).get("last_success_at")}))
+                                       "last_success_at": info_d.get("last_success_at")}))
         return out
 
     @staticmethod
@@ -357,9 +360,16 @@ class Sentinel:
 
     # -- status frame (§7.1) -------------------------------------------------
     def _build_frame(self, obs: list[dict], disks: list[dict], conditions: list[dict]) -> dict:
+        # 选取每层「代表容器」用于展示 cpu/mem 等指标。优先取该层配置的存活探测目标
+        # (真正的可达性裁决对象),否则才回退到该层任意容器 —— 避免把无探测端点的
+        # 旁路 sidecar (如 factor-worker) 误当成整层的可达性来源 (docker 列序不确定)。
+        liveness_names = {t.name for t in self.cfg.liveness_targets}
         by_layer: dict[str, dict] = {}
         for o in sorted(obs, key=lambda x: layer_rank(x["layer"])):
-            by_layer.setdefault(o["layer"], o)         # first container per layer
+            existing = by_layer.get(o["layer"])
+            if existing is None or (existing["name"] not in liveness_names
+                                    and o["name"] in liveness_names):
+                by_layer[o["layer"]] = o   # 优先存活探测目标, 否则该层首个容器
         # conditions grouped by layer + by container target
         worst_layer: dict[str, str] = {}
         for c in conditions:
@@ -368,15 +378,19 @@ class Sentinel:
             cur = worst_layer.get(c["layer"], _OK)
             worst_layer[c["layer"]] = _worst_tone(cur, st)
 
+        targets_by_name = {o["name"]: o for o in obs}
         layers: dict[str, dict] = {}
         for layer in ("frontend", "backend", "data", "factor"):
             c = by_layer.get(layer)
-            reachable = bool(c and c.get("reachable"))
-            if c is None:
-                # configured liveness target without a docker row → use the probe
-                target = next((t for t in self.cfg.liveness_targets if t.layer == layer), None)
-                reachable = False if target else True
-            # 不可达即 down — 无论是 c 在但探测失败, 还是容器被杀后从拓扑消失 (无 c 但有探测
+            # 可达性严格取自该层配置的存活探测目标 (而非任意 sidecar): 探测目标存在则以其
+            # 探测结果为准 (容器从拓扑消失 → 视为不可达); 无配置探测目标的层默认可达。
+            target = next((t for t in self.cfg.liveness_targets if t.layer == layer), None)
+            if target is not None:
+                probe_row = targets_by_name.get(target.name)
+                reachable = bool(probe_row and probe_row.get("reachable"))
+            else:
+                reachable = True
+            # 不可达即 down — 无论是探测目标在但探测失败, 还是容器被杀后从拓扑消失 (有探测
             # 目标)。否则会出现「reachable=false 但 state=ok」的伪绿不一致 (AC-01 关键)。
             state = _ERR if not reachable else worst_layer.get(layer, _OK)
             entry: dict = {"state": state, "reachable": reachable}

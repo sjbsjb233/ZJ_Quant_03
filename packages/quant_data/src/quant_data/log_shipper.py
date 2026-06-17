@@ -64,7 +64,11 @@ class HttpLogShipper:
         self.flush_interval = max(0.05, float(flush_interval))
         self.post_timeout = post_timeout
         self._q: queue.Queue = queue.Queue(maxsize=queue_max)
+        # 溢出时 WARN+ 不能在生产者线程里同步 POST(会阻塞业务线程数秒),
+        # 改投这个小优先队列, 由后台 flusher 一并排出; 满了就丢最旧的一条。
+        self._pq: queue.Queue = queue.Queue(maxsize=max(1, queue_max // 100))
         self._stopping = threading.Event()
+        self._drain_deadline: float = 0.0  # stop() 设定的关停排队截止 (monotonic)
         self._file_ok = True
         try:
             os.makedirs(jsonl_dir, exist_ok=True)
@@ -98,15 +102,28 @@ class HttpLogShipper:
         try:
             self._q.put_nowait(row)       # 2) side-channel ship
         except queue.Full:
-            # keep WARN+: post it straight away, bypassing the saturated queue.
+            # keep WARN+: 投入优先队列让后台线程排出, 绝不在生产者线程同步 POST
+            # (本地 JSONL 已留底, 同步网络重试会冻结业务线程数秒)。
             if _LEVELS.get(str(row.get("level", "INFO")).upper(), 20) >= 30:
-                self._post([row])
+                while True:
+                    try:
+                        self._pq.put_nowait(row)
+                        break
+                    except queue.Full:
+                        # 优先队列也满了: 丢最旧的一条腾位 (JSONL 仍留底)。
+                        try:
+                            self._pq.get_nowait()
+                        except queue.Empty:
+                            break
 
     # -- local JSONL fallback -------------------------------------------------
     def _write_local(self, row: dict) -> None:
         if not self._file_ok:
             return
-        path = os.path.join(self.jsonl_dir, f"{self.source}-{dt.date.today().isoformat()}.log")
+        # 文件名按 UTC 日期, 与每条记录的 ts (UTC) 对齐 — 全系统统一 UTC,
+        # 用本地日期会让同一 UTC 日的记录跨午夜分散到两个文件。
+        utc_date = dt.datetime.now(dt.timezone.utc).date().isoformat()
+        path = os.path.join(self.jsonl_dir, f"{self.source}-{utc_date}.log")
         try:
             with open(path, "a", encoding="utf-8") as fh:
                 fh.write(json.dumps(row, default=str, ensure_ascii=False) + "\n")
@@ -120,14 +137,25 @@ class HttpLogShipper:
             batch = self._collect()
             if batch:
                 self._post(batch)
-        # final drain on shutdown
-        tail = self._collect(block=False)
-        if tail:
+        # final drain on shutdown: 循环排空整个队列 (单批只取 self.batch 条会丢尾巴),
+        # 用 _drain_deadline 兜底以尊重 stop(timeout=...)。
+        while True:
+            if self._drain_deadline and time.monotonic() >= self._drain_deadline:
+                break
+            tail = self._collect(block=False)
+            if not tail:
+                break
             self._post(tail)
 
     def _collect(self, block: bool = True) -> list[dict]:
         batch: list[dict] = []
-        if block:
+        # 先排空优先队列 (溢出时改投的 WARN+), 再排主队列。
+        while len(batch) < self.batch:
+            try:
+                batch.append(self._pq.get_nowait())
+            except queue.Empty:
+                break
+        if block and not batch:
             try:
                 batch.append(self._q.get(timeout=self.flush_interval))
             except queue.Empty:
@@ -160,6 +188,7 @@ class HttpLogShipper:
 
     # -- lifecycle ------------------------------------------------------------
     def stop(self, timeout: float = 5.0) -> None:
+        self._drain_deadline = time.monotonic() + max(0.0, float(timeout))
         self._stopping.set()
         if self._thread.is_alive():
             self._thread.join(timeout=timeout)

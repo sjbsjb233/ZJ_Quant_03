@@ -542,7 +542,7 @@ class FactorEvaluator:
         return {
             "rank_ic_mean": rmean,
             "ic_mean": imean,
-            "ic_std": rstd,
+            "ic_std": istd,
             "icir": rir,
             "icir_annual": ann,
             "ic_t_stat": rt,
@@ -700,7 +700,10 @@ class FactorEvaluator:
         prev: set[str] = set()
         series: list[dict[str, Any]] = []
         date_set = set(rebal)
-        for d, sub in clean.group_by("date", maintain_order=True):
+        # 换手率依赖逐期相邻调仓日的对比,必须按日期升序遍历。clean 的 date-group
+        # 顺序对内置因子(按 [symbol,date] 排序)恰好是时序的,但上传/自定义因子
+        # 的 compute() 输出顺序任意,故显式 sort("date") 以保证时序不变量。
+        for d, sub in clean.sort("date").group_by("date", maintain_order=True):
             day = d[0] if isinstance(d, tuple) else d
             if day not in date_set or sub.height < quantiles * 2:
                 continue

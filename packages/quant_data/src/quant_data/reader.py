@@ -709,9 +709,19 @@ class DataReader:
             return cv
         interval = config.MINUTE_FREQUENCIES[frequency]
         self._con.register("_cv", cv)
+        # time_bucket 默认锚定 Unix epoch(00:00 整点),对 1h 而言会把 A 股
+        # 早盘 09:30 开盘并入 [09:00,10:00) 桶,产生跨越错误分钟区间的非标准
+        # 小时 K(O/H/L/C/volume 全部聚合错)。这里按交易时段显式给出 origin:
+        # 早盘锚 09:30、午盘锚 13:00,使 1h 桶落在 09:30/10:30/13:00/14:00。
+        # 5m/15m/30m 的 interval 能整除 09:30/13:00 偏移,加 origin 结果不变。
+        origin = (
+            "CASE WHEN CAST(datetime AS TIME) < TIME '13:00:00' "
+            "THEN TIMESTAMP '1970-01-01 09:30:00' "
+            "ELSE TIMESTAMP '1970-01-01 13:00:00' END"
+        )
         sql = f"""
         SELECT
-            time_bucket(INTERVAL '{interval}', datetime) AS datetime,
+            time_bucket(INTERVAL '{interval}', datetime, {origin}) AS datetime,
             symbol,
             {_str_lit(frequency)} AS frequency,
             first(open ORDER BY datetime) AS open,

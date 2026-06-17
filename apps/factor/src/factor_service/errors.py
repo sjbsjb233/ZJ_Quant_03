@@ -5,12 +5,16 @@ Keeps the frontend's error parsing identical across the two services.
 """
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from .logging_ctx import current_trace_id
+
+_log = logging.getLogger(__name__)
 
 
 _ERROR_STATUS = {
@@ -73,31 +77,46 @@ def install_error_handlers(app: FastAPI) -> None:
             },
         )
 
+    # FastAPI 自带的 RequestValidationError 不会冒泡到 Exception 处理器
+    # (它在 FastAPI 初始化时单独注册),必须显式登记才能套用统一 {"error": {...}}
+    # 信封,否则校验失败会退回默认 422 {"detail": [...]},前端共用的错误解析失效。
+    @app.exception_handler(RequestValidationError)
+    async def _validation(request: Request, exc: RequestValidationError):  # noqa: ARG001
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": {
+                    "code": "INVALID_PARAMETER",
+                    "message": "请求参数校验失败",
+                    "details": {"errors": exc.errors()},
+                    "trace_id": current_trace_id(),
+                }
+            },
+        )
+
     @app.exception_handler(Exception)
     async def _unhandled(request: Request, exc: Exception):  # noqa: ARG001
-        # Bubble up validation errors cleanly; everything else -> 500.
-        from fastapi.exceptions import RequestValidationError
-
-        if isinstance(exc, RequestValidationError):
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "error": {
-                        "code": "INVALID_PARAMETER",
-                        "message": "请求参数校验失败",
-                        "details": {"errors": exc.errors()},
-                        "trace_id": current_trace_id(),
-                    }
-                },
-            )
+        # 服务端记录真实异常(经 obs HttpLogShipper 送入中心 app_log,按 trace_id 检索),
+        # 但绝不把内部细节(SQL/路径/栈/异常类型)泄露给客户端 —— 对外只回通用文案。
+        trace_id = current_trace_id()
+        _log.error(
+            "unhandled.exception",
+            exc_info=exc,
+            extra={
+                "trace_id": trace_id,
+                "route": request.url.path,
+                "method": request.method,
+                "status_code": 500,
+            },
+        )
         return JSONResponse(
             status_code=500,
             content={
                 "error": {
                     "code": "INTERNAL",
-                    "message": str(exc) or "Internal Server Error",
-                    "details": {"type": type(exc).__name__},
-                    "trace_id": current_trace_id(),
+                    "message": "服务器内部错误,请用 trace_id 联系运维",
+                    "details": {},
+                    "trace_id": trace_id,
                 }
             },
         )

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 
+import pyarrow as pa
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
@@ -66,6 +67,16 @@ def preview(body: ExplorerRequest, reader=Depends(get_reader), user=Depends(get_
     where_sql = (" WHERE " + " AND ".join(where)) if where else ""
 
     agg = body.aggregation
+    # 时间分桶聚合 (daily/weekly/monthly_avg) 依赖 date_trunc,只对日期/时间戳列成立。
+    # x_axis 仅校验过「存在于表 schema」,若选了 VARCHAR/数值列再配 *_avg,
+    # date_trunc 会在引擎内抛 binder 错误并冒泡成不透明的 500 —— 提前拦成清晰的 400。
+    if agg in _BIN:
+        xtype = spec.type_of(body.x_axis)
+        if not (pa.types.is_date(xtype) or pa.types.is_timestamp(xtype)):
+            raise ApiError(
+                "INVALID_PARAMETER",
+                f"列 {body.x_axis} 不是日期/时间类型,无法用于时间分桶聚合 ({agg}),"
+                "请改选日期列或改用其它聚合方式")
     xexpr = (f"date_trunc('{_BIN[agg]}', {_ident(body.x_axis)})"
              if agg in _BIN else _ident(body.x_axis))
     # agg=none materialises every row → trivially pulls a whole big table into

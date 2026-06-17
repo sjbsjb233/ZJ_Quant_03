@@ -185,12 +185,30 @@ def list_factors(
     }
 
 
+def _is_number(s: str) -> bool:
+    try:
+        float(s)
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
 def _csv_safe(v: Any) -> str:
-    if v is None:
-        return ""
-    s = str(v).replace('"', '""')
-    if "," in s or "\n" in s:
-        return f'"{s}"'
+    """RFC4180 escape + CSV-injection neutralization (与 screening._csv_cell 对齐)。
+
+    ``display_name`` / ``factor_id`` 等列由用户可控,首字符若为公式触发符
+    (``= + - @ \\t \\r``) 需前缀单引号中和,避免在 Excel/Sheets 打开时执行公式。
+    但 ``+ -`` 也是合法数值的前缀:rank_ic/icir/收益 等指标常为负数,若把 -0.5
+    也前缀成 "'-0.5" 会在 Excel/Sheets 里变成文本(数值列回归)。故 +/- 仅在
+    该值不是合法数字时才中和;=/@/制表/回车永不可能是数字,一律中和。
+    """
+    s = "" if v is None else str(v)
+    if s:
+        c = s[0]
+        if c in ("=", "@", "\t", "\r") or (c in ("+", "-") and not _is_number(s)):
+            s = "'" + s
+    if any(ch in s for ch in (",", '"', "\n", "\r")):
+        s = '"' + s.replace('"', '""') + '"'
     return s
 
 

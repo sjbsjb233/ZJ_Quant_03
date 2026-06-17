@@ -154,9 +154,15 @@ def apply_filters(rows: list[dict], filters) -> list[dict]:
             raise ValueError(f"非法指标键 '{rule.get('k')}'")
         if rule.get("op") not in _OPS:
             raise ValueError(f"非法运算符 '{rule.get('op')}' (允许: gte/lte/between/eq)")
+        if "v" not in rule:  # 比较值缺失 → 取 rule["v"] 会 KeyError → 500 (统一为 400)
+            raise ValueError("过滤条件缺少比较值 v")
     for rule in param_rules:
+        if "k" not in rule:  # 参数规则缺键名 → 取 rule["k"] 会 KeyError → 500
+            raise ValueError("参数过滤条件缺少参数键 k")
         if rule.get("op") not in _OPS:
             raise ValueError(f"非法运算符 '{rule.get('op')}' (允许: gte/lte/between/eq)")
+        if "v" not in rule:
+            raise ValueError("参数过滤条件缺少比较值 v")
     flags = filters.get("flags") or {}
     fac = filters.get("factor") or {}
     param_rules = filters.get("params") or []
