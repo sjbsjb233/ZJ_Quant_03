@@ -131,12 +131,13 @@ services:
       CPU_SAT_FOR_SEC: ${CPU_SAT_FOR_SEC:-120}
       CORE_DUMP_RW_GB: ${CORE_DUMP_RW_GB:-2}
       LIVENESS_PROBE_TIMEOUT_SEC: ${LIVENESS_PROBE_TIMEOUT_SEC:-2}
-      # 哨兵 conditions 新鲜度门 (盲时停喂, §6.5)
-      SIGNAL_FRESH_SEC: ${SIGNAL_FRESH_SEC:-120}
+      # 哨兵 conditions 新鲜度门 (盲时停喂, §6.5)。须 ≤ sentinel_heartbeat_sec(=60)
+      # 否则哨兵离线后陈旧判定比 D12 活得久 → 双断言窗口 (config.py 不变式)。
+      SIGNAL_FRESH_SEC: ${SIGNAL_FRESH_SEC:-60}
       # JSONL → app_log 回填自愈 (§8.3②): 启动后扫描各层本地 JSONL 补齐宕机缺口。
       # /backfill 是各层 ./logs 的只读挂入 (见 volumes); log_file_dir(/state/logs) 总会扫。
       LOG_BACKFILL_ON_START: ${LOG_BACKFILL_ON_START:-true}
-      LOG_BACKFILL_DIRS: ${LOG_BACKFILL_DIRS:-/backfill/keeper;/backfill/factor;/backfill/sentinel}
+      LOG_BACKFILL_DIRS: ${LOG_BACKFILL_DIRS:-/backfill/keeper;/backfill/factor;/backfill/factor-worker;/backfill/sentinel}
       LOG_BACKFILL_SINCE_HOURS: ${LOG_BACKFILL_SINCE_HOURS:-48}
       NO_PROXY: "localhost,127.0.0.1"
       no_proxy: "localhost,127.0.0.1"
@@ -294,7 +295,10 @@ services:
     volumes:
       - ./data:/data:ro
       - ./factor-store:/factor-store
-      - ./logs/factor:/logs
+      # 独立 JSONL 落点: factor-api 与 worker 同跑 factor 镜像 (source=factor),
+      # 共享 ./logs/factor 会让两进程并发追加同一 factor-<date>.log → 大行可能
+      # 交错损坏 (回填 JSON 解析失败被静默丢弃)。分目录, 各写各的本地兜底。
+      - ./logs/factor-worker:/logs
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
 

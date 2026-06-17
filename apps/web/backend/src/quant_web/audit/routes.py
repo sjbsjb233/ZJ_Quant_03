@@ -8,8 +8,7 @@ from sqlalchemy.orm import Session
 
 from ..db.base import get_db
 from ..deps import get_current_user
-from ..pagination import paginate
-from .log import list_audit
+from .log import count_audit, list_audit
 
 router = APIRouter(prefix="/audit", tags=["audit"])
 
@@ -37,6 +36,16 @@ def audit(
     status: str | None = None, from_: dt.datetime | None = None,
     to: dt.datetime | None = None, page: int = 1, page_size: int = 20,
 ):
+    # 分页下推到 SQL: 只统计总数 + 取当前页,避免每次把永久增长的 audit_log 整表物化。
+    page = max(1, page)
+    page_size = max(1, min(page_size, 1000))
+    total = count_audit(db, action=action, actor=actor, target=target, status=status,
+                        start=from_, end=to)
     rows = list_audit(db, action=action, actor=actor, target=target, status=status,
-                      start=from_, end=to)
-    return paginate([_to_dict(e) for e in rows], page, page_size)
+                      start=from_, end=to, page=page, page_size=page_size)
+    return {
+        "items": [_to_dict(e) for e in rows],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }

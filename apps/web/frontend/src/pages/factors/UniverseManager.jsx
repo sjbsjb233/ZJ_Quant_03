@@ -362,10 +362,10 @@ function PoolEditor({ uid, onClose, onSaved }) {
         )}
         <div style={{ flex: 1 }} />
         <button className="btn ghost sm" onClick={onClose}>取消</button>
-        <button className="btn sm" data-testid="pool-save" disabled={save.isLoading || !name || symbols.length === 0}
+        <button className="btn sm" data-testid="pool-save" disabled={save.isPending || !name || symbols.length === 0}
           onClick={() => save.mutate()}
           style={{ background: 'var(--fg)', color: 'var(--bg)', borderColor: 'var(--fg)' }}>
-          {save.isLoading ? '保存中…' : '保存'}
+          {save.isPending ? '保存中…' : '保存'}
         </button>
       </footer>
     </aside>

@@ -115,6 +115,10 @@ def list_batches(
         v = b.get(field)
         if isinstance(v, dt.datetime):
             return v
+        # finished_at 对 running 批次为 None;datetime 字段统一用 datetime.min
+        # 兜底,避免 str 与 datetime 混排触发 TypeError。
+        if field in ("started_at", "finished_at"):
+            return dt.datetime.min
         return (v if v is not None else (0 if field == "row_count" else ""))
 
     filtered.sort(key=sort_key, reverse=reverse)

@@ -97,12 +97,18 @@ def compute_table_stats(table: str, root=None) -> dict:
     }
 
 
-@c.locked
 def refresh_all(root=None) -> list[dict]:
-    """Recompute stats for every raw + reference table and persist them."""
+    """Recompute stats for every raw + reference table and persist them.
+
+    重计算包含对全量 parquet 的 COUNT 扫描(如 18M 行的 raw.bars_daily),耗时
+    可达数十秒到数分钟。若整段持有 metadata flock,所有进程的 finalize_batch /
+    register_batch 等元数据写入都会被这次刷新阻塞(复现 2026-06-04 假死)。因此
+    只读的计算放在锁外,锁只覆盖最后一次微小的 c.save 持久化。
+    """
     tables = list(RAW_TABLES) + list(REFERENCE_TABLES)
     rows = [compute_table_stats(t, root=root) for t in tables]
-    c.save(TABLE_STATS, rows, root)
+    with c.metadata_lock(root):
+        c.save(TABLE_STATS, rows, root)
     return rows
 
 

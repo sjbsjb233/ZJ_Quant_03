@@ -72,12 +72,22 @@ class AppLogStore:
         self._dropped = 0
         self._dropped_reported = False
         self.db_ok = bool(settings.log_to_db)
+        # DB 写入可能因瞬态故障失败(SQLite "database is locked"、连接抖动、
+        # 单行约束/序列化错误)。不要一次失败就永久关闭 DB sink:连续失败累计
+        # 到阈值才降级,且每次成功写入即清零;降级后下一批仍会重试(re-probe),
+        # 一旦成功就自动恢复 db_ok=True。
+        self._db_fail_streak = 0
+        self._db_fail_threshold = 5
         self._alerter = Alerter(
             getattr(settings, "log_alert_webhook", ""),
             getattr(settings, "log_alert_min_level", "ERROR"),
             getattr(settings, "log_alert_rate_per_min", 20),
         )
         # --- file sink state ---
+        # 文件句柄/字节计数被后台 flusher 线程与 producer 线程(队列溢出快路径
+        # _handle_overflow -> _write_file)同时改写,必须用锁串行化文件操作,
+        # 否则在背压时会出现句柄重复关闭、轮转错乱、JSONL 行交错。
+        self._file_lock = threading.Lock()
         self._file_enabled = bool(settings.log_to_file)
         self._fh = None
         self._fh_date: str | None = None
@@ -139,17 +149,20 @@ class AppLogStore:
     def _write_file(self, rows: list[dict]) -> None:
         if not self._file_enabled:
             return
-        try:
-            fh = self._file_for_today()
-            for row in rows:
-                line = json.dumps(row, default=str, ensure_ascii=False) + "\n"
-                fh.write(line)
-                self._fh_bytes += len(line.encode("utf-8"))
-            fh.flush()
-            self._rotate_if_needed()
-        except OSError as exc:  # pragma: no cover - disk full / perms changed at runtime
-            self.file_ok = False
-            sys.stderr.write(f"[app-log] file sink write failed: {exc}\n")
+        # 整个写入(含 open/rotate/close)持锁,保证 flusher 线程与溢出快路径
+        # 的 producer 线程不会交错操作同一个文件句柄。
+        with self._file_lock:
+            try:
+                fh = self._file_for_today()
+                for row in rows:
+                    line = json.dumps(row, default=str, ensure_ascii=False) + "\n"
+                    fh.write(line)
+                    self._fh_bytes += len(line.encode("utf-8"))
+                fh.flush()
+                self._rotate_if_needed()
+            except OSError as exc:  # pragma: no cover - disk full / perms changed at runtime
+                self.file_ok = False
+                sys.stderr.write(f"[app-log] file sink write failed: {exc}\n")
 
     # -- lifecycle --------------------------------------------------------
     def start(self) -> None:
@@ -164,11 +177,12 @@ class AppLogStore:
         if self._thread is not None:
             self._thread.join(timeout=5)
         self._alerter.stop()
-        if self._fh is not None:
-            try:
-                self._fh.close()
-            except OSError:
-                pass
+        with self._file_lock:
+            if self._fh is not None:
+                try:
+                    self._fh.close()
+                except OSError:
+                    pass
 
     def flush(self) -> None:
         """Block until every queued record has been written (tests + shutdown)."""
@@ -235,17 +249,44 @@ class AppLogStore:
         return batch
 
     def _write_batch(self, batch: list[dict]) -> None:
+        # 三个 sink 相互隔离:任何一个失败都不能拖垮其余两个,也不能让 worker 崩溃。
         try:
             self._write_file(batch)
-            if self.db_ok:
-                self._write_db(batch)
+        except Exception as exc:  # noqa: BLE001
+            sys.stderr.write(f"[app-log] file sink failed: {exc}\n")
+        try:
+            self._try_write_db(batch)
+        except Exception as exc:  # noqa: BLE001
+            sys.stderr.write(f"[app-log] db sink failed: {exc}\n")
+        try:
             self._alerter.feed(batch)   # opt-in ERROR+ webhook (no-op if unconfigured)
-        except Exception as exc:  # noqa: BLE001 - never let logging crash the worker
-            sys.stderr.write(f"[app-log] flush failed: {exc}\n")
-            self.db_ok = False
-        finally:
-            for _ in batch:
-                self._q.task_done()
+        except Exception as exc:  # noqa: BLE001
+            sys.stderr.write(f"[app-log] alerter failed: {exc}\n")
+        for _ in batch:
+            self._q.task_done()
+
+    def _try_write_db(self, batch: list[dict]) -> None:
+        """写 DB 并维护瞬态故障的 streak/re-probe 状态。
+
+        即使 db_ok 当前为 False 也会尝试(re-probe):瞬态故障恢复后自动
+        把 db_ok 置回 True;只有连续失败累计到阈值才关闭 sink。"""
+        if not bool(self._settings.log_to_db):
+            return
+        try:
+            self._write_db(batch)
+        except Exception as exc:  # noqa: BLE001 - transient DB hiccup, don't latch off
+            self._db_fail_streak += 1
+            sys.stderr.write(
+                f"[app-log] db write failed ({self._db_fail_streak}/{self._db_fail_threshold}): {exc}\n"
+            )
+            if self._db_fail_streak >= self._db_fail_threshold:
+                self.db_ok = False
+            return
+        # 成功:清零 streak 并恢复 sink
+        self._db_fail_streak = 0
+        if not self.db_ok:
+            self.db_ok = True
+            sys.stderr.write("[app-log] db sink recovered; resuming DB writes\n")
 
     def _drain_inline(self) -> None:
         batch: list[dict] = []
@@ -257,11 +298,14 @@ class AppLogStore:
         if batch:
             try:
                 self._write_file(batch)
-                if self.db_ok:
-                    self._write_db(batch)
-            finally:
-                for _ in batch:
-                    self._q.task_done()
+            except Exception as exc:  # noqa: BLE001
+                sys.stderr.write(f"[app-log] file sink failed: {exc}\n")
+            try:
+                self._try_write_db(batch)
+            except Exception as exc:  # noqa: BLE001
+                sys.stderr.write(f"[app-log] db sink failed: {exc}\n")
+            for _ in batch:
+                self._q.task_done()
 
     def _write_db(self, batch: list[dict]) -> None:
         mappings = [{k: row.get(k) for k in _COLUMNS} for row in batch]

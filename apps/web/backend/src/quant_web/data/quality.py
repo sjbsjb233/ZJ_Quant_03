@@ -4,7 +4,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from quant_data import quality_log
 
@@ -40,7 +40,7 @@ def issues(
     root: str = Depends(get_root), user=Depends(get_current_user),
     table: str | None = None, check_name: str | None = None, level: str | None = None,
     batch_id: str | None = None, acknowledged: bool | None = None,
-    from_: dt.datetime | None = None, to: dt.datetime | None = None,
+    from_: dt.datetime | None = Query(default=None, alias="from"), to: dt.datetime | None = None,
     page: int = 1, page_size: int = 20,
 ):
     levels = [x.strip() for x in level.split(",")] if level else None

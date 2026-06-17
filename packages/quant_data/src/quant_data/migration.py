@@ -38,24 +38,27 @@ def dry_run_promote(table: str, field: str, dtype: str | None = None,
 
     files = storage.list_data_files(spec, root=root)
     f_lit = lambda s: "'" + str(s).replace("'", "''") + "'"  # noqa: E731
+    # 在 try 外建立连接,并用 try/finally 保证成功/异常两条路径都 con.close()。
     con = config.connect_duckdb()
     total_rows, total_bytes, cast_failures = 0, 0, []
-    for f in files:
-        total_bytes += os.path.getsize(f)
-        total_rows += con.execute(
-            f"SELECT count(*) FROM read_parquet({f_lit(f)}, hive_partitioning=false)"
-        ).fetchone()[0]
-        if len(cast_failures) < sample:
-            bad = con.execute(
-                f"SELECT DISTINCT _batch_id, _extras[{f_lit(field)}] AS raw "
-                f"FROM read_parquet({f_lit(f)}, hive_partitioning=false) "
-                f"WHERE _extras[{f_lit(field)}] IS NOT NULL "
-                f"AND TRY_CAST(_extras[{f_lit(field)}] AS {dtype}) IS NULL "
-                f"LIMIT {int(sample)}"
-            ).fetchall()
-            for batch_id, raw in bad:
-                cast_failures.append({"batch_id": batch_id, "value": raw, "would_be": None})
-    con.close()
+    try:
+        for f in files:
+            total_bytes += os.path.getsize(f)
+            total_rows += con.execute(
+                f"SELECT count(*) FROM read_parquet({f_lit(f)}, hive_partitioning=false)"
+            ).fetchone()[0]
+            if len(cast_failures) < sample:
+                bad = con.execute(
+                    f"SELECT DISTINCT _batch_id, _extras[{f_lit(field)}] AS raw "
+                    f"FROM read_parquet({f_lit(f)}, hive_partitioning=false) "
+                    f"WHERE _extras[{f_lit(field)}] IS NOT NULL "
+                    f"AND TRY_CAST(_extras[{f_lit(field)}] AS {dtype}) IS NULL "
+                    f"LIMIT {int(sample)}"
+                ).fetchall()
+                for batch_id, raw in bad:
+                    cast_failures.append({"batch_id": batch_id, "value": raw, "would_be": None})
+    finally:
+        con.close()
 
     current_names = list(pq.read_schema(files[0]).names) if files else spec.all_names()
     after_names = current_names if field in current_names else [*current_names, field]
@@ -99,8 +102,10 @@ def promote_field_to_core(table: str, field: str, dtype: str | None = None,
               batch_id=bid, total_files=len(files))
     start = time.perf_counter()
 
+    # 在 try 外建立连接,并用 try/finally 保证成功/异常两条路径都 con.close(),
+    # 否则单文件 cast/写入/replace 抛错时连接(及其 temp_dir / memory 预算)会泄漏。
+    con = config.connect_duckdb()
     try:
-        con = config.connect_duckdb()
         total = 0
         f_lit = lambda s: "'" + str(s).replace("'", "''") + "'"  # noqa: E731
         ident = lambda s: '"' + str(s).replace('"', '""') + '"'  # noqa: E731
@@ -135,7 +140,6 @@ def promote_field_to_core(table: str, field: str, dtype: str | None = None,
                 progress_cb(i + 1, len(files))
             _log.debug("migration.promote.file_rewritten", file_index=i + 1,
                        total_files=len(files))
-        con.close()
 
         if reg is None:
             field_registry.register_field(table, field, dtype, status="core", root=root)
@@ -154,3 +158,5 @@ def promote_field_to_core(table: str, field: str, dtype: str | None = None,
         _log.exception("migration.promote.failed", table=table, field=field, batch_id=bid)
         batches.finalize_batch(bid, "failed", error_message=str(exc), root=root)
         raise
+    finally:
+        con.close()

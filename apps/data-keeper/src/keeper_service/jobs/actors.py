@@ -78,17 +78,22 @@ def quality_scan(ctx) -> dict:
     unacknowledged issues is visible in the logs (V3 §4.1 定时质检)."""
     ctx.log("定时质检巡检 · 刷新表统计")
     table_stats.refresh_all(root=ctx.root)
-    rows = quality_log.by_table(root=ctx.root)
-    total_open = 0
-    for i, r in enumerate(rows):
-        # by_table returns per-table aggregates; sum the unacknowledged ones.
-        open_count = int(r.get("unacknowledged") or r.get("open") or 0)
-        total_open += open_count
-        ctx.progress(i + 1, max(1, len(rows)), "tables")
+    # by_table() 只按 level 聚合, 不区分是否已确认; 这里直接拉未确认的明细按表汇总,
+    # 才能让「未确认质量问题激增」在日志/结果里可见 (此前读的 unacknowledged/open
+    # key 是 by_table 从不产生的, open_issues 恒为 0)。
+    open_rows = quality_log.list_issues(acknowledged=False, root=ctx.root)
+    by_table: dict[str, int] = {}
+    for r in open_rows:
+        t = r.get("target_table")
+        by_table[t] = by_table.get(t, 0) + 1
+    total_open = len(open_rows)
+    items = list(by_table.items())
+    for i, (t, open_count) in enumerate(items):
+        ctx.progress(i + 1, max(1, len(items)), "tables")
         if open_count:
-            ctx.log(f"{r.get('target_table')}: {open_count} 个未确认质量问题")
+            ctx.log(f"{t}: {open_count} 个未确认质量问题")
     ctx.log(f"巡检完成 · 共 {total_open} 个未确认质量问题")
-    return {"tables": len(rows), "open_issues": total_open}
+    return {"tables": len(by_table), "open_issues": total_open}
 
 
 def scheduled_maintenance(ctx, tables: list[str] | None = None) -> dict:

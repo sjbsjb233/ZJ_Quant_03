@@ -186,11 +186,16 @@ def list_factors(
 
 
 def _csv_safe(v: Any) -> str:
-    if v is None:
-        return ""
-    s = str(v).replace('"', '""')
-    if "," in s or "\n" in s:
-        return f'"{s}"'
+    """RFC4180 escape + CSV-injection neutralization (与 screening._csv_cell 对齐)。
+
+    ``display_name`` / ``factor_id`` 等列由用户可控,首字符若为公式触发符
+    (``= + - @ \\t \\r``) 需前缀单引号中和,避免在 Excel/Sheets 打开时执行公式。
+    """
+    s = "" if v is None else str(v)
+    if s and s[0] in ("=", "+", "-", "@", "\t", "\r"):
+        s = "'" + s
+    if any(ch in s for ch in (",", '"', "\n", "\r")):
+        s = '"' + s.replace('"', '""') + '"'
     return s
 
 

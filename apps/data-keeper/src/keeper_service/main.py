@@ -134,6 +134,9 @@ def create_app() -> FastAPI:
         _log.info("keeper.shutdown")
         stop_scheduler()
         stop_reaper()
+        # drain the JobRunner pool before the shipper goes down, so the drain
+        # (and any in-flight job 协作取消) is still recorded in中心日志。
+        app.state.job_runner.stop()
         stop_obs()                              # drain the shipper queue
 
     return app

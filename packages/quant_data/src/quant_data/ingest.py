@@ -178,7 +178,14 @@ def ingest(
         batches.finalize_batch(bid, "success", row_count=tbl.num_rows,
                                partition_keys=partitions, root=root)
         if note != notes:
-            batches.update_batch(bid, notes=note, root=root)
+            # 批次已成功落定; notes 回写仅为附注, 失败不应把批次拖进失败处理分支
+            # (finalize_batch 仅允许 running -> 终态, 二次 finalize 会抛误导性 ValueError)
+            try:
+                batches.update_batch(bid, notes=note, root=root)
+            except Exception as exc:  # noqa: BLE001 - non-fatal, but never silent
+                warnings.warn(
+                    f"failed to update notes for batch {bid}: {exc}", stacklevel=2
+                )
         _log.info("ingest.batch.finalize", batch_id=bid, status="success",
                   row_count=tbl.num_rows, partitions=partitions)
         return IngestResult(bid, target_table, tbl.num_rows, partitions, issues)

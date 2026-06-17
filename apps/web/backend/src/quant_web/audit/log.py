@@ -64,7 +64,7 @@ class Auditor:
         return entry
 
 
-def list_audit(
+def _audit_query(
     db: Session,
     action: str | None = None,
     actor: str | None = None,
@@ -72,7 +72,8 @@ def list_audit(
     status: str | None = None,
     start: dt.datetime | None = None,
     end: dt.datetime | None = None,
-) -> list[AuditLog]:
+):
+    """构造带过滤条件的 audit_log 查询(不含排序/分页)。"""
     q = db.query(AuditLog)
     if action:
         q = q.filter(AuditLog.action == action)
@@ -86,4 +87,44 @@ def list_audit(
         q = q.filter(AuditLog.occurred_at >= start)
     if end:
         q = q.filter(AuditLog.occurred_at <= end)
-    return q.order_by(AuditLog.occurred_at.desc()).all()
+    return q
+
+
+def count_audit(
+    db: Session,
+    action: str | None = None,
+    actor: str | None = None,
+    target: str | None = None,
+    status: str | None = None,
+    start: dt.datetime | None = None,
+    end: dt.datetime | None = None,
+) -> int:
+    """匹配过滤条件的 audit_log 行数(用于分页 total,不物化行)。"""
+    return _audit_query(
+        db, action=action, actor=actor, target=target,
+        status=status, start=start, end=end,
+    ).count()
+
+
+def list_audit(
+    db: Session,
+    action: str | None = None,
+    actor: str | None = None,
+    target: str | None = None,
+    status: str | None = None,
+    start: dt.datetime | None = None,
+    end: dt.datetime | None = None,
+    page: int | None = None,
+    page_size: int | None = None,
+) -> list[AuditLog]:
+    # audit_log 永久保留且持续增长 —— 把分页下推到 SQL(LIMIT/OFFSET),
+    # 避免每次查询都把整张表物化进内存再在 Python 里切片(doc §3.2 规则4)。
+    q = _audit_query(
+        db, action=action, actor=actor, target=target,
+        status=status, start=start, end=end,
+    ).order_by(AuditLog.occurred_at.desc())
+    if page_size is not None:
+        page = max(1, page or 1)
+        page_size = max(1, min(page_size, 1000))
+        q = q.offset((page - 1) * page_size).limit(page_size)
+    return q.all()

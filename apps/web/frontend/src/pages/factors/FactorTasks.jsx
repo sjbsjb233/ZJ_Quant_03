@@ -381,7 +381,8 @@ function LogsDrawer({ runId, factorId, onClose }) {
       const line = m ? { ts: m[1], level: m[2], msg: m[3] } : { ts: '', level: 'INFO', msg: text };
       setLines((prev) => [...prev.slice(-499), line]);
     };
-    es.onerror = () => es.close();
+    // 瞬时网络抖动/心跳间隙时不要主动 close —— EventSource 会自动重连;
+    // 显式 close 会永久终止流(与 LogStream/LogPanel 保持一致)。teardown 交给下面的 cleanup。
     return () => es.close();
   }, [runId, view]);
 

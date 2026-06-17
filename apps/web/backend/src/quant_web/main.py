@@ -132,6 +132,10 @@ def create_app() -> FastAPI:
     def _flush_logs() -> None:  # drain the queue + close files (doc §7.2)
         app_logger.info("app.shutdown")
         stop_evaluator()
+        # 关停时排空 JobRunner 线程池,让在途任务收尾/取消,避免线程泄漏。
+        runner = getattr(app.state, "job_runner", None)
+        if runner is not None:
+            runner.stop()
         store.stop()
 
     return app

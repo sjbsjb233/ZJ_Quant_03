@@ -7,6 +7,7 @@ import os
 import uuid
 from typing import Any, AsyncGenerator
 
+import anyio
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
@@ -146,23 +147,33 @@ def submit_run(
     db.commit()
 
     lane = (run_config.get("lane") or cfg.lane or "interactive")
-    task = store.enqueue(
-        db,
-        task_type="evaluation",
-        payload={
-            "run_id": run_id,
-            "factor_id": factor_id,
-            "version": version,
-            "params": params,
-            "run_config": cfg.to_jsonable(),
-            "profile": profile,
-        },
-        lane=lane,
-        run_id=run_id,
-        factor_id=factor_id,
-        initiated_by=user.username,
-        trace_id=trace_id_var.get(),
-    )
+    # 入队失败时,已落库的 run 须置为 failed,否则会永远卡在 queued (无 task 兜底)。
+    try:
+        task = store.enqueue(
+            db,
+            task_type="evaluation",
+            payload={
+                "run_id": run_id,
+                "factor_id": factor_id,
+                "version": version,
+                "params": params,
+                "run_config": cfg.to_jsonable(),
+                "profile": profile,
+            },
+            lane=lane,
+            run_id=run_id,
+            factor_id=factor_id,
+            initiated_by=user.username,
+            trace_id=trace_id_var.get(),
+        )
+    except Exception as e:  # noqa: BLE001
+        db.rollback()
+        run.status = "failed"
+        run.error = f"任务入队失败: {e}"
+        db.commit()
+        _qlog.warn("run.submit.enqueue_failed", run_id=run_id, factor_id=factor_id,
+                   err=str(e))
+        raise ApiError("INTERNAL", f"任务入队失败: {e}")
     run.task_id = task.task_id
     db.commit()
     _qlog.info("run.submit", run_id=run_id, factor_id=factor_id, version=version,
@@ -426,23 +437,33 @@ def retry_run(
     )
     db.add(nr)
     db.commit()
-    task = store.enqueue(
-        db,
-        task_type="evaluation",
-        payload={
-            "run_id": new_id,
-            "factor_id": r.factor_id,
-            "version": r.version,
-            "params": dict(r.params or {}),
-            "run_config": dict(r.run_config or {}),
-            "profile": profile,
-        },
-        lane=(r.run_config or {}).get("lane") or "interactive",
-        run_id=new_id,
-        factor_id=r.factor_id,
-        initiated_by=user.username,
-        trace_id=trace_id_var.get(),
-    )
+    # 入队失败时,已落库的新 run 须置为 failed,否则会永远卡在 queued (无 task 兜底)。
+    try:
+        task = store.enqueue(
+            db,
+            task_type="evaluation",
+            payload={
+                "run_id": new_id,
+                "factor_id": r.factor_id,
+                "version": r.version,
+                "params": dict(r.params or {}),
+                "run_config": dict(r.run_config or {}),
+                "profile": profile,
+            },
+            lane=(r.run_config or {}).get("lane") or "interactive",
+            run_id=new_id,
+            factor_id=r.factor_id,
+            initiated_by=user.username,
+            trace_id=trace_id_var.get(),
+        )
+    except Exception as e:  # noqa: BLE001
+        db.rollback()
+        nr.status = "failed"
+        nr.error = f"任务入队失败: {e}"
+        db.commit()
+        _qlog.warn("run.submit.enqueue_failed", run_id=new_id, factor_id=r.factor_id,
+                   retried_from=run_id, err=str(e))
+        raise ApiError("INTERNAL", f"任务入队失败: {e}")
     nr.task_id = task.task_id
     db.commit()
     _qlog.info("run.submit", run_id=new_id, factor_id=r.factor_id, version=r.version,
@@ -452,25 +473,39 @@ def retry_run(
 
 # ─────────────────────────────────────────────────────────────────────────────
 @router.get("/runs/{run_id}/logs/stream")
-async def stream_logs(run_id: str) -> StreamingResponse:
+async def stream_logs(
+    run_id: str,
+    db: Session = Depends(get_db),
+    user=Depends(current_user),
+) -> StreamingResponse:
     """Server-sent events: tail the runs/<run_id>.log file."""
+    # 鉴权 + 运行存在性校验:本端点须与同级端点一致要求登录,
+    # 且不可对不存在的运行打开日志文件 (避免无鉴权读取日志)。
+    if db.get(FactorRun, run_id) is None:
+        raise ApiError("RUN_NOT_FOUND", f"运行 {run_id} 不存在")
     s = get_settings()
     path = os.path.join(s.runs_dir, f"{run_id}.log")
+
+    def _read_chunk(pos: int) -> tuple[bytes, int]:
+        # 同步阻塞文件读 — 放到工作线程执行 (见 gen),避免阻塞事件循环。
+        if not os.path.exists(path):
+            return b"", pos
+        with open(path, "rb") as f:
+            f.seek(pos)
+            chunk = f.read()
+            return chunk, f.tell()
 
     async def gen() -> AsyncGenerator[bytes, None]:
         yield b": connected\n\n"
         pos = 0
         for _ in range(2400):  # max ~2400 * 0.5s = 20 minutes
-            if os.path.exists(path):
-                with open(path, "rb") as f:
-                    f.seek(pos)
-                    chunk = f.read()
-                    pos = f.tell()
-                if chunk:
-                    for line in chunk.splitlines():
-                        if not line:
-                            continue
-                        yield b"data: " + line + b"\n\n"
+            # 文件 I/O 卸载到线程池,SSE 扇出时不阻塞 asyncio 事件循环。
+            chunk, pos = await anyio.to_thread.run_sync(_read_chunk, pos)
+            if chunk:
+                for line in chunk.splitlines():
+                    if not line:
+                        continue
+                    yield b"data: " + line + b"\n\n"
             await asyncio.sleep(0.5)
         yield b"event: done\ndata: end-of-stream\n\n"
 

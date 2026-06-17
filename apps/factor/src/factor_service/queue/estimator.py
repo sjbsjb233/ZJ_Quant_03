@@ -90,9 +90,11 @@ def update_stats(
         n = row.sample_n
         # exponential smoothing for both percentiles (cheap & online)
         alpha = 1.0 / max(1, n)
-        # treat current p80 like the upper smoothing target
         row.p50_sec = float(row.p50_sec * (1 - alpha) + duration * alpha)
-        row.p80_sec = float(max(row.p80_sec * (1 - alpha) + duration * alpha, duration))
+        # p80 = 非对称 EWMA 上估计:慢任务拉升快、回落慢,但**单个**离群值
+        # 仍会随后续样本衰减,不会被 max() 永久钉死(否则 p80 会单调漂向历史最大值)。
+        beta = 0.4 if duration > row.p80_sec else 0.1
+        row.p80_sec = float(row.p80_sec + beta * (duration - row.p80_sec))
         row.sample_n = n + 1
     db.commit()
 

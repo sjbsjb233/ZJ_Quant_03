@@ -43,6 +43,9 @@ class JobContext:
             raise JobCancelled(f"job {self.job_id} cancelled")
 
 
+_TERMINAL_STATUSES = ("success", "failed", "cancelled")
+
+
 class JobRunner:
     def __init__(self, session_factory: sessionmaker, root: str, workers: int = 4):
         self._sf = session_factory
@@ -52,6 +55,10 @@ class JobRunner:
         # guard every access with this lock to avoid races.
         self._cancel: set[str] = set()
         self._cancel_lock = threading.Lock()
+
+    def stop(self) -> None:
+        """优雅关闭线程池: 取消未启动的任务并等待在途任务收尾(应用 shutdown 钩子调用)。"""
+        self._pool.shutdown(wait=True, cancel_futures=True)
 
     def _is_cancelled(self, job_id: str) -> bool:
         with self._cancel_lock:
@@ -85,6 +92,13 @@ class JobRunner:
             if job is None or job.status not in ("pending", "running"):
                 return False
         self._mark_cancel(job_id)
+        # TOCTOU 防护: worker 可能在上面的读取之后、_mark_cancel 之前就跑完并执行了
+        # finally 里的 _clear_cancel, 导致这里新加入的 id 永远残留。复查一次状态,
+        # 若已终态则立即清除, 避免 _cancel 集合无界增长。
+        with self._sf() as db:
+            job = db.get(Job, job_id)
+            if job is None or job.status in _TERMINAL_STATUSES:
+                self._clear_cancel(job_id)
         return True
 
     # -- internals -----------------------------------------------------------
@@ -121,6 +135,10 @@ class JobRunner:
             for k, v in fields.items():
                 setattr(job, k, v)
             db.commit()
+        # 任意路径将任务推入终态时都顺手清除取消标记, 与 cancel() 的复查互为兜底,
+        # 防止 _cancel 集合残留已结束任务的 id。
+        if fields.get("status") in _TERMINAL_STATUSES:
+            self._clear_cancel(job_id)
 
     def _append_log(self, job_id: str, line: str) -> None:
         with self._sf() as db:

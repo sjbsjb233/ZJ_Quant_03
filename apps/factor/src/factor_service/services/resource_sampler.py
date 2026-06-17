@@ -339,6 +339,11 @@ class ResourceSampler:
         if self._thread is not None:
             self._thread.join(timeout=2.0)
         self._writer.close()
+        # 对称收尾: 清掉死线程引用并复位 stop 事件, 让同一实例可被 start() 干净重启
+        # (否则 start() 的 `if self._thread is not None: return` 会让重启永久静默 no-op).
+        self._thread = None
+        self._alive = False
+        self._stop.clear()
 
     def alive(self) -> bool:
         return self._alive and (self._thread is not None and self._thread.is_alive())

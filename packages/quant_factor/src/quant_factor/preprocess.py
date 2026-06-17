@@ -61,6 +61,11 @@ def winsorize_quantile(s: pl.Series, q: float = 0.01, *, ledger=None, day=None) 
     """Symmetric quantile clipping. `q` is the lower tail size (e.g. 0.01 = 1%).
 
     Both tails are clipped: [q, 1-q]. Useful when MAD is ill-defined.
+
+    `q` 的合法区间是 (0, 0.5)。当上游误把 MAD 的 n-sigma 倍数(如默认 5.0)当作
+    分位数传进来时,旧实现会把它静默 clamp 到 0.49,使 [0.49, 0.51] 几乎把整个
+    截面压成中位数——预处理“生效”了却毁掉了因子离散度,且只留下一条 low 级 NOOP。
+    这里改为:越界即回退到安全默认 0.01,并记录一条明确的退化(而非静默压扁)。
     """
     x = _to_np(s)
     if x.size == 0:
@@ -69,7 +74,34 @@ def winsorize_quantile(s: pl.Series, q: float = 0.01, *, ledger=None, day=None) 
     if finite.sum() < 4:
         _note_prep_noop(ledger, "有效值不足 4 个,分位去极值未生效", day)
         return s
-    q = max(min(q, 0.49), 0.0)
+    if not (0.0 < q < 0.5):
+        bad = q
+        q = 0.01
+        if ledger is not None and not ledger.has_code("DG_PREP_QBAD"):
+            ledger.record(
+                make_event(
+                    "DG_PREP_QBAD",
+                    stage="prep",
+                    severity="medium",
+                    category="preprocess",
+                    config_key="winsorize",
+                    title="分位去极值参数越界已回退",
+                    reason=(
+                        f"分位去极值 q={bad} 超出合法区间 (0, 0.5),"
+                        f"已回退为默认 q={q}(疑似误把 MAD 倍数当作分位数)"
+                    ),
+                    impact="若按越界值裁剪会把截面压成近中位数、毁掉因子离散度;现已回退避免",
+                    suggested_action=(
+                        "选择 winsorize=\"quantile\" 时请同时把 winsorize_n 设为 (0, 0.5) 内的分位数"
+                        "(如 0.01),不要沿用 MAD 的默认倍数 5.0"
+                    ),
+                    evidence={
+                        "date": str(day) if day is not None else None,
+                        "q_received": bad,
+                        "q_used": q,
+                    },
+                )
+            )
     lo = float(np.nanquantile(x[finite], q))
     hi = float(np.nanquantile(x[finite], 1 - q))
     out = np.where(finite, np.clip(x, lo, hi), x)

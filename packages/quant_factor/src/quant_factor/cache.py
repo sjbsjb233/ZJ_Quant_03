@@ -33,11 +33,10 @@ def data_fingerprint(reader, cfg) -> str:
     except Exception:  # noqa: BLE001
         parts.append("sec:err")
     try:
-        # one tiny bars read to learn which factor-relevant columns are present
-        bars = pl.from_arrow(
-            reader.read_bars_daily(start=cfg.start, end=cfg.start, adjust="none")
-        )
-        cols = set(bars.columns)
+        # 只看当前视图能提供哪些 factor-relevant 列 —— 读 parquet footer 元数据,
+        # 不物化任何行(否则 cfg.start/end 为 None 时会全表扫 raw.bars_daily 把
+        # 整张多年全标的表灌进内存,正是 reader 守则警告的 OOM 路径)。
+        cols = reader.current_view_columns("raw.bars_daily")
         parts.append("circ:" + ("1" if "circ_mv" in cols else "0"))
         parts.append("totl:" + ("1" if "total_mv" in cols else "0"))
         parts.append("vwap:" + ("1" if "vwap" in cols else "0"))

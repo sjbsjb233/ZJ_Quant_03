@@ -96,7 +96,7 @@ function MigrateModal({ field, onClose, onDone }) {
       }>
       {step === 1 && (
         <div>
-          {dryRunMut.isLoading && <Loading label="正在执行干跑…" />}
+          {dryRunMut.isPending && <Loading label="正在执行干跑…" />}
           {err && <div style={{ color: 'var(--err)', fontFamily: 'var(--font-mono)', fontSize: 11, marginBottom: 12 }}>✕ {err}</div>}
           {dryRunData && (
             <>

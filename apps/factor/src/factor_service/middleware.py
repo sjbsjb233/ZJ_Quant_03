@@ -49,8 +49,11 @@ class TraceIdMiddleware:
                     payload = jwt.decode(
                         token, s.jwt_secret, algorithms=[s.jwt_algorithm]
                     )
-                    actor = payload.get("sub")
-                    role = payload.get("role")
+                    # 仅接受 access 令牌:refresh 令牌同样携带 sub/role 且更长寿,
+                    # 与 web 的 _actor_from_headers 保持一致,避免令牌类型混淆。
+                    if payload.get("type") == "access":
+                        actor = payload.get("sub")
+                        role = payload.get("role")
                 except Exception:  # noqa: BLE001
                     pass
 

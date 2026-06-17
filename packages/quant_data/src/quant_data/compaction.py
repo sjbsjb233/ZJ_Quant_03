@@ -59,8 +59,9 @@ def dead_files(table: str, older_than_days: int | None = config.AUDIT_RETENTION_
             if b is None:
                 continue
             inv_at = b.get("invalidated_at") or b.get("finished_at")
-            if cutoff is not None and inv_at is not None and inv_at > cutoff:
-                continue  # still inside audit window
+            # 失败闭合: 时间戳缺失时无法确认已过审计窗口, 一律保留(不当作删除候选).
+            if cutoff is not None and (inv_at is None or inv_at > cutoff):
+                continue  # still inside audit window (or window cannot be confirmed)
             out.append({"file": f, "batch_id": bid, "status": b["status"], "invalidated_at": inv_at})
     return out
 
@@ -88,13 +89,12 @@ def vacuum(table: str, older_than_days: int = config.AUDIT_RETENTION_DAYS, confi
 
 
 def compact(table: str, confirm: bool = False, root=None) -> dict:
-    """Merge each partition's many small files into one, keeping only rows from
-    successful batches. Preview unless confirm=True."""
+    """Merge each partition's many small files into one. Preview unless confirm=True.
+
+    审计窗口意识: 只丢弃 ``dead_files()`` 判定可删的批次行(已失效/失败且已过
+    AUDIT_RETENTION_DAYS 窗口), 仍在窗口内的失效/失败批次行被保留 -- 否则一次
+    例行小文件合并会把审计价值仍在保护期内的溯源数据静默销毁(doc §9.4)。"""
     spec = get_spec(table)
-    valid = {
-        b["batch_id"]
-        for b in batches.list_batches(target_table=table, status="success", root=root)
-    }
     by_dir: dict[str, list[str]] = defaultdict(list)
     for f in storage.list_data_files(spec, root=root):
         by_dir[str(Path(f).parent)].append(f)
@@ -109,23 +109,31 @@ def compact(table: str, confirm: bool = False, root=None) -> dict:
             "note": "dry run -- pass confirm=True to merge (doc §9.4: manual only)",
         }
 
+    # 仅排除已过审计窗口的失效/失败批次(与 vacuum 同一判定), 其余行一律保留。
+    drop_ids = {p["batch_id"] for p in dead_files(table, root=root)}
+
     con = config.connect_duckdb()
-    lit = lambda s: "'" + str(s).replace("'", "''") + "'"  # noqa: E731
-    merged = 0
-    for d, fs in targets.items():
-        ids_sql = ",".join(lit(b) for b in valid) or "''"
-        out = Path(d) / f"compacted-{ids.new_batch_id()}.parquet"
-        tmp = str(out) + ".tmp"
-        con.execute(
-            f"COPY (SELECT * FROM read_parquet([{','.join(lit(f) for f in fs)}], "
-            f"union_by_name=true, hive_partitioning=false) "
-            f"WHERE _batch_id IN ({ids_sql})) TO {lit(tmp)} (FORMAT PARQUET, COMPRESSION ZSTD)"
-        )
-        os.replace(tmp, out)
-        for f in fs:
-            os.remove(f)
-        merged += 1
-    con.close()
+    try:
+        lit = lambda s: "'" + str(s).replace("'", "''") + "'"  # noqa: E731
+        merged = 0
+        for d, fs in targets.items():
+            out = Path(d) / f"compacted-{ids.new_batch_id()}.parquet"
+            tmp = str(out) + ".tmp"
+            where = ""
+            if drop_ids:
+                ids_sql = ",".join(lit(b) for b in drop_ids)
+                where = f"WHERE _batch_id NOT IN ({ids_sql}) "
+            con.execute(
+                f"COPY (SELECT * FROM read_parquet([{','.join(lit(f) for f in fs)}], "
+                f"union_by_name=true, hive_partitioning=false) "
+                f"{where}) TO {lit(tmp)} (FORMAT PARQUET, COMPRESSION ZSTD)"
+            )
+            os.replace(tmp, out)
+            for f in fs:
+                os.remove(f)
+            merged += 1
+    finally:
+        con.close()
     _log.info("compaction.compact.executed", table=table, compacted_partitions=merged)
     return {"compacted_partitions": merged}
 

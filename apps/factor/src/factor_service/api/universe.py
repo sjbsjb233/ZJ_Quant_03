@@ -267,23 +267,15 @@ def preview_universe(
     excluded_suspended = s1 - s2
 
     step3_def = dict(step2_def, min_list_days=u.min_list_days)
-    s3 = resolve_universe(reader, step3_def, members, d, d).height
+    step3 = resolve_universe(reader, step3_def, members, d, d)
+    s3 = step3.height
     excluded_newly_listed = s2 - s3
 
     final = s3
     coverage = round(final / selected, 4) if selected else 0.0
 
-    # Pull names for the first 25 selected
-    syms = (
-        s3 if isinstance(s3, list) else (
-            resolve_universe(reader, step3_def, members, d, d)["symbol"].head(25).to_list()
-        )
-    )
-    syms_list = (
-        resolve_universe(reader, step3_def, members, d, d)["symbol"]
-        .head(25)
-        .to_list()
-    )
+    # Pull names for the first 25 selected (reuse step3 的结果, 避免重复 DuckDB 读)
+    syms_list = step3["symbol"].head(25).to_list()
     syms_ref = pl.from_arrow(reader.read_symbols(symbols=syms_list))
     name_map = {row["symbol"]: row.get("name") for row in syms_ref.to_dicts()}
     sample = [

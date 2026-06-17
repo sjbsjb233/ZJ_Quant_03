@@ -265,17 +265,21 @@ def _finalize(db, collector, run_config, task_type, profiled,
     threads = int(os.environ.get("POLARS_MAX_THREADS") or os.environ.get("OMP_NUM_THREADS") or 1)
 
     # ── baselines: roll the two-level signatures, read back for compare ──────
+    # 零 RSS 读数 (无采样点且无阶段, 如 preflight 拦截 / load 早抛) 对内存基线毫无
+    # 意义, 绝不能进滚动窗口 —— 否则会拉低 p50/p90, 让正常 run 误判 high/abnormal 并
+    # 误触 D17 回归哨兵 (方案 §5.3).
     fid, ver = collector.factor_id, collector.version
     exact_sig = bl.exact_signature(fid, ver, run_config)
     class_sig = bl.class_signature(task_type, run_config)
-    bl.update_stat(db, signature=exact_sig, kind=attr_kind,
-                   peak_per_mrow=peak_per_mrow, cpu_per_mrow=cpu_per_mrow,
-                   peak_mb=peak_rss, cpu_sec=cpu_sec, factor_id=fid, version=ver,
-                   window=s.resource_baseline_window)
-    bl.update_stat(db, signature=class_sig, kind=attr_kind,
-                   peak_per_mrow=peak_per_mrow, cpu_per_mrow=cpu_per_mrow,
-                   peak_mb=peak_rss, cpu_sec=cpu_sec, window=s.resource_baseline_window)
-    db.commit()
+    if peak_rss > 0:
+        bl.update_stat(db, signature=exact_sig, kind=attr_kind,
+                       peak_per_mrow=peak_per_mrow, cpu_per_mrow=cpu_per_mrow,
+                       peak_mb=peak_rss, cpu_sec=cpu_sec, factor_id=fid, version=ver,
+                       window=s.resource_baseline_window)
+        bl.update_stat(db, signature=class_sig, kind=attr_kind,
+                       peak_per_mrow=peak_per_mrow, cpu_per_mrow=cpu_per_mrow,
+                       peak_mb=peak_rss, cpu_sec=cpu_sec, window=s.resource_baseline_window)
+        db.commit()
 
     exact_stat = bl.read_stat(db, exact_sig, attr_kind)
     class_stat = bl.read_stat(db, class_sig, attr_kind)
