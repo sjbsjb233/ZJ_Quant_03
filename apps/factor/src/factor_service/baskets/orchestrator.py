@@ -218,9 +218,17 @@ def advance(db: Session, brun_id: str) -> None:
     evals_terminal = all(s in CHILD_TERMINAL for s in eval_states)
     if evals_terminal and corr is not None and corr.gate == "waiting":
         ok = [s for s in eval_states if s in ("success", "degraded")]
-        if eval_states and len(ok) < 2:
+        # 修复运行的整篮相关性 payload 已被 expand() 扩到全 revision(覆盖全部 item,
+        # 无台账的由执行器隐式排除),故闸门须按全篮可用 item 数判定,而非仅本次重算
+        # 子集——否则一个只重算 <2 个 item 的修复会误判 ok<2 而取消整篮相关性,正是
+        # corr-scope 扩展想避免的退化。
+        if run.mode == "repair" and run.with_correlation:
+            avail = len(_full_revision_corr_items(db, run))
+        else:
+            avail = len(ok)
+        if eval_states and avail < 2:
             _cancel_task(db, corr, "insufficient_ok_items")
-            _log.info("brun.corr.cancel %s (ok<2)", brun_id)
+            _log.info("brun.corr.cancel %s (avail<2)", brun_id)
         else:
             corr.gate = "ready"
             _log.info("brun.corr.gate_open %s", brun_id)

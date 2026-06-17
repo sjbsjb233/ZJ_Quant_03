@@ -177,6 +177,11 @@ DEGRADATION_CODES: dict[str, dict] = {
         "title": "去极值/标准化因截面退化未生效",
         "config_key": "winsorize",
     },
+    "DG_PREP_QBAD": {
+        "category": "preprocess", "severity": "medium",
+        "title": "分位去极值参数越界已回退",
+        "config_key": "winsorize",
+    },
 }
 
 

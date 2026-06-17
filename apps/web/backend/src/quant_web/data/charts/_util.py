@@ -122,7 +122,9 @@ def candle(row: dict, include_extras: bool = False) -> dict:
     }
     if include_extras:
         ex = row.get("_extras")
-        if isinstance(ex, list):  # arrow MAP cell
-            ex = {str(k): v for k, v in ex}
+        if isinstance(ex, list):  # arrow MAP cell — 值同样过 _fin,避免 _extras 里的 NaN/Inf 漏网
+            ex = {str(k): _fin(v) for k, v in ex}
+        elif isinstance(ex, dict):
+            ex = {str(k): _fin(v) for k, v in ex.items()}
         out["_extras"] = ex
     return out

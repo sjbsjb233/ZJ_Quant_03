@@ -173,7 +173,8 @@ def submit_run(
         db.commit()
         _qlog.warn("run.submit.enqueue_failed", run_id=run_id, factor_id=factor_id,
                    err=str(e))
-        raise ApiError("INTERNAL", f"任务入队失败: {e}")
+        # 不把内部异常串回传客户端(与 errors.py 不泄漏内部细节一致);详情已落日志 + run.error。
+        raise ApiError("INTERNAL", "任务入队失败")
     run.task_id = task.task_id
     db.commit()
     _qlog.info("run.submit", run_id=run_id, factor_id=factor_id, version=version,

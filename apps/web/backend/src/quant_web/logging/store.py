@@ -276,9 +276,12 @@ class AppLogStore:
             self._write_db(batch)
         except Exception as exc:  # noqa: BLE001 - transient DB hiccup, don't latch off
             self._db_fail_streak += 1
-            sys.stderr.write(
-                f"[app-log] db write failed ({self._db_fail_streak}/{self._db_fail_threshold}): {exc}\n"
-            )
+            # 限流 stderr: 阈值前每批打印(便于观察降级过程), 此后每 100 批一次,
+            # 避免长时间 DB 故障下每批刷屏。
+            if self._db_fail_streak <= self._db_fail_threshold or self._db_fail_streak % 100 == 0:
+                sys.stderr.write(
+                    f"[app-log] db write failed ({self._db_fail_streak}/{self._db_fail_threshold}): {exc}\n"
+                )
             if self._db_fail_streak >= self._db_fail_threshold:
                 self.db_ok = False
             return
