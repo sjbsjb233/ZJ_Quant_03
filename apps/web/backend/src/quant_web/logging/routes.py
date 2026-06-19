@@ -92,6 +92,14 @@ def _flush() -> None:
 
 
 # ---------------------------------------------------------------- filtering
+def _naive_utc(d):
+    """AppLog.ts 以 naive-UTC 落库; 把带 ``Z``/offset 的 tz-aware 查询参数折成
+    naive-UTC, 否则边界比较错位 (SQLite 带偏移字符串) 或纯 Python 比较 TypeError → 500。"""
+    if d is not None and getattr(d, "tzinfo", None) is not None:
+        return d.astimezone(dt.timezone.utc).replace(tzinfo=None)
+    return d
+
+
 def _apply_filters(q, *, level=None, source=None, logger=None, event=None, actor=None,
                    route=None, status_code=None, min_duration_ms=None, trace_id=None,
                    session_id=None, search=None, from_=None, to=None):
@@ -119,19 +127,11 @@ def _apply_filters(q, *, level=None, source=None, logger=None, event=None, actor
         like = f"%{search}%"
         q = q.filter(AppLog.message.like(like) | AppLog.event.like(like)
                      | AppLog.logger.like(like))
-    # AppLog.ts 以 naive-UTC 落库; 把带 ``Z``/offset 的 tz-aware 查询参数折成 naive-UTC,
-    # 否则边界比较错位 (SQLite 带偏移字符串) 或纯 Python 比较 TypeError → 500。
     if from_:
         q = q.filter(AppLog.ts >= _naive_utc(from_))
     if to:
         q = q.filter(AppLog.ts <= _naive_utc(to))
     return q
-
-
-def _naive_utc(d):
-    if d is not None and getattr(d, "tzinfo", None) is not None:
-        return d.astimezone(dt.timezone.utc).replace(tzinfo=None)
-    return d
 
 
 # ---------------------------------------------------------------- GET /logs
@@ -489,7 +489,8 @@ def ingest_service_logs(
     settings = get_settings()
     expected = settings.log_ingest_token
     # 常量时间比较 (定时旁路): 普通 != 会随首个不同字节短路, 泄漏 token 前缀。
-    if not expected or not x_log_token or not hmac.compare_digest(x_log_token, expected):
+    # 按 bytes 比 —— str 形态下 compare_digest 遇非 ASCII 会 TypeError 把 401 变 500。
+    if not expected or not x_log_token or not hmac.compare_digest(x_log_token.encode(), expected.encode()):
         raise ApiError("UNAUTHENTICATED", "无效的日志上报令牌")
     store = get_store()
     cap = settings.client_log_max_batch * 4

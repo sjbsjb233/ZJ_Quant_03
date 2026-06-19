@@ -489,7 +489,8 @@ def ingest_signals(body: SignalPayload,
     expected = s.signals_token
     token = x_monitor_token or x_log_token
     # 常量时间比较: 普通 != 会随首个不同字节短路, 泄漏 token 长度/前缀 (定时旁路)。
-    if not expected or not token or not hmac.compare_digest(token, expected):
+    # 按 bytes 比 —— str 形态下 compare_digest 遇非 ASCII 会 TypeError 把 401 变 500。
+    if not expected or not token or not hmac.compare_digest(token.encode(), expected.encode()):
         raise ApiError("UNAUTHENTICATED", "无效的监控信号令牌")
     signal = get_signal_state()
     if signal is None:
