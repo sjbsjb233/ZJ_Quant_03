@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import math
 
 from fastapi import APIRouter, Depends
 
@@ -89,6 +90,10 @@ def diff(body: DiffRequest, root: str = Depends(get_root), user=Depends(get_curr
 def _safe(v):
     if isinstance(v, (dt.date, dt.datetime)):
         return v.isoformat()
+    # NaN/±Inf 不是合法 JSON token (默认编码器写裸 NaN/Infinity, 前端 .json() 整段失败),
+    # 金融列 (close/比率) 经常带 NaN —— 统一降级为 null。
+    if isinstance(v, float) and not math.isfinite(v):
+        return None
     return v
 
 

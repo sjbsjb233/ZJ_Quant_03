@@ -256,6 +256,12 @@ const METRIC_COLS = [
 ];
 
 function ResultsTab({ id, snap, snapQ, navigate }) {
+  // Hooks must run unconditionally and before any early return — otherwise the
+  // loading→loaded transition changes the hook count and React crashes the page
+  // with "Rendered more hooks than during the previous render".
+  const [sortKey, setSortKey] = React.useState('icir_annual');
+  const [sortDir, setSortDir] = React.useState('desc');
+
   if (snapQ.isLoading) return <Loading />;
   if (snapQ.isError) return <ErrorState error={snapQ.error} onRetry={snapQ.refetch} />;
   if (!snap) return <EmptyState icon="▶" title="从未运行过" desc="发起首次全量运行后，这里会显示全部条目的指标。" />;
@@ -268,8 +274,6 @@ function ResultsTab({ id, snap, snapQ, navigate }) {
     item_id: itemId, s: summaries[itemId], m: metas[itemId] || {},
   }));
 
-  const [sortKey, setSortKey] = React.useState('icir_annual');
-  const [sortDir, setSortDir] = React.useState('desc');
   const sorted = [...rows].sort((a, c) => {
     const av = a.s?.[sortKey]; const cv = c.s?.[sortKey];
     if (av == null && cv == null) return 0;

@@ -72,6 +72,26 @@ def test_dedup_skips_identical_parameters(root):
     r1 = ingest.ingest_bars_daily(records=[daily_bar(dt.date(2025, 11, 3))], dedup=True, **p, root=root)
     r2 = ingest.ingest_bars_daily(records=[daily_bar(dt.date(2025, 11, 3))], dedup=True, **p, root=root)
     assert r1.skipped is False and r2.skipped is True
+
+
+def test_dedup_ignores_orphaned_running_batch(root):
+    """A crashed batch stuck in 'running' (registered but never finalized — the
+    exact orphan stale_running reaps) must NOT make a re-ingest a silent no-op:
+    dedup only matches *successfully* committed batches."""
+    p = dict(symbols=["000001.SZ"], start="2025-11-04", end="2025-11-04")
+    params = {"symbols": p["symbols"], "start": p["start"], "end": p["end"]}
+    # Simulate the orphan: register the batch, then die before finalize.
+    batches.register_batch("akshare", "raw.bars_daily", parameters=params, root=root)
+    assert batches.find_by_parameters("raw.bars_daily", params, statuses=("running",), root=root)
+
+    res = ingest.ingest_bars_daily(records=[daily_bar(dt.date(2025, 11, 4))],
+                                   dedup=True, **p, root=root)
+    assert res.skipped is False and res.row_count == 1   # really wrote, not skipped
+
+    # Once a *successful* batch exists, the same params now legitimately dedup.
+    again = ingest.ingest_bars_daily(records=[daily_bar(dt.date(2025, 11, 4))],
+                                     dedup=True, **p, root=root)
+    assert again.skipped is True
     assert len(storage.list_data_files(get_spec("raw.bars_daily"), root=root)) == 1
 
 

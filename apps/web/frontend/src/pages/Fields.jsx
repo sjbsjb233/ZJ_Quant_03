@@ -197,12 +197,12 @@ function MigrateModal({ field, onClose, onDone }) {
                   <div style={{ height: 8, background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 2, overflow: 'hidden' }}>
                     <div style={{
                       height: '100%', background: 'var(--info)',
-                      width: `${Math.min(100, (jobData.progress.current / jobData.progress.total) * 100)}%`,
+                      width: `${jobData.progress.total ? Math.min(100, (jobData.progress.current / jobData.progress.total) * 100) : 0}%`,
                       transition: 'width 0.3s',
                     }} />
                   </div>
                   <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-3)', marginTop: 4 }}>
-                    {((jobData.progress.current / jobData.progress.total) * 100).toFixed(1)}%
+                    {(jobData.progress.total ? (jobData.progress.current / jobData.progress.total) * 100 : 0).toFixed(1)}%
                   </div>
                 </div>
               )}

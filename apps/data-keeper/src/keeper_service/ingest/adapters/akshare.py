@@ -72,7 +72,9 @@ def fetch_bars_daily(symbols, start=None, end=None) -> list[dict]:
                 "low": rec.get("low"),
                 "close": close,
                 "pre_close": None,
-                "volume": rec.get("volume"),
+                # akshare 成交量 单位=手 (100 股); 成交额 单位=元。统一换算成「股」,
+                # 与 tushare 备源 (vol 手 *100) 一致,否则同一字段单位随主/备源漂移。
+                "volume": (rec.get("volume") or 0) * 100,
                 "amount": rec.get("amount"),
                 "vwap": close,
                 "adj_factor": 1.0,

@@ -1016,7 +1016,14 @@ class DataReader:
         except_sql = (
             f" EXCLUDE ({', '.join(_ident(c) for c in excludes)})" if excludes else ""
         )
-        order_sql = f" ORDER BY {order_by}" if order_by else ""
+        if order_by:
+            order_sql = f" ORDER BY {order_by}"
+        elif limit is not None:
+            # 分页必须有稳定全序, 否则两次查询的引擎默认顺序可能不同 → 跨页重复/漏行。
+            # 默认按 PK + _batch_id (docstring 承诺的 page-stable order, 与 tables.py 同序)。
+            order_sql = " ORDER BY " + ", ".join(spec.primary_key) + ", _batch_id"
+        else:
+            order_sql = ""
         # LIMIT/OFFSET literals validated as ints -> no injection risk.
         page_sql = f" LIMIT {int(limit)} OFFSET {int(offset)}" if limit is not None else ""
         sql = f"""

@@ -48,11 +48,18 @@ _HOP_BY_HOP = {
     "accept-encoding",
 }
 
+# Identity/trace headers we (re)stamp from the validated JWT. A client must never
+# be able to supply these: Starlette lowercases inbound header names, so a forged
+# ``x-forwarded-role: admin`` would otherwise survive alongside our title-cased
+# ``X-Forwarded-Role`` (two distinct dict keys → both go on the wire), letting a
+# viewer impersonate admin on the trusting downstream. Strip them on the way in.
+_STRIP_FORWARDED = {"x-forwarded-user", "x-forwarded-role", "x-trace-id"}
+
 
 def _filter_request_headers(req: Request, user) -> dict[str, str]:
     headers: dict[str, str] = {}
     for k, v in req.headers.items():
-        if k.lower() in _HOP_BY_HOP:
+        if k.lower() in _HOP_BY_HOP or k.lower() in _STRIP_FORWARDED:
             continue
         headers[k] = v
     # Stamp identity headers from the validated JWT — factor-api trusts these

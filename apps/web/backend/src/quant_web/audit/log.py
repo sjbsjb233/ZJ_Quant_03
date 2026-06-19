@@ -64,6 +64,15 @@ class Auditor:
         return entry
 
 
+def _naive_utc(d: dt.datetime | None) -> dt.datetime | None:
+    """occurred_at 以 naive-UTC 落库; 若调用方 (FastAPI 解析带 ``Z``/offset 的查询参数)
+    传进来的是 tz-aware datetime, 直接比较会在 SQLite 上按带偏移的字符串错位 (边界
+    多/少行), 在纯 Python 比较路径还会 TypeError 抛 500。先统一折成 naive-UTC。"""
+    if d is not None and d.tzinfo is not None:
+        return d.astimezone(dt.timezone.utc).replace(tzinfo=None)
+    return d
+
+
 def _audit_query(
     db: Session,
     action: str | None = None,
@@ -74,6 +83,8 @@ def _audit_query(
     end: dt.datetime | None = None,
 ):
     """构造带过滤条件的 audit_log 查询(不含排序/分页)。"""
+    start = _naive_utc(start)
+    end = _naive_utc(end)
     q = db.query(AuditLog)
     if action:
         q = q.filter(AuditLog.action == action)

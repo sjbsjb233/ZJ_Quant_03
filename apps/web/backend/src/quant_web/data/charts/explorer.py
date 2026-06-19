@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import math
 
 import pyarrow as pa
 from fastapi import APIRouter, Depends
@@ -34,6 +35,9 @@ def _ident(name: str) -> str:
 def _safe(v):
     if isinstance(v, (dt.date, dt.datetime)):
         return v.isoformat()
+    # NaN/±Inf 不是合法 JSON token —— 降级 null, 否则前端 .json() 整段解析失败。
+    if isinstance(v, float) and not math.isfinite(v):
+        return None
     return v
 
 
@@ -116,7 +120,7 @@ def preview(body: ExplorerRequest, reader=Depends(get_reader), user=Depends(get_
         idx = {x: i for i, x in enumerate(xs)}
         groups: dict = {}
         for x, g, v in rows:
-            groups.setdefault(g, [None] * len(xs))[idx[x]] = v
+            groups.setdefault(g, [None] * len(xs))[idx[x]] = _safe(v)
         series = [{"name": str(g), "data": data} for g, data in groups.items()]
         x_out = [_safe(x) for x in xs]
     else:
@@ -135,7 +139,7 @@ def preview(body: ExplorerRequest, reader=Depends(get_reader), user=Depends(get_
         names = [d[0] for d in cur.description]
         rows = cur.fetchall()
         x_out = [_safe(r[0]) for r in rows]
-        series = [{"name": names[i + 1], "data": [r[i + 1] for r in rows]}
+        series = [{"name": names[i + 1], "data": [_safe(r[i + 1]) for r in rows]}
                   for i in range(len(body.y_axes))]
     return {"x": x_out, "series": series, "chart_type": body.chart_type,
             "row_count": len(x_out)}

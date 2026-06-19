@@ -228,7 +228,6 @@ class Sentinel:
     def _detect(self, obs: list[dict], disks: list[dict]) -> list[dict]:
         conds: list[dict] = []
         now = time.time()
-        targets_by_name = {o["name"]: o for o in obs}
         liveness_names = {t.name for t in self.cfg.liveness_targets}
 
         for o in obs:

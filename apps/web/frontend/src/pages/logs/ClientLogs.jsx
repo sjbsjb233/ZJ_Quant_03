@@ -1,7 +1,7 @@
 // 前端日志 (ClientLogs) — /data/logs/client · JS 错误 + 用户动作 · 含会话视图 (doc §8.5)
 import React, { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import { TerminalShell, FilterBar, FInput, FSelect } from '../../components/shell';
 import { Loading, ErrorState, Empty } from '../../components/ui';
 import { endpoints } from '../../lib/api';
@@ -53,7 +53,7 @@ export default function ClientLogs() {
   const q = useQuery({
     queryKey: ['clientLogs', params],
     queryFn: () => endpoints.logs(params),
-    keepPreviousData: true,
+    placeholderData: keepPreviousData,
   });
   const items = q.data?.items || [];
   const total = q.data?.total || 0;

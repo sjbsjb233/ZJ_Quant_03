@@ -24,6 +24,11 @@ def _utcnow() -> dt.datetime:
     return dt.datetime.utcnow()
 
 
+# 容器观测保活窗口: 超过这个时长没再被哨兵上报的容器名会被驱逐 (见 SignalState._evict_stale)。
+# 取 6h —— 远大于正常上报间隔 (秒级), 只清理真正消失/一次性的容器名。
+_CONTAINER_TTL_SEC = 6 * 3600
+
+
 # ── alert lifecycle ──────────────────────────────────────────────────────────
 class AlertStore:
     """CRUD + state machine over ``monitor_alert``. Thread-safe via the DB
@@ -230,6 +235,7 @@ class SignalState:
                 rc = c.get("restart_count")
                 if isinstance(rc, int):
                     self._restart_hist[name].append((observed, rc))
+            self._evict_stale(now)
             # v2 extras (only-add: a v1 payload simply omits them, staying compatible)
             if isinstance(payload.get("infra"), dict):
                 self.infra = payload["infra"]
@@ -237,6 +243,19 @@ class SignalState:
                 self._conditions = list(payload.get("conditions") or [])
                 self._conditions_at = now
         return len(containers)
+
+    def _evict_stale(self, now: dt.datetime) -> None:
+        """容器名不是稳定身份 (重启/重部署/扩缩容/一次性容器都会产生新名字)。若只增不删,
+        每个见过的名字都会永久占着一条 dict + 一个 200 槽 deque —— 长跑进程内存单调
+        增长 (正是 CI 注释里 2026-06-01 崩溃循环那类隐患), 且早已消失的容器还会一直出现
+        在 /monitor/topology。这里按 TTL 驱逐 ``_seen_at`` 过期的容器及其重启历史。
+        TTL 取得足够宽 (远大于哨兵上报间隔), 不会误删正在监控的容器。"""
+        cutoff = now - dt.timedelta(seconds=_CONTAINER_TTL_SEC)
+        stale = [n for n, c in self.containers.items()
+                 if (c.get("_seen_at") or now) < cutoff]
+        for n in stale:
+            self.containers.pop(n, None)
+            self._restart_hist.pop(n, None)
 
     def snapshot(self) -> dict:
         with self._lock:

@@ -1153,10 +1153,16 @@ export default function TableBrowser() {
                   const extra = rowStyle(row, ri);
                   const isInvalidated = viewMode === 'all' && row._status === 'invalidated';
                   const rowPk = buildPk(row);
+                  // 稳定身份做 key (而非数组下标): 全量/批次视图会按 filters/viewMode/排序
+                  // 重排, 下标 key 会让 React 跨不同记录复用 DOM, 命中逐行 hover 样式错位。
+                  // 全量视图同一 PK 可有多条物理行 → 追加 _batch_id 保证唯一。
+                  const rowKey = row._batch_id != null
+                    ? Object.values(rowPk).join('|') + '|' + row._batch_id
+                    : Object.values(rowPk).join('|');
                   const rowBg = ri % 2 === 0 ? 'var(--surface)' : 'var(--surface-2)';
                   return (
                     <tr
-                      key={ri}
+                      key={rowKey}
                       data-testid={`table-row-${Object.values(rowPk).join('-')}`}
                       onClick={() => setLineageRow({ pk: rowPk })}
                       style={{

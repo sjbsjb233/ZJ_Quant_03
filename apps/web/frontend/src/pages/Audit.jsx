@@ -1,6 +1,6 @@
 // 审计日志 – audit event log with split detail panel
 import React, { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import { TerminalShell, TPanel, FilterBar, FInput, FSelect } from '../components/shell';
 import { Loading, ErrorState, Empty } from '../components/ui';
 import { endpoints } from '../lib/api';
@@ -67,7 +67,7 @@ export default function Audit() {
   const auditQ = useQuery({
     queryKey: ['audit', filters],
     queryFn: () => endpoints.audit(filters),
-    keepPreviousData: true,
+    placeholderData: keepPreviousData,
   });
 
   function clearFilters() {

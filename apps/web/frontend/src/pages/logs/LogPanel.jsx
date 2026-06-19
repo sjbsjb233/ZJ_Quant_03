@@ -9,7 +9,7 @@
 // a viewer can't widen past their allowed layers even by editing the URL.
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import { FilterBar, FInput, FSelect } from '../../components/shell';
 import { Loading, ErrorState } from '../../components/ui';
 import { endpoints, logsStreamUrl } from '../../lib/api';
@@ -126,7 +126,7 @@ export default function LogPanel({
   const q = useQuery({
     queryKey: ['logPanel', params, page],
     queryFn: () => endpoints.logs({ ...params, page, page_size: PAGE_SIZE }),
-    keepPreviousData: true,
+    placeholderData: keepPreviousData,
     refetchInterval: live ? false : undefined,
   });
 
