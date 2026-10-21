@@ -1,0 +1,143 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="780" viewBox="0 0 1280 780" role="img" aria-label="System architecture: FSQ engine and ZJ Quant platform">
+  <defs>
+    <style>
+      .sans { font-family: -apple-system, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif; }
+      .mono { font-family: 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace; }
+      .t { font-size: 15px; font-weight: 700; fill: #1B2A41; }
+      .s { font-size: 12.5px; fill: #4A5A70; }
+      .m { font-size: 11.5px; fill: #6B7A90; }
+      .lab { font-size: 12px; font-weight: 700; letter-spacing: 1.4px; }
+    </style>
+    <marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M1 1 L9 5 L1 9" fill="none" stroke="#3B5BDB" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <marker id="ahg" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M1 1 L9 5 L1 9" fill="none" stroke="#0CA678" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+  <rect width="1280" height="780" fill="#FFFFFF"/>
+
+  <!-- ══ FSQ engine band ══ -->
+  <rect x="16" y="16" width="1248" height="300" rx="18" fill="#F5F7FF" stroke="#BAC8FF"/>
+  <text x="44" y="52" class="sans lab" fill="#3B5BDB">CORE · FSQ K-LINE FOUNDATION MODEL</text>
+  <text x="1236" y="52" text-anchor="end" class="mono m">packages/fsq_kbar · PyTorch · single RTX 4090</text>
+
+  <g class="sans">
+    <!-- 1 corpus -->
+    <rect x="44" y="74" width="218" height="200" rx="12" fill="#FFFFFF" stroke="#DBE4FF"/>
+    <circle cx="70" cy="100" r="13" fill="#3B5BDB"/><text x="70" y="105" text-anchor="middle" font-size="13" font-weight="700" fill="#FFF">1</text>
+    <text x="92" y="105" class="t">Corpus governance</text>
+    <text x="62" y="134" class="s">All A-shares incl. delisted</text>
+    <text x="62" y="154" class="s">7 frequencies, 1-min → weekly</text>
+    <text x="62" y="174" class="s">price gaps = hard boundaries</text>
+    <text x="62" y="194" class="s">jump / illiquid / stale filters</text>
+    <text x="62" y="214" class="s">z-score clip ±5 · rebalancing</text>
+    <text x="62" y="252" class="mono m">3.06 B → 2.78 B bars</text>
+
+    <!-- 2 tokenizer -->
+    <rect x="286" y="74" width="218" height="200" rx="12" fill="#FFFFFF" stroke="#DBE4FF"/>
+    <circle cx="312" cy="100" r="13" fill="#3B5BDB"/><text x="312" y="105" text-anchor="middle" font-size="13" font-weight="700" fill="#FFF">2</text>
+    <text x="334" y="105" class="t">FSQ tokenizer</text>
+    <text x="304" y="134" class="s">Transformer auto-encoder</text>
+    <text x="304" y="154" class="s">2 + 2 layers, d = 192</text>
+    <text x="304" y="174" class="s">4 scalars, levels [8, 8, 8, 5]</text>
+    <text x="304" y="194" class="s">2,560 implicit states</text>
+    <text x="304" y="214" class="s">no codebook → no collapse</text>
+    <text x="304" y="252" class="mono m">71.4% joint-state usage</text>
+
+    <!-- 3 foundation model -->
+    <rect x="528" y="74" width="218" height="200" rx="12" fill="#FFFFFF" stroke="#3B5BDB" stroke-width="1.6"/>
+    <circle cx="554" cy="100" r="13" fill="#3B5BDB"/><text x="554" y="105" text-anchor="middle" font-size="13" font-weight="700" fill="#FFF">3</text>
+    <text x="576" y="105" class="t">Foundation model</text>
+    <text x="546" y="134" class="s">decoder-only, RoPE, RMSNorm</text>
+    <text x="546" y="154" class="s">4 parallel token heads (29 cls)</text>
+    <text x="546" y="174" class="s">+ quantile head q10/q50/q90</text>
+    <text x="546" y="194" class="s">context 384 · horizon 10 d</text>
+    <text x="546" y="214" class="s">BF16 · grad-ckpt · accumulation</text>
+    <text x="546" y="252" class="mono m">base 41M · compact 16M</text>
+
+    <!-- 4 signals -->
+    <rect x="770" y="74" width="218" height="200" rx="12" fill="#FFFFFF" stroke="#DBE4FF"/>
+    <circle cx="796" cy="100" r="13" fill="#3B5BDB"/><text x="796" y="105" text-anchor="middle" font-size="13" font-weight="700" fill="#FFF">4</text>
+    <text x="818" y="105" class="t">Factor &amp; risk signal</text>
+    <text x="788" y="134" class="s">one deterministic pass</text>
+    <text x="788" y="154" class="s">α = q50 / (q90 − q10 + ε)</text>
+    <text x="788" y="174" class="s">winsorise 1/99 · z-score</text>
+    <text x="788" y="194" class="s">width → isotonic → fwd vol</text>
+    <text x="788" y="214" class="s">calibrator frozen OOS</text>
+    <text x="788" y="252" class="mono m">factor_panel.parquet</text>
+
+    <!-- 5 execution -->
+    <rect x="1012" y="74" width="224" height="200" rx="12" fill="#FFFFFF" stroke="#DBE4FF"/>
+    <circle cx="1038" cy="100" r="13" fill="#3B5BDB"/><text x="1038" y="105" text-anchor="middle" font-size="13" font-weight="700" fill="#FFF">5</text>
+    <text x="1060" y="105" class="t">Portfolio &amp; risk</text>
+    <text x="1030" y="134" class="s">top-k equal weight, drop-n</text>
+    <text x="1030" y="154" class="s">5-day min holding · 3% cash</text>
+    <text x="1030" y="174" class="s">vol budget · crowding · DD</text>
+    <text x="1030" y="194" class="s">IF / IC hedge 0 → 100%</text>
+    <text x="1030" y="214" class="s">Qlib backtest · SuperMind</text>
+    <text x="1030" y="252" class="mono m">0.15% one-way cost</text>
+  </g>
+  <g stroke="#3B5BDB" stroke-width="2" fill="none" marker-end="url(#ah)">
+    <path d="M262 174 H282"/><path d="M504 174 H524"/><path d="M746 174 H766"/><path d="M988 174 H1008"/>
+  </g>
+  <text x="640" y="300" text-anchor="middle" class="sans m">corpus cut-off 2025-06-30 │ out-of-sample test 2025-07-01 → 2026-06-18 │ walk-forward vintages 2017 – 2025</text>
+
+  <!-- ══ connectors between bands ══ -->
+  <path d="M879 316 V 430" stroke="#3B5BDB" stroke-width="2.2" fill="none" marker-end="url(#ah)" stroke-dasharray="6 4"/>
+  <rect x="890" y="352" width="252" height="44" rx="8" fill="#FFFFFF" stroke="#BAC8FF"/>
+  <text x="902" y="371" class="sans" font-size="12.5" font-weight="700" fill="#3B5BDB">FSQ factors join the library</text>
+  <text x="902" y="388" class="mono" font-size="11" fill="#6B7A90">FSQAlpha · FSQWidth (builtin/fsq.py)</text>
+  <path d="M260 430 V 330 H 120 V 316" stroke="#0CA678" stroke-width="2.2" fill="none" marker-end="url(#ahg)" stroke-dasharray="6 4"/>
+  <rect x="140" y="352" width="246" height="44" rx="8" fill="#FFFFFF" stroke="#B2F2DB"/>
+  <text x="152" y="371" class="sans" font-size="12.5" font-weight="700" fill="#0CA678">governed daily bars feed the model</text>
+  <text x="152" y="388" class="mono" font-size="11" fill="#6B7A90">post-adjusted OHLCVA panel</text>
+
+  <!-- ══ platform band ══ -->
+  <rect x="16" y="430" width="1248" height="334" rx="18" fill="#F3FCF8" stroke="#B2F2DB"/>
+  <text x="44" y="466" class="sans lab" fill="#0CA678">PLATFORM · ZJ QUANT MULTI-FACTOR RESEARCH SYSTEM</text>
+  <text x="1236" y="466" text-anchor="end" class="mono m">apps/* · packages/quant_* · Docker Compose</text>
+
+  <g class="sans">
+    <!-- data layer -->
+    <rect x="44" y="488" width="392" height="214" rx="12" fill="#FFFFFF" stroke="#C3FAE8"/>
+    <text x="64" y="516" class="t">Data layer</text>
+    <text x="64" y="536" class="mono m">data-keeper · quant_data</text>
+    <text x="64" y="564" class="s">• single writer, append-only parquet lake</text>
+    <text x="64" y="586" class="s">• point-in-time reads: no look-ahead</text>
+    <text x="64" y="608" class="s">• batch lineage: source · batch · ingest time</text>
+    <text x="64" y="630" class="s">• automated quality checks &amp; alerts</text>
+    <text x="64" y="652" class="s">• akshare primary / tushare fallback adapters</text>
+    <text x="64" y="684" class="mono m">DuckDB · Polars · Apache Arrow</text>
+
+    <!-- factor layer -->
+    <rect x="456" y="488" width="420" height="214" rx="12" fill="#FFFFFF" stroke="#0CA678" stroke-width="1.6"/>
+    <text x="476" y="516" class="t">Factor layer</text>
+    <text x="476" y="536" class="mono m">factor-api · factor-worker · quant_factor</text>
+    <rect x="476" y="552" width="380" height="30" rx="7" fill="#EDF2FF" stroke="#BAC8FF"/>
+    <text x="488" y="572" class="sans" font-size="12.5" fill="#3B5BDB" font-weight="700">FSQAlpha · FSQWidth</text>
+    <text x="638" y="572" class="sans" font-size="12.5" fill="#4A5A70">+ momentum, size, value, vol …</text>
+    <text x="476" y="606" class="s">• IC / RankIC / ICIR, decile layering, turnover</text>
+    <text x="476" y="628" class="s">• MAD winsorise · size &amp; industry neutralisation</text>
+    <text x="476" y="650" class="s">• correlation, baskets, screening, preflight gates</text>
+    <text x="476" y="672" class="s">• task queue with memory admission control</text>
+    <text x="476" y="694" class="mono m">FastAPI · SQLite WAL · SciPy</text>
+
+    <!-- web + observability -->
+    <rect x="896" y="488" width="340" height="102" rx="12" fill="#FFFFFF" stroke="#C3FAE8"/>
+    <text x="916" y="516" class="t">Research console</text>
+    <text x="916" y="536" class="mono m">web-frontend · web-backend</text>
+    <text x="916" y="562" class="s">React SPA · K-line &amp; market views</text>
+    <text x="916" y="580" class="s">RBAC (viewer / editor / admin) · audit</text>
+
+    <rect x="896" y="600" width="340" height="102" rx="12" fill="#FFFFFF" stroke="#C3FAE8"/>
+    <text x="916" y="628" class="t">Observability</text>
+    <text x="916" y="648" class="mono m">obs-sentinel · log hub</text>
+    <text x="916" y="674" class="s">health / OOM / restart detectors</text>
+    <text x="916" y="692" class="s">end-to-end trace_id across services</text>
+  </g>
+  <g stroke="#0CA678" stroke-width="2" fill="none" marker-end="url(#ahg)">
+    <path d="M436 595 H452"/><path d="M876 540 H892"/><path d="M876 650 H892"/>
+  </g>
+  <text x="640" y="740" text-anchor="middle" class="sans m">strategy &amp; live-trading modules reuse the same data and factor contracts (roadmap)</text>
+</svg>
