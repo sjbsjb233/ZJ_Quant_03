@@ -1,0 +1,61 @@
+# =====================================================================
+# 组合回测 —— 沪深300池（报告表3.1 / 表7.2 / 第5、6章）
+# =====================================================================
+provider_uri: ~/.qlib/qlib_data/cn_data
+region: cn
+pool: csi300
+benchmark: SH000300
+account: 100000000
+
+factor_panel: outputs/factor/quantile_panel_csi300.parquet
+calib_panel: outputs/factor/quantile_panel_calib_csi300.parquet
+signal_path: outputs/factor/score_csi300.pkl
+
+start: "2025-07-01"
+end: "2026-06-18"
+
+portfolio:                        # 表3.1 / 表7.2 / 6.2.1
+  topk: 50                        # 持仓数 k
+  n_drop: 5                       # 每期最大调仓数 n
+  rebalance_freq: 5               # 每5个交易日调仓
+  hold_thresh: 5                  # 最短持有期5个交易日
+  open_cost: 0.0015               # 单边交易成本 0.15%
+  close_cost: 0.0015
+  min_cost: 5
+  limit_threshold: 0.095          # 一字涨跌停不可成交
+  deal_price: close
+  risk_degree_normal: 0.97        # 常态现金缓冲3%（表6.2）
+
+risk:                             # 第5章
+  vol_downweight_q: 0.80          # 预测波动率前20%分位降权（5.1）
+  vol_exclude_q: 0.95             # 极端突出者直接剔除
+  vol_downweight_scale: 0.7       # 降权系数（工程实现）
+  crowding_min_signals: 2         # 任意两项拥挤信号共振即处置（表5.2注）
+  turnover_z: 2.0                 # 换手偏离阈值（2倍60日标准差）
+  turnover_q: 0.85                # 或60日滚动85%分位以上
+  pv_corr: -0.30                  # 量价背离：20日滚动相关 < -0.3
+  pv_band_pos: 0.80               # 且价格处于20日区间上沿
+  conc_q: 0.90                    # 资金集中：60日滚动90%分位以上
+  dd_levels: [0.05, 0.08, 0.12]   # 表5.3 三级警戒线
+  dd_exposure: [0.97, 0.97, 0.60, 0.25]  # 常态/一级(仅停开仓)/二级/三级目标仓位
+  dd_release: 0.08                # 解除条件：回撤修复至8%以内
+  release_days: 3                 # 连续3个交易日满足后按周度逐级回补
+  ric_window: 20                  # 因子有效性：20日滚动RankIC
+  ric_fail: 0.02                  # 低于0.02
+  ric_recover: 0.03               # 回升至0.03以上解除
+  ric_days: 5                     # 连续5个交易日
+  hedge_ladder: [0.0, 0.2, 0.6, 0.8, 1.0]   # 表5.4 对冲比例阶梯
+  vol_breadth: 0.30               # 二级条件②：>30%成分股处波动率前20%分位
+  crowd_hold_share: 0.20          # 二级条件③：拥挤标的占持仓比例>20%
+  futures: IF                     # 沪深300池用IF合约（5.4）
+  futures_multiplier: 300
+
+regimes:                          # 图7.2(b) 四段市况（7.5.2）
+  trend_up:    ["2025-07-01", "2025-10-31"]
+  oscillation: ["2025-11-01", "2026-01-31"]
+  drawdown:    ["2026-02-01", "2026-03-31"]
+  recovery:    ["2026-04-01", "2026-06-18"]
+
+risk_free: 0.02                   # 夏普比率口径（表7.3注）
+industry_map: data/industry_map.csv
+output_dir: outputs/backtest_csi300

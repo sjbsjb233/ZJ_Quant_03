@@ -1,0 +1,39 @@
+# =====================================================================
+# 训练数据准备阶段（报告第3章）
+# 预训练语料：沪深两市全量A股（含已退市）、7种频率，截至2025-06-30，
+# 与样本外回测区间（2025-07-01起）严格时间隔离。
+# =====================================================================
+provider_uri:
+  day: ~/.qlib/qlib_data/cn_data           # 日频库（周频由日频重采样）
+  min1: ~/.qlib/qlib_data/cn_data_1min     # 1分钟库（5/15/30/60分钟由其重采样）
+region: cn
+
+corpus_start: "2005-01-01"
+corpus_end: "2025-06-30"
+instruments: all                            # 全量A股，规避幸存者偏差
+
+output_dir: data/corpus
+industry_map: data/industry_map.csv         # instrument,industry（申万一级）
+
+frequencies: [1min, 5min, 15min, 30min, 60min, day, week]
+resample_rules:                             # 分钟内重采样规则
+  5min: "5min"
+  15min: "15min"
+  30min: "30min"
+  60min: "60min"
+
+# 表3.4 低质量片段过滤的分频率参数
+# min_len: 最小长度（根）  jump: 价格跳变阈值
+# illiquid: 连续非流动阈值  stagnant: 连续停滞阈值
+filter_params:
+  1min:  {min_len: 2048, jump: 0.10, illiquid: 15, stagnant: 45}
+  5min:  {min_len: 1024, jump: 0.15, illiquid: 3,  stagnant: 10}
+  15min: {min_len: 512,  jump: 0.15, illiquid: 2,  stagnant: 5}
+  30min: {min_len: 512,  jump: 0.20, illiquid: 2,  stagnant: 3}
+  60min: {min_len: 256,  jump: 0.20, illiquid: 1,  stagnant: 3}
+  day:   {min_len: 128,  jump: 0.30, illiquid: 1,  stagnant: 3}
+  week:  {min_len: 16,   jump: 0.50, illiquid: 0,  stagnant: 2}
+
+# 表3.5 输入预处理
+clip_sigma: 5.0          # z-score标准化后裁剪至 [-5, 5]
+vol_mask_prob: 0.05      # 表3.3：训练时5%样本量额随机置零

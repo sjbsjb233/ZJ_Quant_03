@@ -1,0 +1,28 @@
+# base规格自回归预训练配置（报告4.2.2，表4.4/表4.5，附录A）
+model_size: base             # 10层 / d=640 / ff=1920 / 10头，约41M参数
+tokenizer_ckpt: checkpoints/tokenizer/tokenizer_final.pt
+
+data:
+  corpus_dir: data/corpus
+  seq_len: 384               # 最大上下文长度（表4.4）
+  horizon: 10                # 预测期H（4.2.3）
+  batch_size: 16             # 单卡24GB配置；与grad_accum联用等效batch=64
+  num_workers: 8
+  rebalance_alpha: 0.5
+  volamt_mask_p: 0.05
+
+train:
+  steps: 120000
+  # lr / weight_decay 默认取自MODEL_FAMILY（表4.5：5e-4 / 0.05）
+  warmup_steps: 1500         # 线性warmup自峰值10%起（4.2.2）
+  grad_clip: 1.0
+  grad_accum: 4              # 梯度累积等效放大批量（附录A）
+  grad_checkpointing: true   # 梯度检查点（附录A）
+  bf16: true                 # BF16精度（附录A）
+  quantile_loss_weight: 0.5  # 分位数损失联合权重（4.2.1）
+  self_sampling_max_p: 0.15  # 自采样概率上限（曝光偏差缓解，4.2.1）
+  self_sampling_ramp_steps: 60000
+  seed: 42
+  log_every: 50
+  ckpt_every: 10000
+  out_dir: checkpoints/foundation

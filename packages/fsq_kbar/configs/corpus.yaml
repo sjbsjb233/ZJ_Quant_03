@@ -1,0 +1,12 @@
+# 预训练语料构建配置（报告3.2节，表3.2）
+raw_dir: data/raw            # 原始数据：raw_dir/<freq>/<symbol>.parquet
+out_dir: data/corpus         # 输出：片段分片 + segments_meta.parquet
+cutoff: "2025-06-30"         # 语料截止日，与样本外区间严格时间隔离（7.1.2）
+freqs:                       # 7种采样频率（表3.2）
+  - 1min
+  - 5min
+  - 15min
+  - 30min
+  - 60min
+  - day
+  - week

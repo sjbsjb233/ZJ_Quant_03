@@ -1,0 +1,7 @@
+# PyTorch 由 Dockerfile 以 cu128 轮子单独安装（torch==2.7.0）
+numpy==1.26.2
+pandas==2.2.2
+pyqlib>=0.9.5
+pyyaml>=6.0
+tqdm>=4.66
+pyarrow>=15.0

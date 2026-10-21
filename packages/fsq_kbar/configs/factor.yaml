@@ -1,0 +1,20 @@
+# 因子生成与检验配置（报告4.2.4 / 7.2，表7.2）
+tokenizer_ckpt: checkpoints/tokenizer/tokenizer_final.pt
+model_ckpt: checkpoints/foundation/base_final.pt
+
+panel_path: data/panel/daily_panel.parquet   # 标的池日频行情长表（后复权）
+out_dir: outputs/factor
+
+lookback: 90                 # 回看窗口（表7.2）
+horizon: 10                  # 预测期H（表7.2）
+eps: 1.0e-3                  # 风险调整分母防除零常数（附录B）
+winsor: [0.01, 0.99]         # 截面缩尾（表7.1）
+batch_size: 256
+rebalance_every: 5           # 调仓频率（表7.2）
+
+# 样本外区间（7.1.2：预训练数据截至2025-06-30，严格时间隔离）
+start: "2025-07-01"
+end: "2026-06-18"
+
+# 波动率校准器（步骤5产出；步骤4读取，冻结外推）
+vol_calibrator: outputs/factor/vol_calibrator.parquet

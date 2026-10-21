@@ -1,0 +1,21 @@
+# 训练端容器编排：单机单卡GPU，数据/权重/产出目录挂载宿主机
+# 用法：cd docker && docker compose run train <阶段>
+#      阶段可选 all | corpus | tokenizer | pretrain | calibrate | factor | eval
+services:
+  train:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: fsq-kbar-system:latest
+    shm_size: "16g"                     # DataLoader多进程共享内存
+    volumes:
+      - ../data:/workspace/fsq-kbar-system/data
+      - ../checkpoints:/workspace/fsq-kbar-system/checkpoints
+      - ../outputs:/workspace/fsq-kbar-system/outputs
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1                  # 单卡RTX 4090/4090D
+              capabilities: [gpu]

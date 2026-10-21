@@ -1,0 +1,41 @@
+# =====================================================================
+# 自回归预训练 —— base规格（报告表4.4 / 表4.5 / 附录A）
+# 纯解码器Transformer，四组子标记并行自回归 + 分位数收益预测头
+# =====================================================================
+model:
+  name: base
+  n_layers: 10
+  d_model: 640
+  d_ff: 1920
+  n_heads: 10
+  fsq_levels: [8, 8, 8, 5]      # 与标记化器一致，输出类别总数 8+8+8+5=29
+  max_context: 384              # 最大上下文长度（根K线）
+  dropout_ffn: 0.10
+  dropout_resid: 0.10
+  dropout_attn: 0.05
+  dropout_token: 0.00
+  grad_checkpoint: true         # 梯度检查点（24GB单卡显存优化）
+  quantiles: [0.1, 0.5, 0.9]    # 分位数预测头输出（4.2.3）
+  horizon: 10                   # 预测期 H=10
+
+train:
+  tokenizer_ckpt: checkpoints/tokenizer/tokenizer_final.pt
+  corpus_manifest: data/corpus/manifest.parquet
+  context: 384
+  batch_size: 24                # 单卡24GB，配合梯度累积等效放大批量
+  grad_accum: 16
+  lr: 5.0e-4                    # 表4.5：base规格学习率
+  weight_decay: 0.05            # 表4.5：base规格权重衰减
+  warmup_steps: 1500            # 前1500步学习率由峰值10%线性升起
+  min_lr_ratio: 0.10            # 余弦衰减下限
+  token_budget: 750000000       # 平衡抽样后 0.5B–1B token 预算（附录A）
+  quantile_loss_weight: 0.5     # 分位数回归与分类NLL的联合权重（4.2.1）
+  scheduled_sampling_max: 0.25  # 自采样上限（缓解曝光偏差）
+  scheduled_sampling_warmup: 20000
+  grad_clip: 1.0
+  bf16: true
+  num_workers: 8
+  seed: 42
+  ckpt_dir: checkpoints/base
+  log_every: 50
+  save_every: 2000

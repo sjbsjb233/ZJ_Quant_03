@@ -1,0 +1,7 @@
+# training inputs / artefacts — produced locally, never committed
+data/
+checkpoints/
+outputs/
+qlib_backtest/data/
+qlib_backtest/checkpoints/
+qlib_backtest/outputs/
