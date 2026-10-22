@@ -13,6 +13,7 @@
 
 <br><br>
 
+<a href="#快速开始"><b>快速开始</b></a> &nbsp;·&nbsp;
 <a href="#概览"><b>概览</b></a> &nbsp;·&nbsp;
 <a href="#一分钟看懂"><b>核心思路</b></a> &nbsp;·&nbsp;
 <a href="#系统架构"><b>架构</b></a> &nbsp;·&nbsp;
@@ -20,7 +21,7 @@
 <a href="#实验结果"><b>结果</b></a> &nbsp;·&nbsp;
 <a href="#风险管理"><b>风控</b></a> &nbsp;·&nbsp;
 <a href="#研究平台"><b>平台</b></a> &nbsp;·&nbsp;
-<a href="#快速上手"><b>快速上手</b></a>
+<a href="#安装指南"><b>安装指南</b></a>
 
 </div>
 
@@ -43,6 +44,26 @@
 <img src="assets/readme/kpi.svg" alt="样本外核心指标" width="100%">
 
 <sub>严格样本外：模型从未见过 2025-06-30 之后的数据，测试区间为 2025-07-01 至 2026-06-18（235 个交易日）。收益已扣除 0.15 % 单边交易成本，基准为沪深 300 与中证 800 指数。完整实验协议见<a href="#实验结果">实验结果</a>。</sub>
+
+## 快速开始
+
+大约 15 分钟即可用演示数据跑起平台。需要 Docker（含 Compose v2）和 8 GB 内存。Linux 和 macOS 可以直接运行；Windows 请在 WSL 2 终端中操作。不需要 GPU。
+
+```bash
+git clone https://github.com/sjbsjb233/ZJ_Quant_03.git
+cd ZJ_Quant_03/deploy
+cp .env.example .env        # 然后编辑 .env：WEB_PORT=8080、ENABLE_SCHEDULER=false，
+                            # 并为 JWT_SECRET 和 LOG_INGEST_TOKEN 填入较长的随机字符串
+export COMPOSE_FILE=docker-compose.yml:docker-compose.dev.yml
+
+docker compose build
+docker compose run --rm data-keeper python -m keeper_service.seed_demo
+docker compose run --rm web-backend python -m quant_web.seed_users
+docker compose up -d
+```
+
+打开 <http://localhost:8080>，用 `admin` / `admin123` 登录。
+PowerShell 用法、GPU 训练 FSQ、本地开发和常见问题，见[安装指南](#安装指南)。
 
 ## 一分钟看懂
 
@@ -250,30 +271,7 @@ FSQ 因子与因子库中的其他因子位于同一个控制台中，旁边是�
 
 <sub>截图来自加载了平台内置演示数据集的本地部署，其中数值仅作示意。策略结果见<a href="#实验结果">实验结果</a>。</sub>
 
-## 仓库结构
-
-```
-ZJ_Quant_03/
-├── packages/
-│   ├── fsq_kbar/              ★ FSQ 引擎：kbarfm/（data · model · train · factor · risk · portfolio · eval）
-│   │   ├── scripts/              语料 → tokenizer → 预训练 → 校准 → 因子 → 评估 → walk-forward
-│   │   ├── configs/              全部超参数，每个阶段一个 YAML
-│   │   ├── supermind/            执行端策略（股票 + 股指期货）
-│   │   └── qlib_backtest/        Qlib 两遍式风控回测、归因、敏感性分析
-│   ├── quant_factor/          因子契约、评估引擎、中性化、相关性
-│   │   └── src/quant_factor/builtin/fsq.py   ← FSQAlpha / FSQWidth
-│   ├── quant_data/            时点一致 parquet 数据湖、治理、质量、血缘
-│   └── quant_strategy/        策略库（平台路线图）
-├── apps/
-│   ├── data-keeper/           单写者入库 + 调度
-│   ├── factor/                因子 API + worker 队列
-│   ├── web/                   React 控制台 + FastAPI 网关
-│   └── obs-sentinel/          进程外看门狗
-├── deploy/                    docker-compose（生产 + dev 叠加层）、.env 模板
-└── assets/readme/             本 README 的图（图表由 src/make_charts.py 生成）
-```
-
-## 快速上手
+## 安装指南
 
 根据你的目的，有三条路径：
 
@@ -476,6 +474,29 @@ npm run dev              # http://localhost:5173；/api 代理到 8000 端口的
 ```
 
 CI 会在每个 pull request 上运行同样的后端测试和前端生产构建。
+
+## 仓库结构
+
+```
+ZJ_Quant_03/
+├── packages/
+│   ├── fsq_kbar/              ★ FSQ 引擎：kbarfm/（data · model · train · factor · risk · portfolio · eval）
+│   │   ├── scripts/              语料 → tokenizer → 预训练 → 校准 → 因子 → 评估 → walk-forward
+│   │   ├── configs/              全部超参数，每个阶段一个 YAML
+│   │   ├── supermind/            执行端策略（股票 + 股指期货）
+│   │   └── qlib_backtest/        Qlib 两遍式风控回测、归因、敏感性分析
+│   ├── quant_factor/          因子契约、评估引擎、中性化、相关性
+│   │   └── src/quant_factor/builtin/fsq.py   ← FSQAlpha / FSQWidth
+│   ├── quant_data/            时点一致 parquet 数据湖、治理、质量、血缘
+│   └── quant_strategy/        策略库（平台路线图）
+├── apps/
+│   ├── data-keeper/           单写者入库 + 调度
+│   ├── factor/                因子 API + worker 队列
+│   ├── web/                   React 控制台 + FastAPI 网关
+│   └── obs-sentinel/          进程外看门狗
+├── deploy/                    docker-compose（生产 + dev 叠加层）、.env 模板
+└── assets/readme/             本 README 的图（图表由 src/make_charts.py 生成）
+```
 
 ## 参与贡献
 
