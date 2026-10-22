@@ -143,6 +143,11 @@ def _finalize_future(db: Session, task_id: str, fut: Future) -> None:
             t.worker_id = None
             t.heartbeat_at = None
             t.started_at = None
+            # 清掉上一轮的取消标记: 若用户曾请求取消但 worker 还没看到就因无关异常
+            # 失败, 残留的 cancel_requested 会让重试一上来就被判为 canceled (与
+            # store.recover_stale / store.retry 的复位保持一致)。
+            t.cancel_requested = False
+            t.error = None
         else:
             t.status = "failed"
             t.error = msg

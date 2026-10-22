@@ -2,7 +2,7 @@
 // 活跃/历史告警, ack/resolve (editor+), 规则溯源 + 关联日志 (trace embed)。
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { TerminalShell, FilterBar, FInput, FSelect } from '../../components/shell';
 import { Loading, ErrorState, Empty } from '../../components/ui';
 import { useAuth } from '../../lib/auth';
@@ -66,7 +66,7 @@ export default function Alerts() {
   const q = useQuery({
     queryKey: ['monitorAlerts', params],
     queryFn: () => endpoints.monitorAlerts(params),
-    refetchInterval: 30_000, keepPreviousData: true, enabled: obs.backendOk,
+    refetchInterval: 30_000, placeholderData: keepPreviousData, enabled: obs.backendOk,
   });
   // 「检测方」是客户端筛选 (后端不按 detector 过滤): 哨兵 / 后端 / 资源类。
   const rawItems = q.data?.items || [];

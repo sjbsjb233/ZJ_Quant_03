@@ -2,7 +2,7 @@
 // inline IC trend + per-row actions.
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { endpoints } from '../../lib/api';
 import { TerminalShell, FilterBar, FInput, FSelect, FChip, KpiStrip } from '../../components/shell';
 import { Empty, ErrorState, Loading } from '../../components/ui';
@@ -38,7 +38,7 @@ export default function FactorLibrary() {
       page,
       page_size: pageSize,
     }),
-    keepPreviousData: true,
+    placeholderData: keepPreviousData,
   });
   const data = qry.data;
 

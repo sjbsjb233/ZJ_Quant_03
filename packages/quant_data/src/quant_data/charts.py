@@ -10,8 +10,11 @@ from __future__ import annotations
 
 import datetime as dt
 
+from .logging import get_logger
 from .metadata import batches
 from .reader import DataReader, _date_lit, _str_lit
+
+_log = get_logger("quant_data.charts")
 
 _DESC = {
     "cash_dividend": "现金分红",
@@ -82,7 +85,11 @@ def get_bar_revisions(symbol: str, frequency: str = "1d", start=None, end=None,
             lo, hi = reader.batch_symbol_date_range(
                 b["batch_id"], table, symbol, start=s, end=e
             )
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            # 不要静默吞掉: 某个失效批的 parquet 损坏 / binder 报错会让这条「修订带」
+            # 悄悄消失, 运维永远看不到审计数据已不可读 (本仓其它吞异常处都 warn)。
+            _log.warning("charts.bar_revisions.batch_failed",
+                         batch_id=b.get("batch_id"), table=table, error=str(exc))
             continue
         if lo is None or hi is None:
             continue

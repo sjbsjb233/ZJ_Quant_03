@@ -39,6 +39,12 @@ _HOP_BY_HOP = {
     "content-length", "accept-encoding",
 }
 
+# Identity/trace headers we (re)stamp from the validated JWT — a client must never
+# supply these (inbound names are lowercased, so a forged ``x-forwarded-role``
+# would survive next to our ``X-Forwarded-Role`` and let a viewer impersonate
+# admin on data-keeper). Strip them on the way in. Mirror of factors_proxy.
+_STRIP_FORWARDED = {"x-forwarded-user", "x-forwarded-role", "x-trace-id"}
+
 
 def _keeper_base() -> str:
     return get_settings().keeper_base.rstrip("/")
@@ -47,7 +53,7 @@ def _keeper_base() -> str:
 def _filter_request_headers(req: Request, user) -> dict[str, str]:
     headers: dict[str, str] = {}
     for k, v in req.headers.items():
-        if k.lower() in _HOP_BY_HOP:
+        if k.lower() in _HOP_BY_HOP or k.lower() in _STRIP_FORWARDED:
             continue
         headers[k] = v
     if user is not None:

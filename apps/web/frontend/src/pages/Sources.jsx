@@ -308,7 +308,7 @@ function SourceCard({ s, onDetail, onEdit }) {
           fontFamily: 'var(--font-mono)', fontSize: 16, fontWeight: 600,
           color: dimmed ? 'var(--fg-3)' : 'var(--fg)',
           flexShrink: 0,
-        }}>{s.source_id[0].toUpperCase()}</div>
+        }}>{(s.source_id?.[0] || '?').toUpperCase()}</div>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontFamily: 'var(--font-mono)', fontSize: 13, fontWeight: 500, color: 'var(--fg)', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
             {s.source_id}

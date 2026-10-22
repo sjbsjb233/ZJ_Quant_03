@@ -189,13 +189,16 @@ export default function MarketPage() {
   const breadthFoot = (() => { const d = breadthQ.data; if (!d?.dates?.length) return '—'; const i = d.dates.length - 1;
     return `${d.dates[i]} · 涨 ${fmtNum(d.advancers[i])} · 跌 ${fmtNum(d.decliners[i])} · 平 ${fmtNum(d.unchanged[i])} · 涨停 ${fmtNum(d.limit_up[i])} · 跌停 ${fmtNum(d.limit_down[i])}`; })();
   const membersFoot = (() => { const d = membersQ.data; if (!d?.dates?.length) return '—'; const i = d.dates.length - 1;
-    return `${d.dates[i]} · 沪深300=${d.series.hs300[i]} · 中证500=${d.series.zz500[i]} · 中证1000=${d.series.zz1000[i]} · 上证50=${d.series.sse50[i]}`; })();
+    // 任一指数序列可能缺失 (该池/区间无覆盖)，直接索引会 TypeError 整页崩 —— 与
+    // membersOpt 的 `d.series[k] || []` 防御一致。
+    const s = d.series || {};
+    return `${d.dates[i]} · 沪深300=${(s.hs300 || [])[i] ?? '—'} · 中证500=${(s.zz500 || [])[i] ?? '—'} · 中证1000=${(s.zz1000 || [])[i] ?? '—'} · 上证50=${(s.sse50 || [])[i] ?? '—'}`; })();
   const statusFoot = (() => { const d = statusQ.data; if (!d?.dates?.length) return '—'; const i = d.dates.length - 1; const t = d.total[i] || 1;
     return `${d.dates[i]} · 可交易 ${(d.tradable[i] / t * 100).toFixed(1)}% · 停牌 ${(d.suspended[i] / t * 100).toFixed(1)}% · ST ${(d.st[i] / t * 100).toFixed(1)}%`; })();
   const mvFoot = (() => { const d = mvQ.data; if (!d) return '—';
     return `中位数 ${fmtCap(d.p50)} · P10 ${fmtCap(d.p10)} · P90 ${fmtCap(d.p90)}`; })();
-  const compFoot = (() => { const d = compQ.data; if (!d?.tree?.length) return '—'; const top = d.tree[0];
-    return `点击外圈下钻 · ${top.exchange_label} ${top.board_label} ${fmtNum(top.count)} 只 (${(top.count / d.total * 100).toFixed(1)}%)`; })();
+  const compFoot = (() => { const d = compQ.data; if (!d?.tree?.length) return '—'; const top = d.tree[0]; const t = d.total || 1;
+    return `点击外圈下钻 · ${top.exchange_label} ${top.board_label} ${fmtNum(top.count)} 只 (${(top.count / t * 100).toFixed(1)}%)`; })();
   const ipoFoot = (() => { const d = ipoQ.data; if (!d?.periods?.length) return '—'; const i = d.periods.length - 1; const last12 = d.counts.slice(-12).reduce((a, b) => a + b, 0);
     return `${d.periods[i]} · 新上市 ${d.counts[i]} 家 · 近 12 月累计 ${last12} 家`; })();
 

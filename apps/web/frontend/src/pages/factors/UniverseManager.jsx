@@ -200,7 +200,7 @@ function PoolPreview({ uid, date, onDate, onClose }) {
             <span style={{ color: 'var(--fg-mute)' }}>=</span>
             <span style={{ color: 'var(--ok)' }}>{q.data.tradable} 只可评估</span>
             <span style={{ color: 'var(--fg-mute)' }}>│</span>
-            <span>覆盖率 <span style={{ color: 'var(--fg)' }}>{(q.data.coverage * 100).toFixed(1)}%</span></span>
+            <span>覆盖率 <span style={{ color: 'var(--fg)' }}>{q.data.coverage == null ? '—' : (q.data.coverage * 100).toFixed(1) + '%'}</span></span>
           </div>
           {q.data.sample?.length ? (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', padding: '8px 12px', gap: 1, fontFamily: 'var(--font-mono)', fontSize: 10.5 }}>

@@ -6,7 +6,7 @@
 //        只有 filters/collapse/include_degraded 变化时才回后端 refetch.
 import React from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { useQuery, useMutation } from '@tanstack/react-query';
+import { useQuery, useMutation, keepPreviousData } from '@tanstack/react-query';
 import { endpoints } from '../../../lib/api';
 import { TerminalShell } from '../../../components/shell';
 import { ErrorState, Loading } from '../../../components/ui';
@@ -245,7 +245,7 @@ function Workbench({ basketId, sid, onExit, onSwitchSnapshot }) {
       page: 1,
       page_size: 200,
     }),
-    keepPreviousData: true,
+    placeholderData: keepPreviousData,
   });
 
   const grid = gridQ.data;

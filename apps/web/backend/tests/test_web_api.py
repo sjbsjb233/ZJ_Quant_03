@@ -1283,3 +1283,85 @@ def test_wp5_d16_admission_detector(client, admin):
     drain = active[("D16.admission_stuck", "data", "draining")]
     assert stuck["severity"] == "warn" and drain["severity"] == "error"
     assert stuck["detail"]["deferred_min"] == 10  # 阈值随 settings 渲染进 detail
+
+
+# ── bug-scan regression tests (2026-06 全量缺陷扫描) ──────────────────────────
+def test_safe_serializers_downgrade_non_finite_to_null():
+    """sources/diff + explorer 返回值里的 NaN/±Inf 必须降级为 null,否则默认 JSON
+    编码器写裸 NaN/Infinity → 前端 .json() 整段解析失败。"""
+    import datetime as _dt
+    from quant_web.data.charts.explorer import _safe as safe_explorer
+    from quant_web.data.sources import _safe as safe_sources
+
+    for safe in (safe_sources, safe_explorer):
+        assert safe(float("nan")) is None
+        assert safe(float("inf")) is None
+        assert safe(float("-inf")) is None
+        assert safe(1.5) == 1.5
+        assert safe(_dt.date(2025, 1, 1)) == "2025-01-01"
+        assert safe("ok") == "ok"
+
+
+def test_proxy_strips_client_supplied_forwarded_identity():
+    """客户端伪造的 x-forwarded-role/-user/-trace-id 绝不能透传给下游 (下游默认信任),
+    只有从已验证 JWT 盖的那一份能上线。"""
+    import types
+
+    from starlette.datastructures import Headers
+
+    from quant_web.factors_proxy import _filter_request_headers as f_filter
+    from quant_web.keeper_proxy import _filter_request_headers as k_filter
+
+    req = types.SimpleNamespace(headers=Headers({
+        "Authorization": "Bearer real",
+        "X-Forwarded-Role": "admin",   # forged by a viewer-level client
+        "X-Forwarded-User": "root",
+        "X-Trace-Id": "forged",
+    }))
+    user = types.SimpleNamespace(username="bob", role="viewer")
+    for filt in (f_filter, k_filter):
+        h = filt(req, user)
+        assert h["X-Forwarded-Role"] == "viewer"   # validated identity wins
+        assert h["X-Forwarded-User"] == "bob"
+        # the client's lowercased forgeries must not survive alongside ours
+        assert "x-forwarded-role" not in h
+        assert "x-forwarded-user" not in h
+        assert "x-trace-id" not in h
+        assert h.get("authorization") == "Bearer real"  # legit header preserved
+
+
+def test_audit_query_normalizes_tz_aware_cutoff():
+    """occurred_at 以 naive-UTC 落库; 带 offset 的查询边界必须先折成 naive-UTC,
+    否则边界比较错位/抛 TypeError。"""
+    import datetime as _dt
+
+    from quant_web.audit.log import _naive_utc, count_audit
+    from quant_web.db.base import SessionLocal
+    from quant_web.db.models import AuditLog
+
+    tz8 = _dt.timezone(_dt.timedelta(hours=8))
+    assert _naive_utc(_dt.datetime(2026, 1, 1, 8, 0, tzinfo=tz8)) == _dt.datetime(2026, 1, 1, 0, 0)
+    assert _naive_utc(None) is None
+    assert _naive_utc(_dt.datetime(2026, 1, 1)) == _dt.datetime(2026, 1, 1)
+
+    with SessionLocal() as db:
+        db.add(AuditLog(actor="t", action="bugscan.unit", occurred_at=_dt.datetime(2026, 1, 1, 6, 0)))
+        db.commit()
+        # 13:00+08:00 == 05:00Z <= 06:00Z 行 → 命中 1 行 (未修复时按字符串错位 → 0)。
+        start = _dt.datetime(2026, 1, 1, 13, 0, tzinfo=tz8)
+        assert count_audit(db, action="bugscan.unit", start=start) == 1
+
+
+def test_signal_state_evicts_stale_containers():
+    """容器名不是稳定身份; 只增不删会让进程内存单调增长 (2026-06-01 崩溃循环那类)。"""
+    import datetime as _dt
+
+    from quant_web.monitor import store as st
+
+    s = st.SignalState()
+    s.ingest({"containers": [{"name": "old", "restart_count": 0}]})
+    s.containers["old"]["_seen_at"] = st._utcnow() - _dt.timedelta(seconds=st._CONTAINER_TTL_SEC + 60)
+    s.ingest({"containers": [{"name": "new", "restart_count": 0}]})
+    assert "new" in s.containers
+    assert "old" not in s.containers       # evicted past TTL
+    assert "old" not in s._restart_hist    # restart history cleaned up too

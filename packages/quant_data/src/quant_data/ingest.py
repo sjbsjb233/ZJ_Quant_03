@@ -117,7 +117,12 @@ def ingest(
     records = list(records)
 
     if dedup and parameters is not None:
-        existing = batches.find_by_parameters(target_table, parameters, root=root)
+        # 只对「已成功落库」的批次去重。若把 'running' 也算进来, 一个崩溃后卡在
+        # running 的孤儿批 (register 成功但 finalize 前死掉, 正是 stale_running 要
+        # 回收的对象) 会让同参数的重新摄取被静默跳过, 报告 success 却没有任何数据。
+        existing = batches.find_by_parameters(
+            target_table, parameters, statuses=("success",), root=root
+        )
         if existing:
             return IngestResult(existing[0]["batch_id"], target_table, 0, skipped=True)
 

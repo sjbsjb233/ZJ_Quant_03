@@ -1,7 +1,7 @@
 // 批次台账 – list of all data ingestion batches
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, keepPreviousData } from '@tanstack/react-query';
 import { TerminalShell, KpiStrip, FilterBar, FInput, FSelect } from '../components/shell';
 import { CopyableId, StatusGlyph, Loading, ErrorState, Modal } from '../components/ui';
 import { useAuth } from '../lib/auth';
@@ -89,7 +89,7 @@ export default function Batches() {
   const batchesQ = useQuery({
     queryKey: ['batches', filters],
     queryFn: () => endpoints.batches(filters),
-    keepPreviousData: true,
+    placeholderData: keepPreviousData,
   });
 
   const statsQ = useQuery({

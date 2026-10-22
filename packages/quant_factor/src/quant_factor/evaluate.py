@@ -652,7 +652,6 @@ class FactorEvaluator:
             long_mean = float(np.mean(top_ret["ret"].to_numpy()))
             short_mean = float(np.mean(bot_ret["ret"].to_numpy()))
 
-        ann_periods = _ann_periods("D")  # ls already per-rebalance-day; coarse scale
         # Use len(merged) periods.
         ls_mean = float(np.mean(ls)) if ls.size else 0.0
         ls_std = float(np.std(ls, ddof=1)) if ls.size > 1 else 0.0
@@ -708,13 +707,23 @@ class FactorEvaluator:
             if day not in date_set or sub.height < quantiles * 2:
                 continue
             v = sub["value"].to_numpy().astype(float)
+            syms = sub["symbol"].to_numpy()
+            # NaN 因子值必须先剔除: np.argsort 把 NaN 排到末尾, direction>0 时
+            # idx=order[-k:] 会把这些「没有真实因子值」的标的当成 top 组, 污染换手率
+            # (IC/分层因 join 后 drop_nulls 而免疫, 唯独换手率直接吃 clean)。
+            # clean 在「不做中性化」分支不会 drop_nulls, 自定义因子可能产出 NaN。
+            finite = np.isfinite(v)
+            v = v[finite]
+            syms = syms[finite]
+            if v.size < quantiles * 2:
+                continue
             order = np.argsort(v)
             # top group = highest factor values if direction +1, else lowest.
             if direction < 0:
-                idx = order[: max(1, sub.height // quantiles)]
+                idx = order[: max(1, v.size // quantiles)]
             else:
-                idx = order[-max(1, sub.height // quantiles) :]
-            top_syms = set(sub["symbol"].to_numpy()[idx].tolist())
+                idx = order[-max(1, v.size // quantiles) :]
+            top_syms = set(syms[idx].tolist())
             if prev:
                 changed = len(prev.symmetric_difference(top_syms))
                 tot = max(1, len(prev) + len(top_syms))

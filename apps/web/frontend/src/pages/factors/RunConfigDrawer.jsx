@@ -144,7 +144,13 @@ export default function RunConfigDrawer({ factorId, onClose, onSubmitted, initia
 
             <FormGroup n="3" title="收益与 IC">
               <Field label="前向收益周期" hint="多选">
-                <Chips opts={[1, 5, 10, 20]} sel={cfg.horizons} onChange={(arr) => setCfg({ ...cfg, horizons: arr.length ? arr : [5] })} />
+                <Chips opts={[1, 5, 10, 20]} sel={cfg.horizons} onChange={(arr) => {
+                  const hs = arr.length ? arr : [5];
+                  // 取消掉当前「主周期」对应的 chip 时,把 primary_horizon 收敛回仍存在的
+                  // 周期,否则会提交一个 primary_horizon 不在 horizons 里的不一致配置。
+                  const ph = hs.includes(cfg.primary_horizon) ? cfg.primary_horizon : hs[0];
+                  setCfg({ ...cfg, horizons: hs, primary_horizon: ph });
+                }} />
               </Field>
               <Field label="主周期">
                 <Radio v={cfg.primary_horizon} onChange={(v) => setCfg({ ...cfg, primary_horizon: Number(v) })}
