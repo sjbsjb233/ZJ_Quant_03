@@ -6,6 +6,7 @@ import React, { forwardRef, useEffect, useImperativeHandle, useMemo, useRef } fr
 import ReactECharts from 'echarts-for-react';
 import { dispose, init, registerIndicator, registerOverlay } from 'klinecharts';
 import { useTheme } from '../../lib/theme';
+import { t } from '../../lib/i18n';
 
 // Indicator name used to overlay extra close-price lines (multi-symbol compare /
 // multi-source diff). The lines are fed via the indicator's `extendData`, which
@@ -120,7 +121,7 @@ function registerCompareIndicator() {
   try {
     registerIndicator({
       name: COMPARE_INDICATOR,
-      shortName: '对比',
+      shortName: t('对比'),
       calcParams: [],
       figures: [
         { key: 's0', title: 'S1: ', type: 'line' },
@@ -150,11 +151,11 @@ function registerMktCapIndicator() {
   try {
     registerIndicator({
       name: MKTCAP_INDICATOR,
-      shortName: '市值(亿)',
+      shortName: t('市值(亿)'),
       precision: 0,
       figures: [
-        { key: 'circ', title: '流通: ', type: 'line' },
-        { key: 'total', title: '总: ', type: 'line' },
+        { key: 'circ', title: t('流通: '), type: 'line' },
+        { key: 'total', title: t('总: '), type: 'line' },
       ],
       // The candle payload carries total_mv / circ_mv per bar (§6.1), so the
       // indicator reads them straight off the data list (in 亿) -- no extendData

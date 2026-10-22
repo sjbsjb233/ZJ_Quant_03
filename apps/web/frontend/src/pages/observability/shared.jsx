@@ -1,14 +1,15 @@
 // 可观测 · 共享词汇 + 原子 (port of the Claude Design handoff pages-observ-shared,
 // 可观测层重构方案 §7). One unified marker set reused across the 8 tabs + Trace.
 import React from 'react';
+import { t } from '../../lib/i18n';
 
 // ── §1.1 · five layers (identity colours, kept distinct from status colours) ──
 export const OBS_LAYERS = {
-  frontend: { code: '前', en: 'frontend', label: '前端', c: 'oklch(0.58 0.11 250)' },
-  backend: { code: '后', en: 'backend', label: '后端', c: 'oklch(0.55 0.05 230)' },
-  data: { code: '数', en: 'data', label: '数据', c: 'oklch(0.52 0.08 65)' },
-  factor: { code: '因', en: 'factor', label: '因子', c: 'oklch(0.53 0.12 300)' },
-  monitor: { code: '监', en: 'monitor', label: '监控', c: 'oklch(0.56 0.09 195)' },
+  frontend: { code: t('前'), en: 'frontend', label: t('前端'), c: 'oklch(0.58 0.11 250)' },
+  backend: { code: t('后'), en: 'backend', label: t('后端'), c: 'oklch(0.55 0.05 230)' },
+  data: { code: t('数'), en: 'data', label: t('数据'), c: 'oklch(0.52 0.08 65)' },
+  factor: { code: t('因'), en: 'factor', label: t('因子'), c: 'oklch(0.53 0.12 300)' },
+  monitor: { code: t('监'), en: 'monitor', label: t('监控'), c: 'oklch(0.56 0.09 195)' },
 };
 
 export function ObsLayerMark({ layer, full, size = 15 }) {
@@ -29,9 +30,9 @@ export function ObsLayerMark({ layer, full, size = 15 }) {
 
 // ── §1.3 · layer health · 正常 / 降级 / 故障 ─────────────────────────────────
 export const OBS_HEALTH = {
-  ok: { tone: 'ok', word: '正常', g: '●', col: 'var(--ok)' },
-  degraded: { tone: 'warn', word: '降级', g: '◐', col: 'var(--warn)' },
-  down: { tone: 'err', word: '故障', g: '✕', col: 'var(--err)' },
+  ok: { tone: 'ok', word: t('正常'), g: '●', col: 'var(--ok)' },
+  degraded: { tone: 'warn', word: t('降级'), g: '◐', col: 'var(--warn)' },
+  down: { tone: 'err', word: t('故障'), g: '✕', col: 'var(--err)' },
 };
 
 export function ObsHealthChip({ state = 'ok', mini }) {
@@ -57,9 +58,9 @@ export function ObsHealthDot({ state = 'ok', label, pulse }) {
 
 // ── §1.4 · alert lifecycle · 触发中 / 已确认 / 已解决 ─────────────────────────
 export const OBS_ALERT = {
-  firing: { tone: 'err', word: '触发中', g: '▲' },
-  acked: { tone: 'warn', word: '已确认', g: '◑' },
-  resolved: { tone: 'neutral', word: '已解决', g: '✓' },
+  firing: { tone: 'err', word: t('触发中'), g: '▲' },
+  acked: { tone: 'warn', word: t('已确认'), g: '◑' },
+  resolved: { tone: 'neutral', word: t('已解决'), g: '✓' },
 };
 
 export function ObsAlertChip({ state = 'firing', mini }) {
@@ -97,12 +98,12 @@ export function ObsSev({ sev, mini }) {
 
 // ── §1.5 · job / task status ─────────────────────────────────────────────────
 export const OBS_JOB = {
-  pending: { tone: 'neutral', word: '排队', g: '◷' },
-  running: { tone: 'info', word: '运行中', g: '◌', pulse: true },
-  success: { tone: 'ok', word: '成功', g: '✓' },
-  failed: { tone: 'err', word: '失败', g: '✕' },
-  timeout: { tone: 'err', word: '超时', g: '⧖' },
-  cancelled: { tone: 'neutral', word: '已取消', g: '⊘' },
+  pending: { tone: 'neutral', word: t('排队'), g: '◷' },
+  running: { tone: 'info', word: t('运行中'), g: '◌', pulse: true },
+  success: { tone: 'ok', word: t('成功'), g: '✓' },
+  failed: { tone: 'err', word: t('失败'), g: '✕' },
+  timeout: { tone: 'err', word: t('超时'), g: '⧖' },
+  cancelled: { tone: 'neutral', word: t('已取消'), g: '⊘' },
 };
 
 export function ObsJobChip({ state = 'success', mini }) {
@@ -181,12 +182,12 @@ export function agoFrom(ts) {
   if (!ts) return '—';
   const s = String(ts).endsWith('Z') || String(ts).includes('+') ? ts : `${ts}Z`;
   const ms = Date.now() - (Date.parse(s) || Date.now());
-  if (ms < 0) return '刚刚';
+  if (ms < 0) return t('刚刚');
   const sec = Math.floor(ms / 1000);
-  if (sec < 60) return `${sec}s 前`;
-  if (sec < 3600) return `${Math.floor(sec / 60)}m 前`;
-  if (sec < 86400) return `${Math.floor(sec / 3600)}h 前`;
-  return `${Math.floor(sec / 86400)}d 前`;
+  if (sec < 60) return t('{n}s 前', { n: sec });
+  if (sec < 3600) return t('{n}m 前', { n: Math.floor(sec / 60) });
+  if (sec < 86400) return t('{n}h 前', { n: Math.floor(sec / 3600) });
+  return t('{n}d 前', { n: Math.floor(sec / 86400) });
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -204,9 +205,9 @@ export function toneColor(t) {
 
 // ── §1·三类资源 (新) · 磁盘 / CPU / 崩溃转储 — 横切资源, 不是「第六个层」 ────────
 export const OBS_RES = {
-  disk: { label: '磁盘', en: 'disk' },
+  disk: { label: t('磁盘'), en: 'disk' },
   cpu: { label: 'CPU', en: 'cpu' },
-  dump: { label: '崩溃转储', en: 'core-dump' },
+  dump: { label: t('崩溃转储'), en: 'core-dump' },
 };
 export function ResGlyph({ res, size = 13 }) {
   const p = { width: size, height: size, viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor', strokeWidth: 1.4, strokeLinecap: 'round', strokeLinejoin: 'round' };
@@ -251,7 +252,7 @@ export function ObsMeter({ pct = 0, warnAt = 75, dangerAt = 90, label, sub, moun
 export function ObsDetector({ kind = 'internal', mini }) {
   const ext = kind === 'external' || kind === 'sentinel';
   return (
-    <span title={ext ? '外层监控 · 哨兵 (obs-sentinel) 经 docker.sock + statvfs 直采' : '内部监控 · 后端评估器 · 日志派生'} style={{
+    <span title={ext ? t('外层监控 · 哨兵 (obs-sentinel) 经 docker.sock + statvfs 直采') : t('内部监控 · 后端评估器 · 日志派生')} style={{
       display: 'inline-flex', alignItems: 'center', gap: 3,
       padding: mini ? '0 4px' : '0 6px', height: mini ? 14 : 16, borderRadius: 3,
       fontFamily: 'var(--font-mono)', fontSize: mini ? 9 : 9.5, fontWeight: 500, whiteSpace: 'nowrap',
@@ -260,21 +261,23 @@ export function ObsDetector({ kind = 'internal', mini }) {
       color: ext ? 'var(--info)' : 'var(--fg-3)',
     }}>
       <span style={{ fontSize: mini ? 8 : 9, opacity: 0.85 }}>{ext ? '⊚' : '·'}</span>
-      {ext ? '外层' : '内部'}{!mini && '监控'}
+      {ext ? t('外层') : t('内部')}{!mini && t('监控')}
     </span>
   );
 }
 
 // ── §3.1·实时状态指示 (新) · 实时 / 延迟 / 中断 ──────────────────────────────
 export const OBS_RT = {
-  live: { c: 'var(--ok)', txt: '实时', en: 'LIVE', pulse: true },
-  delayed: { c: 'var(--warn)', txt: '延迟', en: '', pulse: false },
-  stale: { c: 'var(--err)', txt: '中断', en: 'STALE', pulse: false },
+  live: { c: 'var(--ok)', txt: t('实时'), en: 'LIVE', pulse: true },
+  delayed: { c: 'var(--warn)', txt: t('延迟'), en: '', pulse: false },
+  stale: { c: 'var(--err)', txt: t('中断'), en: 'STALE', pulse: false },
 };
 export function ObsRealtime({ state = 'live', detail, mini }) {
   const m = OBS_RT[state] || OBS_RT.live;
+  // the English label already reads "Live", so skip the duplicate tag
+  const sub = detail || (m.en && m.en.toLowerCase() !== m.txt.toLowerCase() ? m.en : '');
   return (
-    <span title={`实时状态 · ${m.txt}`} style={{
+    <span title={t('实时状态 · {s}', { s: m.txt })} style={{
       display: 'inline-flex', alignItems: 'center', gap: 5,
       padding: mini ? '1px 7px' : '2px 9px', borderRadius: 11, lineHeight: '15px',
       border: `1px solid ${state === 'live' ? 'var(--border)' : m.c}`,
@@ -288,7 +291,7 @@ export function ObsRealtime({ state = 'live', detail, mini }) {
         animation: m.pulse ? 'pulse 1.6s ease-in-out infinite' : 'none',
       }} />
       <span>{m.txt}</span>
-      {(detail || m.en) && <span style={{ color: state === 'live' ? 'var(--fg-4)' : m.c, fontWeight: 400, fontSize: mini ? 9 : 9.5, letterSpacing: '0.04em' }}>{detail || m.en}</span>}
+      {sub && <span style={{ color: state === 'live' ? 'var(--fg-4)' : m.c, fontWeight: 400, fontSize: mini ? 9 : 9.5, letterSpacing: '0.04em' }}>{sub}</span>}
     </span>
   );
 }
@@ -296,8 +299,8 @@ export function ObsRealtime({ state = 'live', detail, mini }) {
 // ── §3.2·「核心服务不可达」降级横幅 (新) ─────────────────────────────────────
 export function ObsDegradeBanner({ scope = 'overview' }) {
   const note = scope === 'topology'
-    ? '以下为各节点实时存活态(简版地图)· 容器明细 / 历史告警暂不可用'
-    : '以下为各层实时存活与资源状态 · 告警历史 / 日志 / 任务暂不可用';
+    ? t('以下为各节点实时存活态(简版地图)· 容器明细 / 历史告警暂不可用')
+    : t('以下为各层实时存活与资源状态 · 告警历史 / 日志 / 任务暂不可用');
   return (
     <div style={{
       display: 'flex', alignItems: 'center', gap: 12, padding: '9px 16px',
@@ -310,11 +313,11 @@ export function ObsDegradeBanner({ scope = 'overview' }) {
         display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 700,
         animation: 'pulse 1.6s ease-in-out infinite',
       }}>✕</span>
-      <span style={{ color: 'var(--err)', fontWeight: 600 }}>后端不可达</span>
+      <span style={{ color: 'var(--err)', fontWeight: 600 }}>{t('后端不可达')}</span>
       <span style={{ color: 'var(--fg-mute)' }}>│</span>
       <span style={{ color: 'var(--fg-2)' }}>{note}</span>
       <span style={{ flex: 1 }} />
-      <ObsRealtime state="delayed" detail="后端故障" mini />
+      <ObsRealtime state="delayed" detail={t('后端故障')} mini />
     </div>
   );
 }
@@ -336,14 +339,14 @@ export function ObsEmptyState({ kind = 'offline', title, sub, hint, onGoOverview
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         fontSize: 26, color: col,
       }}>{offline ? '✕' : '∅'}</div>
-      <div style={{ fontSize: 15, color: 'var(--fg)', fontWeight: 600 }}>{title || (offline ? '后端不可达 · 本页内容暂不可用' : '当前无数据')}</div>
+      <div style={{ fontSize: 15, color: 'var(--fg)', fontWeight: 600 }}>{title || (offline ? t('后端不可达 · 本页内容暂不可用') : t('当前无数据'))}</div>
       <div style={{ fontSize: 11.5, color: 'var(--fg-3)', maxWidth: 380, lineHeight: 1.6 }}>
-        {sub || (offline ? '本页内容依赖后端历史数据。后端恢复后将自动加载。' : '没有匹配当前筛选条件的记录。')}
+        {sub || (offline ? t('本页内容依赖后端历史数据。后端恢复后将自动加载。') : t('没有匹配当前筛选条件的记录。'))}
       </div>
       {offline && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 2 }}>
-          <span style={{ fontSize: 11, color: 'var(--fg-2)' }}>{hint || '系统实时状态请见'}</span>
-          <button className="btn sm" style={{ height: 24 }} onClick={onGoOverview}>进入「总览」→</button>
+          <span style={{ fontSize: 11, color: 'var(--fg-2)' }}>{hint || t('系统实时状态请见')}</span>
+          <button className="btn sm" style={{ height: 24 }} onClick={onGoOverview}>{t('进入「总览」→')}</button>
         </div>
       )}
     </div>

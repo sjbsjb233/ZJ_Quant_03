@@ -5,6 +5,7 @@
 // The fake-SVG charts from the prototype are intentionally NOT ported — the real
 // pages feed live data into <EChart> instead.
 import React from 'react';
+import { locale, t } from '../../lib/i18n';
 
 // red 涨 / green 跌 (China convention), matching the design palette.
 export const VIZ_SERIES = [
@@ -21,6 +22,13 @@ export const VIZ_DOWN = 'oklch(0.6 0.13 145)';  // 跌 = 绿
 export function fmtCap(v) {
   if (v == null || Number.isNaN(v)) return '—';
   const a = Math.abs(v);
+  if (locale === 'en') {
+    if (a >= 1e12) return `¥${(v / 1e12).toFixed(2)}T`;
+    if (a >= 1e9) return `¥${(v / 1e9).toFixed(v / 1e9 >= 100 ? 0 : 1)}B`;
+    if (a >= 1e6) return `¥${(v / 1e6).toFixed(0)}M`;
+    if (a >= 1e3) return `¥${(v / 1e3).toFixed(0)}K`;
+    return `¥${Number(v).toFixed(0)}`;
+  }
   if (a >= 1e12) return `¥${(v / 1e12).toFixed(2)}万亿`;
   if (a >= 1e8) return `¥${(v / 1e8).toFixed(v / 1e8 >= 100 ? 0 : 1)}亿`;
   if (a >= 1e4) return `¥${(v / 1e4).toFixed(0)}万`;
@@ -38,7 +46,7 @@ export function fmtPct(v, digits = 1) {
 }
 
 // ── Data-coverage corner badge (§8.4: never silently画图覆盖不足) ───────────────
-export function CoverageBadge({ covered = 0, total = 0, unit = '只', onViewMissing, testId = 'coverage-badge' }) {
+export function CoverageBadge({ covered = 0, total = 0, unit = t('只'), onViewMissing, testId = 'coverage-badge' }) {
   const partial = covered < total;
   const pct = total > 0 ? (covered / total) * 100 : 100;
   return (
@@ -52,14 +60,14 @@ export function CoverageBadge({ covered = 0, total = 0, unit = '只', onViewMiss
       cursor: partial && onViewMissing ? 'pointer' : 'default',
     }} onClick={partial && onViewMissing ? onViewMissing : undefined}>
       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-        {partial ? <span>⚠ 覆盖不足</span> : <span style={{ color: 'var(--ok)' }}>● 覆盖完整</span>}
+        {partial ? <span>{t('⚠ 覆盖不足')}</span> : <span style={{ color: 'var(--ok)' }}>{t('● 覆盖完整')}</span>}
         <span style={{ color: partial ? 'var(--warn)' : 'var(--fg-2)' }}>
           {covered.toLocaleString()}
           <span style={{ color: 'var(--fg-mute)' }}> / {total.toLocaleString()} {unit}</span>
         </span>
         <span style={{ color: partial ? 'var(--warn)' : 'var(--fg-4)' }}>{pct.toFixed(pct < 99.95 ? 1 : 0)}%</span>
       </span>
-      {partial && onViewMissing && <span style={{ textDecoration: 'underline', textUnderlineOffset: 2 }}>查看缺失 ↗</span>}
+      {partial && onViewMissing && <span style={{ textDecoration: 'underline', textUnderlineOffset: 2 }}>{t('查看缺失 ↗')}</span>}
     </span>
   );
 }
@@ -71,7 +79,7 @@ export function SnapshotTag({ date }) {
       fontFamily: 'var(--font-mono)', fontSize: 9.5, padding: '1px 7px', borderRadius: 3,
       background: 'var(--info-bg)', color: 'var(--info)', border: '1px solid var(--info)',
     }}>
-      <span>◷ 快照</span><span style={{ color: 'var(--fg)' }}>{date || '—'}</span>
+      <span>{t('◷ 快照')}</span><span style={{ color: 'var(--fg)' }}>{date || '—'}</span>
     </span>
   );
 }
@@ -81,7 +89,7 @@ export function TimeseriesTag() {
     <span style={{
       fontFamily: 'var(--font-mono)', fontSize: 9.5, padding: '1px 7px', borderRadius: 3,
       background: 'var(--surface-2)', color: 'var(--fg-3)', border: '1px solid var(--border)',
-    }}>↔ 时序</span>
+    }}>{t('↔ 时序')}</span>
   );
 }
 
@@ -102,10 +110,10 @@ function Skeleton() {
 
 export function PanelState({ kind, title, hint, actionLabel, onAction, testId }) {
   const cfg = {
-    idle: { icon: '◌', color: 'var(--fg-4)', t: title || '未选择', h: hint || '先在上方选择条件以加载图表' },
-    loading: { icon: '◴', color: 'var(--info)', t: title || '加载中', h: hint || '正在取数…' },
-    empty: { icon: '∅', color: 'var(--fg-3)', t: title || '空数据', h: hint || '该条件下无数据' },
-    error: { icon: '⚠', color: 'var(--err)', t: title || '取数失败', h: hint || '后端返回错误,请重试' },
+    idle: { icon: '◌', color: 'var(--fg-4)', t: title || t('未选择'), h: hint || t('先在上方选择条件以加载图表') },
+    loading: { icon: '◴', color: 'var(--info)', t: title || t('加载中'), h: hint || t('正在取数…') },
+    empty: { icon: '∅', color: 'var(--fg-3)', t: title || t('空数据'), h: hint || t('该条件下无数据') },
+    error: { icon: '⚠', color: 'var(--err)', t: title || t('取数失败'), h: hint || t('后端返回错误,请重试') },
   }[kind] || {};
   return (
     <div data-testid={testId || `panel-state-${kind}`} data-kind={kind} style={{
@@ -121,7 +129,7 @@ export function PanelState({ kind, title, hint, actionLabel, onAction, testId })
       {(actionLabel || kind === 'error') && (
         <button className="btn ghost sm" onClick={onAction}
           style={{ marginTop: 4, fontSize: 10.5, borderColor: 'var(--border-strong)' }}>
-          {actionLabel || '↻ 重试'}
+          {actionLabel || t('↻ 重试')}
         </button>
       )}
     </div>
@@ -233,6 +241,6 @@ export function panelStateProps(query, opts = {}) {
   if (kind === 'idle') return { kind: 'idle', title: opts.idleTitle, hint: opts.idleHint };
   if (kind === 'loading') return { kind: 'loading' };
   const e = query?.error?.apiError;
-  if (e?.code === 'DATA_UNAVAILABLE') return { kind: 'empty', title: '数据未入库', hint: e.message };
+  if (e?.code === 'DATA_UNAVAILABLE') return { kind: 'empty', title: t('数据未入库'), hint: e.message };
   return { kind: 'error', hint: e?.message };
 }

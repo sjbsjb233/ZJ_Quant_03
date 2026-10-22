@@ -5,6 +5,7 @@ import { useQuery } from '@tanstack/react-query';
 import { TerminalShell, TPanel } from '../components/shell';
 import { DataTable, Empty, ErrorState, Loading, StatusGlyph } from '../components/ui';
 import { endpoints } from '../lib/api';
+import { t } from '../lib/i18n';
 import { fmtBytes, fmtCompact, fmtPct, freshnessMeta, relTime, statusMeta, toneColor } from '../lib/format';
 
 export default function Dashboard() {
@@ -14,11 +15,11 @@ export default function Dashboard() {
   const quality = useQuery({ queryKey: ['quality-by-table'], queryFn: endpoints.qualityByTable });
 
   const fkeys = [
-    { k: 'F1', l: '台账', onClick: () => nav('/data/batches') },
-    { k: 'F2', l: '表浏览', onClick: () => nav('/data/tables') },
-    { k: 'F3', l: '字段', onClick: () => nav('/data/fields') },
-    { k: 'F4', l: '质量', onClick: () => nav('/data/quality') },
-    { k: 'F5', l: '维护', onClick: () => nav('/data/maintenance') },
+    { k: 'F1', l: t('台账'), onClick: () => nav('/data/batches') },
+    { k: 'F2', l: t('表浏览'), onClick: () => nav('/data/tables') },
+    { k: 'F3', l: t('字段'), onClick: () => nav('/data/fields') },
+    { k: 'F4', l: t('质量'), onClick: () => nav('/data/quality') },
+    { k: 'F5', l: t('维护'), onClick: () => nav('/data/maintenance') },
   ];
 
   const d = summary.data;
@@ -104,9 +105,9 @@ function Hotspots({ items, nav }) {
             <span className={`chip ${h.type === 'vacuumable' ? 'info' : 'warn'}`} style={{ fontSize: 9.5 }}>{h.type.replace('_', '·').toUpperCase()}</span>
             <span className="mono" style={{ color: 'var(--fg)', fontWeight: 600 }}>{h.count}</span>
             <div style={{ flex: 1 }} />
-            <span style={{ color: 'var(--info)', fontSize: 10 }}>查看 →</span>
+            <span style={{ color: 'var(--info)', fontSize: 10 }}>{t('查看 →')}</span>
           </div>
-          <div style={{ fontSize: 10.5, color: 'var(--fg-3)', fontFamily: 'var(--font-mono)' }}>{h.detail}</div>
+          <div style={{ fontSize: 10.5, color: 'var(--fg-3)', fontFamily: 'var(--font-mono)' }}>{trServer(h.detail)}</div>
         </div>
       ))}
     </div>
@@ -125,8 +126,21 @@ function SourcesMini({ items, nav }) {
   return <DataTable columns={cols} rows={sorted} rowKey={(r) => r.source_id} onRowClick={(r) => nav(`/data/sources/${r.source_id}`)} height={26} />;
 }
 
+// Hotspot details / batch summaries are composed server-side in Chinese
+// (data/dashboard.py); translate the known shapes piece by piece.
+function trServer(s) {
+  if (!s) return s;
+  return s.split(' · ').map((p) => {
+    const rows = p.match(/^([\d,]+) 行$/);
+    if (rows) return t('{n} 行', { n: rows[1] });
+    const vac = p.match(/^(.+) 已过保留期$/);
+    if (vac) return t('{size} 已过保留期', { size: vac[1] });
+    return t(p);
+  }).join(' · ');
+}
+
 function Activity({ batches, onOpen }) {
-  if (!batches?.length) return <Empty label="暂无近期批次" />;
+  if (!batches?.length) return <Empty label={t('暂无近期批次')} />;
   return (
     <div>
       {batches.map((b) => {
@@ -137,7 +151,7 @@ function Activity({ batches, onOpen }) {
             <StatusGlyph status={b.status} />
             <div style={{ minWidth: 0 }}>
               <div><span style={{ fontWeight: 500, color: 'var(--fg)' }}>{b.target_table}</span><span style={{ color: 'var(--fg-3)' }}> ← {b.source}</span></div>
-              <div style={{ color: 'var(--fg-3)', fontSize: 10, marginTop: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{b.batch_id.slice(0, 18)}… · {b.summary}</div>
+              <div style={{ color: 'var(--fg-3)', fontSize: 10, marginTop: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{b.batch_id.slice(0, 18)}… · {trServer(b.summary)}</div>
             </div>
             <span style={{ color: 'var(--fg-3)', fontSize: 10 }}>{relTime(b.started_at)}</span>
           </div>

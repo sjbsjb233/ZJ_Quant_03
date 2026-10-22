@@ -2,6 +2,7 @@
 // Everything here drives the KLineChart instance through the ref the <Kline />
 // wrapper exposes — no chart logic is re-implemented.
 import React from 'react';
+import { t } from '../../lib/i18n';
 
 // Built-in indicator names KLineChart ships with (整改方案 v1.0 §1.1.1).
 export const MAIN_PANE_INDICATORS = ['MA', 'EMA', 'SMA', 'BBI', 'BOLL', 'SAR'];
@@ -15,18 +16,18 @@ export const SUB_PANE_INDICATORS = [
 // A curated subset of KLineChart's overlay catalogue — the 12 most useful for
 // price analysis (lines, channels, fibonacci, annotations/tags).
 const DRAW_TOOLS = [
-  { name: 'segment',                label: '线段',     icon: '╱' },
-  { name: 'straightLine',           label: '直线',     icon: '─' },
-  { name: 'rayLine',                label: '射线',     icon: '→' },
-  { name: 'horizontalStraightLine', label: '水平线',   icon: '═' },
-  { name: 'horizontalRayLine',      label: '水平射线', icon: '⇥' },
-  { name: 'verticalStraightLine',   label: '垂直线',   icon: '║' },
-  { name: 'priceLine',              label: '价格线',   icon: '$' },
-  { name: 'priceChannelLine',       label: '价格通道', icon: '∥' },
-  { name: 'parallelLine',           label: '平行线',   icon: '⫽' },
-  { name: 'fibonacciLine',          label: '斐波那契', icon: 'φ' },
-  { name: 'simpleAnnotation',       label: '注解',     icon: '✎' },
-  { name: 'simpleTag',              label: '标签',     icon: '⚑' },
+  { name: 'segment',                label: t('线段'),     icon: '╱' },
+  { name: 'straightLine',           label: t('直线'),     icon: '─' },
+  { name: 'rayLine',                label: t('射线'),     icon: '→' },
+  { name: 'horizontalStraightLine', label: t('水平线'),   icon: '═' },
+  { name: 'horizontalRayLine',      label: t('水平射线'), icon: '⇥' },
+  { name: 'verticalStraightLine',   label: t('垂直线'),   icon: '║' },
+  { name: 'priceLine',              label: t('价格线'),   icon: '$' },
+  { name: 'priceChannelLine',       label: t('价格通道'), icon: '∥' },
+  { name: 'parallelLine',           label: t('平行线'),   icon: '⫽' },
+  { name: 'fibonacciLine',          label: t('斐波那契'), icon: 'φ' },
+  { name: 'simpleAnnotation',       label: t('注解'),     icon: '✎' },
+  { name: 'simpleTag',              label: t('标签'),     icon: '⚑' },
 ];
 
 // Floating panel anchored to the left tool rail. `onClose` fires on backdrop click.
@@ -86,7 +87,7 @@ export function KlineIndicatorPanel({ pane, klineRef, active, onChange, onClose,
   };
   return (
     <Popover onClose={onClose} top={top} width={pane === 'main' ? 180 : 230}
-      title={pane === 'main' ? '主图指标' : '副图指标'}
+      title={pane === 'main' ? t('主图指标') : t('副图指标')}
       testId={`kline-indicator-panel-${pane}`}>
       <div style={{ display: 'grid', gridTemplateColumns: pane === 'main' ? '1fr 1fr' : '1fr 1fr', gap: '3px 8px', maxHeight: 260, overflow: 'auto' }}>
         {list.map((name) => (
@@ -106,7 +107,7 @@ export function KlineDrawPanel({ klineRef, onClose, top }) {
   const start = (name) => { klineRef.current?.createOverlay(name); onClose(); };
   const clearAll = () => { klineRef.current?.removeOverlay({}); };
   return (
-    <Popover onClose={onClose} top={top} width={200} title="绘图工具" testId="kline-draw-panel">
+    <Popover onClose={onClose} top={top} width={200} title={t('绘图工具')} testId="kline-draw-panel">
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4 }}>
         {DRAW_TOOLS.map((t) => (
           <button key={t.name} className="btn ghost sm" data-testid={`kline-draw-${t.name}`}
@@ -118,7 +119,7 @@ export function KlineDrawPanel({ klineRef, onClose, top }) {
       </div>
       <hr style={{ border: 'none', borderTop: '1px solid var(--border-faint)', margin: '8px 0' }} />
       <button className="btn ghost sm" style={{ width: '100%', fontSize: 10.5, color: 'var(--err)' }} onClick={clearAll}>
-        清空所有画线
+        {t('清空所有画线')}
       </button>
     </Popover>
   );
@@ -127,14 +128,14 @@ export function KlineDrawPanel({ klineRef, onClose, top }) {
 // Export menu — PNG screenshot / CSV data.
 export function KlineExportPanel({ onPng, onCsv, onClose, top }) {
   return (
-    <Popover onClose={onClose} top={top} width={160} title="导出" testId="kline-export-panel">
+    <Popover onClose={onClose} top={top} width={160} title={t('导出')} testId="kline-export-panel">
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
         <button className="btn ghost sm" data-testid="kline-export-png"
           style={{ fontSize: 11, justifyContent: 'flex-start' }}
-          onClick={() => { onPng(); onClose(); }}>🖼 PNG 截图</button>
+          onClick={() => { onPng(); onClose(); }}>{t('🖼 PNG 截图')}</button>
         <button className="btn ghost sm" data-testid="kline-export-csv"
           style={{ fontSize: 11, justifyContent: 'flex-start' }}
-          onClick={() => { onCsv(); onClose(); }}>⊞ CSV 数据</button>
+          onClick={() => { onCsv(); onClose(); }}>{t('⊞ CSV 数据')}</button>
       </div>
     </Popover>
   );

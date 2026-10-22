@@ -1,8 +1,9 @@
 // Symbol search dropdown shared by every chart (code + name fuzzy match).
 import React, { useEffect, useRef, useState } from 'react';
 import { endpoints } from '../../lib/api';
+import { t } from '../../lib/i18n';
 
-export function SymbolSearch({ value, onChange, width = 240, placeholder = '搜代码 / 名称…' }) {
+export function SymbolSearch({ value, onChange, width = 240, placeholder = t('搜代码 / 名称…') }) {
   const [q, setQ] = useState('');
   const [open, setOpen] = useState(false);
   const [items, setItems] = useState([]);
@@ -54,7 +55,7 @@ export function SymbolSearch({ value, onChange, width = 240, placeholder = '搜�
               <span style={{ color: 'var(--fg-4)', fontSize: 10 }}>{s.exchange}</span>
             </div>
           ))}
-          {items.length === 0 && <div style={{ padding: 12, color: 'var(--fg-3)', fontSize: 11, textAlign: 'center' }}>无匹配</div>}
+          {items.length === 0 && <div style={{ padding: 12, color: 'var(--fg-3)', fontSize: 11, textAlign: 'center' }}>{t('无匹配')}</div>}
         </div>
       )}
     </div>
@@ -66,7 +67,7 @@ export function SymbolSearch({ value, onChange, width = 240, placeholder = '搜�
 // the bars tables). Holds the selection as string[] internally; `value` /
 // `onChange` speak the comma-separated wire format the backend already accepts,
 // so no backend param changes are needed.
-export function SymbolMultiSelect({ value = '', onChange, width = 260, placeholder = '搜代码 / 名称…' }) {
+export function SymbolMultiSelect({ value = '', onChange, width = 260, placeholder = t('搜代码 / 名称…') }) {
   const selected = (value || '').split(',').map((s) => s.trim()).filter(Boolean);
   const [q, setQ] = useState('');
   const [open, setOpen] = useState(false);
@@ -135,7 +136,7 @@ export function SymbolMultiSelect({ value = '', onChange, width = 260, placehold
                 </div>
               );
             })}
-            {items.length === 0 && <div style={{ padding: 12, color: 'var(--fg-3)', fontSize: 11, textAlign: 'center' }}>无匹配</div>}
+            {items.length === 0 && <div style={{ padding: 12, color: 'var(--fg-3)', fontSize: 11, textAlign: 'center' }}>{t('无匹配')}</div>}
           </div>
         )}
       </div>

@@ -2,6 +2,7 @@
 // 双源合流: 哨兵 SSE 实时帧 (存活/基建真相) + 后端 (告警/日志历史)。新增基建资源面板
 // (磁盘/CPU/崩溃转储)、实时状态指示、后端不可达降级横幅 + 历史区空态。
 import React from 'react';
+import { t } from '../../lib/i18n';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { TerminalShell } from '../../components/shell';
@@ -18,9 +19,9 @@ import {
 } from './shared';
 
 const OVERALL = {
-  ok: { word: '系统正常', en: 'OK', g: '●', col: 'var(--ok)', bg: 'var(--ok-bg)' },
-  degraded: { word: '系统降级', en: 'DEGRADED', g: '◐', col: 'var(--warn)', bg: 'var(--warn-bg)' },
-  down: { word: '系统故障', en: 'DOWN', g: '✕', col: 'var(--err)', bg: 'var(--err-bg)' },
+  ok: { word: t('系统正常'), en: 'OK', g: '●', col: 'var(--ok)', bg: 'var(--ok-bg)' },
+  degraded: { word: t('系统降级'), en: 'DEGRADED', g: '◐', col: 'var(--warn)', bg: 'var(--warn-bg)' },
+  down: { word: t('系统故障'), en: 'DOWN', g: '✕', col: 'var(--err)', bg: 'var(--err-bg)' },
 };
 const DISK_WARN = 85; const DISK_CRIT = 95;   // 与后端/哨兵默认阈值一致 (D13)
 
@@ -52,16 +53,16 @@ export default function ObsOverview() {
       module="observ" current="overview"
       path={['observ/', 'overview']}
       fkeys={[
-        { k: 'F1', l: '告警', onClick: () => nav('/observ/alerts') },
-        { k: 'F2', l: '拓扑', onClick: () => nav('/observ/topology') },
-        { k: 'F3', l: '日志', onClick: () => nav('/observ/logs') },
-        { k: 'F4', l: '任务', onClick: () => nav('/observ/tasks') },
-        { k: 'F5', l: '刷新', onClick: () => { obs.refetch(); summary.refetch(); topo.refetch(); firing.refetch(); } },
+        { k: 'F1', l: t('告警'), onClick: () => nav('/observ/alerts') },
+        { k: 'F2', l: t('拓扑'), onClick: () => nav('/observ/topology') },
+        { k: 'F3', l: t('日志'), onClick: () => nav('/observ/logs') },
+        { k: 'F4', l: t('任务'), onClick: () => nav('/observ/tasks') },
+        { k: 'F5', l: t('刷新'), onClick: () => { obs.refetch(); summary.refetch(); topo.refetch(); firing.refetch(); } },
       ]}
-      title="总览"
-      subtitle={beDown ? '系统健康驾驶舱 · 后端不可达 · 实时存活仍在更新' : '系统健康驾驶舱 · 全局一眼 · 双源合流 (哨兵实时 + 后端裁决)'}
-      badge={<ObsRealtime state={source} detail={source === 'delayed' ? '后端轮询' : source === 'stale' ? '后端故障' : ''} />}
-      actions={<button className="btn ghost sm" onClick={() => { obs.refetch(); summary.refetch(); topo.refetch(); }}>↻ 刷新</button>}
+      title={t('总览')}
+      subtitle={beDown ? t('系统健康驾驶舱 · 后端不可达 · 实时存活仍在更新') : t('系统健康驾驶舱 · 全局一眼 · 双源合流 (哨兵实时 + 后端裁决)')}
+      badge={<ObsRealtime state={source} detail={source === 'delayed' ? t('后端轮询') : source === 'stale' ? t('后端故障') : ''} />}
+      actions={<button className="btn ghost sm" onClick={() => { obs.refetch(); summary.refetch(); topo.refetch(); }}>{t('↻ 刷新')}</button>}
       statusMiddle={<span>overall: <span style={{ color: overall.col }}>{overall.en}</span></span>}
     >
       <div className="scroll" style={{ flex: 1, minHeight: 0, overflow: 'auto', background: 'var(--bg)' }}>
@@ -75,7 +76,7 @@ export default function ObsOverview() {
             <div>
               <div style={{ fontFamily: 'var(--font-mono)', fontSize: 20, fontWeight: 600, color: overall.col, letterSpacing: '-0.01em' }}>{overall.word}</div>
               <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--fg-3)', marginTop: 1 }}>
-                {overall.en} · {counts.down} 层故障 · {counts.degraded} 层降级 · {counts.ok} 层正常{beDown ? ' · 实时存活由哨兵(外层)持续上报' : ''}
+                {overall.en} · {t('{n} 层故障', { n: counts.down })} · {t('{n} 层降级', { n: counts.degraded })} · {t('{n} 层正常', { n: counts.ok })}{beDown ? t(' · 实时存活由哨兵(外层)持续上报') : ''}
               </div>
             </div>
           </div>
@@ -83,47 +84,47 @@ export default function ObsOverview() {
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1 }}>
             {beDown ? (
               <>
-                <span className="chip err" style={{ fontSize: 12, height: 22, fontWeight: 600 }}>✕ 后端层不可达</span>
-                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5, color: 'var(--fg-2)' }}>历史类数据(告警/日志/任务)暂不可读 · 实时存活与基建见下</span>
+                <span className="chip err" style={{ fontSize: 12, height: 22, fontWeight: 600 }}>{t('✕ 后端层不可达')}</span>
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5, color: 'var(--fg-2)' }}>{t('历史类数据(告警/日志/任务)暂不可读 · 实时存活与基建见下')}</span>
               </>
             ) : obs.firing > 0 ? (
               <>
-                <span className="chip err" style={{ fontSize: 12, height: 22, fontWeight: 600 }}>⚠ 当前 {obs.firing} 条活跃告警</span>
-                {alerts[0] && <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5, color: 'var(--fg-2)' }}>主因 <span style={{ color: 'var(--fg)', fontWeight: 500 }}>{alerts[0].title}</span></span>}
+                <span className="chip err" style={{ fontSize: 12, height: 22, fontWeight: 600 }}>{t('⚠ 当前 {n} 条活跃告警', { n: obs.firing })}</span>
+                {alerts[0] && <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5, color: 'var(--fg-2)' }}>{t('主因')} <span style={{ color: 'var(--fg)', fontWeight: 500 }}>{alerts[0].title}</span></span>}
               </>
-            ) : <span className="chip ok" style={{ fontSize: 12, height: 22 }}>✓ 无活跃告警</span>}
+            ) : <span className="chip ok" style={{ fontSize: 12, height: 22 }}>{t('✓ 无活跃告警')}</span>}
           </div>
           {beDown ? <ObsDetector kind="external" />
-            : <button className="btn sm" style={{ background: overall.col, borderColor: overall.col, color: 'var(--surface)', fontWeight: 500 }} onClick={() => nav('/observ/alerts')}>查看全部告警 →</button>}
+            : <button className="btn sm" style={{ background: overall.col, borderColor: overall.col, color: 'var(--surface)', fontWeight: 500 }} onClick={() => nav('/observ/alerts')}>{t('查看全部告警 →')}</button>}
         </div>
 
         {/* ② five layer status cards — 新增「可达/不可达」行 */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', borderBottom: '1px solid var(--border-strong)' }}>
           <LayerCard layer="frontend" L={layers.frontend} metrics={[
-            ['24h 崩溃', layers.frontend?.health?.crash_24h ?? '—', layers.frontend?.health?.crash_24h ? 'warn' : null],
+            [t('24h 崩溃'), layers.frontend?.health?.crash_24h ?? '—', layers.frontend?.health?.crash_24h ? 'warn' : null],
           ]} />
           <LayerCard layer="backend" L={layers.backend} highlight metrics={[
-            ['运行时长', fmtUptime(layers.backend?.health?.uptime_s)],
-            ['近15m 错误', layers.backend?.health?.err_rate_15m ?? '—', layers.backend?.health?.err_rate_15m ? 'warn' : null],
+            [t('运行时长'), fmtUptime(layers.backend?.health?.uptime_s)],
+            [t('近15m 错误'), layers.backend?.health?.err_rate_15m ?? '—', layers.backend?.health?.err_rate_15m ? 'warn' : null],
             ['CPU', layers.backend?.cpu_pct != null ? `${layers.backend.cpu_pct}%` : '—', (layers.backend?.cpu_pct ?? 0) >= 90 ? 'err' : (layers.backend?.cpu_pct ?? 0) >= 70 ? 'warn' : null],
           ]} />
           <LayerCard layer="data" L={layers.data} highlight metrics={[
-            ['运行时长', fmtUptime(layers.data?.health?.uptime_s), layers.data?.state === 'error' ? 'err' : null],
-            ['重启次数', layers.data?.restart_count ?? '—', layers.data?.restart_count ? 'err' : null],
-            ['被强杀', layers.data?.oom_killed ? 'OOM' : '—', layers.data?.oom_killed ? 'err' : null],
-            ['上次成功', agoFrom(layers.data?.health?.last_job_success_at)],
+            [t('运行时长'), fmtUptime(layers.data?.health?.uptime_s), layers.data?.state === 'error' ? 'err' : null],
+            [t('重启次数'), layers.data?.restart_count ?? '—', layers.data?.restart_count ? 'err' : null],
+            [t('被强杀'), layers.data?.oom_killed ? 'OOM' : '—', layers.data?.oom_killed ? 'err' : null],
+            [t('上次成功'), agoFrom(layers.data?.health?.last_job_success_at)],
             ['CPU', layers.data?.cpu_pct != null ? `${layers.data.cpu_pct}%` : '—', (layers.data?.cpu_pct ?? 0) >= 90 ? 'err' : null],
-            ['内存', layers.data?.mem_pct != null ? `${layers.data.mem_pct}%` : '—', (layers.data?.mem_pct ?? 0) >= 85 ? 'err' : (layers.data?.mem_pct ?? 0) >= 70 ? 'warn' : null],
+            [t('内存'), layers.data?.mem_pct != null ? `${layers.data.mem_pct}%` : '—', (layers.data?.mem_pct ?? 0) >= 85 ? 'err' : (layers.data?.mem_pct ?? 0) >= 70 ? 'warn' : null],
           ]} />
           <LayerCard layer="factor" L={layers.factor} metrics={[
-            ['worker', layers.factor?.health?.worker === 'alive' ? '存活' : (layers.factor?.health?.worker || '—'), layers.factor?.health?.worker === 'alive' ? 'ok' : null],
+            ['worker', layers.factor?.health?.worker === 'alive' ? t('存活') : (layers.factor?.health?.worker || '—'), layers.factor?.health?.worker === 'alive' ? 'ok' : null],
             ['CPU', layers.factor?.cpu_pct != null ? `${layers.factor.cpu_pct}%` : '—', (layers.factor?.cpu_pct ?? 0) >= 90 ? 'err' : (layers.factor?.cpu_pct ?? 0) >= 70 ? 'warn' : null],
-            ['内存', layers.factor?.mem_pct != null ? `${layers.factor.mem_pct}%` : '—', (layers.factor?.mem_pct ?? 0) >= 85 ? 'err' : (layers.factor?.mem_pct ?? 0) >= 70 ? 'warn' : null],
+            [t('内存'), layers.factor?.mem_pct != null ? `${layers.factor.mem_pct}%` : '—', (layers.factor?.mem_pct ?? 0) >= 85 ? 'err' : (layers.factor?.mem_pct ?? 0) >= 70 ? 'warn' : null],
           ]} />
           <LayerCard layer="monitor" L={layers.monitor} last noReach metrics={[
-            ['哨兵', obs.sentinelOnline ? '在线' : '未上线', obs.sentinelOnline ? 'ok' : 'warn'],
-            ['实时', source === 'live' ? '哨兵 SSE' : source === 'delayed' ? '轮询回退' : '中断', source === 'live' ? 'ok' : source === 'delayed' ? 'warn' : 'err'],
-            ['评估器', layers.monitor?.health?.eval_last_run ? '在线' : '—', layers.monitor?.health?.eval_last_run ? 'ok' : null],
+            [t('哨兵'), obs.sentinelOnline ? t('在线') : t('未上线'), obs.sentinelOnline ? 'ok' : 'warn'],
+            [t('实时'), source === 'live' ? t('哨兵 SSE') : source === 'delayed' ? t('轮询回退') : t('中断'), source === 'live' ? 'ok' : source === 'delayed' ? 'warn' : 'err'],
+            [t('评估器'), layers.monitor?.health?.eval_last_run ? t('在线') : '—', layers.monitor?.health?.eval_last_run ? 'ok' : null],
           ]} />
         </div>
 
@@ -132,31 +133,31 @@ export default function ObsOverview() {
 
         {/* ③ active alerts strip / 后端故障空态 */}
         {beDown ? (
-          <UnavailableBand label="活跃告警 · 历史台账" note="告警历史依赖后端 · 暂不可用 · 实时存活见上方各层卡与基建资源" link="告警页" onClick={() => nav('/observ/alerts')} />
+          <UnavailableBand label={t('活跃告警 · 历史台账')} note={t('告警历史依赖后端 · 暂不可用 · 实时存活见上方各层卡与基建资源')} link={t('告警页')} onClick={() => nav('/observ/alerts')} />
         ) : (
           <div style={{ background: 'var(--surface)', borderBottom: '1px solid var(--border-strong)' }}>
             <div style={{ padding: '7px 14px', display: 'flex', alignItems: 'center', gap: 10, borderBottom: '1px solid var(--border)' }}>
-              <ObsKap>活跃告警 · 触发中</ObsKap>
+              <ObsKap>{t('活跃告警 · 触发中')}</ObsKap>
               <span className="chip err" style={{ fontSize: 10, height: 15 }}>{obs.firing}</span>
               <div style={{ flex: 1 }} />
-              <ObsDrill onClick={() => nav('/observ/alerts')}>告警页</ObsDrill>
+              <ObsDrill onClick={() => nav('/observ/alerts')}>{t('告警页')}</ObsDrill>
             </div>
             {alerts.length === 0 ? (
-              <div style={{ padding: 16, textAlign: 'center', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg-3)' }}>无触发中告警 🎉</div>
+              <div style={{ padding: 16, textAlign: 'center', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg-3)' }}>{t('无触发中告警 🎉')}</div>
             ) : alerts.map((a) => <AlertStripRow key={a.id} a={a} onClick={() => nav('/observ/alerts')} />)}
           </div>
         )}
 
         {/* ④ histogram + tops + ⑤ recent + ⑥ pipeline (history plane) */}
         {beDown ? (
-          <UnavailableBand label="24h 日志量 · TOP 错误 · 近期错误 · 管道" note="日志聚合依赖后端 · 暂不可用" link="日志页" onClick={() => nav('/observ/logs')} tall />
-        ) : summary.isLoading ? <div style={{ padding: 30 }}><Loading label="加载日志聚合…" /></div>
+          <UnavailableBand label={t('24h 日志量 · TOP 错误 · 近期错误 · 管道')} note={t('日志聚合依赖后端 · 暂不可用')} link={t('日志页')} onClick={() => nav('/observ/logs')} tall />
+        ) : summary.isLoading ? <div style={{ padding: 30 }}><Loading label={t('加载日志聚合…')} /></div>
           : s && (
             <>
               <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr', borderBottom: '1px solid var(--border-strong)' }}>
                 <div style={{ borderRight: '1px solid var(--border)', background: 'var(--surface)' }}>
                   <div style={{ padding: '7px 14px', display: 'flex', alignItems: 'center', gap: 10, background: 'var(--surface-2)', borderBottom: '1px solid var(--border)' }}>
-                    <ObsKap>24h 日志量 · 按级别堆叠</ObsKap><span style={{ flex: 1 }} /><Legend />
+                    <ObsKap>{t('24h 日志量 · 按级别堆叠')}</ObsKap><span style={{ flex: 1 }} /><Legend />
                   </div>
                   <div style={{ padding: '16px 18px 12px' }}>
                     <div style={{ display: 'flex', alignItems: 'flex-end' }}>
@@ -166,7 +167,7 @@ export default function ObsOverview() {
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', background: 'var(--surface)' }}>
                   <div style={{ padding: '7px 14px', display: 'flex', alignItems: 'center', gap: 8, background: 'var(--surface-2)', borderBottom: '1px solid var(--border)' }}>
-                    <ObsKap>今日 TOP 错误</ObsKap><span style={{ flex: 1 }} /><span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-3)' }}>按事件分组</span>
+                    <ObsKap>{t('今日 TOP 错误')}</ObsKap><span style={{ flex: 1 }} /><span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-3)' }}>{t('按事件分组')}</span>
                   </div>
                   <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11, fontFamily: 'var(--font-mono)' }}>
                     <tbody>
@@ -178,7 +179,7 @@ export default function ObsOverview() {
                           <td style={{ padding: '0 14px 0 8px' }}><TraceShort id={r.last_trace_id} onClick={(e) => { e.stopPropagation(); toTrace(r.last_trace_id); }} /></td>
                         </tr>
                       ))}
-                      {!s.top_errors?.length && <tr><td style={{ padding: 16, textAlign: 'center', color: 'var(--fg-3)' }}>今日无 ERROR</td></tr>}
+                      {!s.top_errors?.length && <tr><td style={{ padding: 16, textAlign: 'center', color: 'var(--fg-3)' }}>{t('今日无 ERROR')}</td></tr>}
                     </tbody>
                   </table>
                 </div>
@@ -186,12 +187,12 @@ export default function ObsOverview() {
 
               <div style={{ background: 'var(--surface)', borderBottom: '1px solid var(--border-strong)' }}>
                 <div style={{ padding: '7px 14px', display: 'flex', alignItems: 'center', gap: 10, background: 'var(--surface-2)', borderBottom: '1px solid var(--border)' }}>
-                  <ObsKap>近期错误 · 最近 20 条</ObsKap><span style={{ flex: 1 }} />
-                  <ObsDrill onClick={() => nav('/observ/logs?level=ERROR,CRITICAL')}>全部 ERROR</ObsDrill>
+                  <ObsKap>{t('近期错误 · 最近 20 条')}</ObsKap><span style={{ flex: 1 }} />
+                  <ObsDrill onClick={() => nav('/observ/logs?level=ERROR,CRITICAL')}>{t('全部 ERROR')}</ObsDrill>
                 </div>
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11, fontFamily: 'var(--font-mono)' }}>
                   <thead><tr style={{ borderBottom: '1px solid var(--border-strong)' }}>
-                    {['time', 'lvl', 'layer', 'event', '摘要', 'route', 'actor', 'trace'].map((c) => (
+                    {['time', 'lvl', 'layer', 'event', t('摘要'), 'route', 'actor', 'trace'].map((c) => (
                       <th key={c} style={{ textAlign: 'left', padding: '5px 10px', fontSize: 9, color: 'var(--fg-3)', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{c}</th>
                     ))}
                   </tr></thead>
@@ -214,19 +215,19 @@ export default function ObsOverview() {
                         </React.Fragment>
                       );
                     })}
-                    {!s.recent_errors?.length && <tr><td colSpan={8} style={{ padding: 20, textAlign: 'center', color: 'var(--fg-3)' }}>近期无 ERROR 🎉</td></tr>}
+                    {!s.recent_errors?.length && <tr><td colSpan={8} style={{ padding: 20, textAlign: 'center', color: 'var(--fg-3)' }}>{t('近期无 ERROR 🎉')}</td></tr>}
                   </tbody>
                 </table>
               </div>
 
               {/* pipeline health row */}
               <div style={{ display: 'flex', alignItems: 'center', gap: 24, padding: '10px 18px', background: 'var(--surface-2)', fontFamily: 'var(--font-mono)', fontSize: 11, flexWrap: 'wrap' }}>
-                <ObsKap>管道健康</ObsKap>
+                <ObsKap>{t('管道健康')}</ObsKap>
                 <span style={{ color: 'var(--fg-mute)' }}>│</span>
-                <span><span className={`dot ${s.health.db_sink === 'ok' ? 'ok' : 'err'}`} /> 日志落库: <span style={{ color: s.health.db_sink === 'ok' ? 'var(--ok)' : 'var(--err)' }}>{s.health.db_sink}</span></span>
-                <span><span className={`dot ${s.health.file_sink === 'ok' ? 'ok' : 'warn'}`} /> 日志落盘: <span style={{ color: s.health.file_sink === 'ok' ? 'var(--ok)' : 'var(--warn)' }}>{s.health.file_sink}</span></span>
-                <span><span className="dot info" /> 实时连接: <span style={{ color: 'var(--fg)' }}>{s.health.sse_clients}</span></span>
-                <span><span className="dot ok" /> 异步队列: <span style={{ color: 'var(--fg)' }}>{s.health.queue_size} / {fmtN(s.health.queue_max ?? 10000)}</span></span>
+                <span><span className={`dot ${s.health.db_sink === 'ok' ? 'ok' : 'err'}`} /> {t('日志落库:')} <span style={{ color: s.health.db_sink === 'ok' ? 'var(--ok)' : 'var(--err)' }}>{s.health.db_sink}</span></span>
+                <span><span className={`dot ${s.health.file_sink === 'ok' ? 'ok' : 'warn'}`} /> {t('日志落盘:')} <span style={{ color: s.health.file_sink === 'ok' ? 'var(--ok)' : 'var(--warn)' }}>{s.health.file_sink}</span></span>
+                <span><span className="dot info" /> {t('实时连接:')} <span style={{ color: 'var(--fg)' }}>{s.health.sse_clients}</span></span>
+                <span><span className="dot ok" /> {t('异步队列:')} <span style={{ color: 'var(--fg)' }}>{s.health.queue_size} / {fmtN(s.health.queue_max ?? 10000)}</span></span>
                 {s.health.dropped > 0 && <span style={{ color: 'var(--err)' }}>dropped: {s.health.dropped}</span>}
                 <span style={{ flex: 1 }} />
                 <ObsRealtime state={source} mini />
@@ -254,9 +255,9 @@ function InfraResourcePanel({ obs, topo }) {
   return (
     <div style={{ background: 'var(--surface)', borderBottom: '1px solid var(--border-strong)' }}>
       <div style={{ padding: '7px 14px', display: 'flex', alignItems: 'center', gap: 10, background: 'var(--surface-2)', borderBottom: '1px solid var(--border)' }}>
-        <ObsKap>基建资源 · 主机 + 容器</ObsKap>
+        <ObsKap>{t('基建资源 · 主机 + 容器')}</ObsKap>
         <span className="chip" style={{ fontSize: 9, height: 14, background: 'var(--info-bg)', color: 'var(--info)' }}>NEW</span>
-        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-3)' }}>· 磁盘 / CPU / 崩溃转储 · 非第六个层 · 哨兵 (docker.sock + statvfs) 采集</span>
+        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-3)' }}>{t('· 磁盘 / CPU / 崩溃转储 · 非第六个层 · 哨兵 (docker.sock + statvfs) 采集')}</span>
         <span style={{ flex: 1 }} />
         <ObsRealtime state={obs.source} mini />
       </div>
@@ -265,24 +266,24 @@ function InfraResourcePanel({ obs, topo }) {
         <div style={{ padding: '12px 16px', borderRight: '1px solid var(--border)' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 12 }}>
             <ObsResMark res="disk" tone={disks.some((d) => d.state === 'error') ? 'err' : disks.some((d) => d.state === 'warn') ? 'warn' : 'ok'} />
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5, color: 'var(--fg)', fontWeight: 500 }}>磁盘水位</span>
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--fg-4)' }}>主机级</span>
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5, color: 'var(--fg)', fontWeight: 500 }}>{t('磁盘水位')}</span>
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--fg-4)' }}>{t('主机级')}</span>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 11 }}>
-            {disks.length === 0 ? <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--fg-mute)' }}>哨兵未上报磁盘 (未挂载宿主分区)</span>
+            {disks.length === 0 ? <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--fg-mute)' }}>{t('哨兵未上报磁盘 (未挂载宿主分区)')}</span>
               : disks.map((d) => <ObsMeter key={d.mount} label={d.mount} pct={d.used_pct} warnAt={DISK_WARN} dangerAt={DISK_CRIT} />)}
           </div>
-          {disks.some((d) => d.state === 'error') && <div style={{ marginTop: 11, fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--err)' }}>⚠ 分区超阈值 ({DISK_CRIT}%) · 触发 D13</div>}
+          {disks.some((d) => d.state === 'error') && <div style={{ marginTop: 11, fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--err)' }}>{t('⚠ 分区超阈值 ({p}%) · 触发 D13', { p: DISK_CRIT })}</div>}
         </div>
         {/* CPU 占用 */}
         <div style={{ padding: '12px 16px', borderRight: '1px solid var(--border)' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 12 }}>
             <ObsResMark res="cpu" tone={cpuList.some((c) => (c.pct ?? 0) >= 90) ? 'err' : cpuList.some((c) => (c.pct ?? 0) >= 70) ? 'warn' : 'ok'} />
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5, color: 'var(--fg)', fontWeight: 500 }}>CPU 占用</span>
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--fg-4)' }}>各容器</span>
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5, color: 'var(--fg)', fontWeight: 500 }}>{t('CPU 占用')}</span>
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--fg-4)' }}>{t('各容器')}</span>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {cpuList.length === 0 ? <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--fg-mute)' }}>无 CPU 数据</span>
+            {cpuList.length === 0 ? <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--fg-mute)' }}>{t('无 CPU 数据')}</span>
               : cpuList.map((c) => (
                 <div key={c.name} style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
                   <ObsLayerMark layer={c.layer} />
@@ -296,13 +297,13 @@ function InfraResourcePanel({ obs, topo }) {
         <div style={{ padding: '12px 16px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 12 }}>
             <ObsResMark res="dump" tone={coreDumps.length ? 'err' : 'ok'} />
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5, color: 'var(--fg)', fontWeight: 500 }}>崩溃转储</span>
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5, color: 'var(--fg)', fontWeight: 500 }}>{t('崩溃转储')}</span>
             <span style={{ flex: 1 }} />
             {coreDumps.length > 0 && <span className="chip err" style={{ fontSize: 9.5, height: 15 }}>▲ {coreDumps.length}</span>}
           </div>
           {coreDumps.length === 0 ? (
             <div style={{ padding: '14px 12px', textAlign: 'center', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg-3)', border: '1px dashed var(--border-strong)', borderRadius: 4 }}>
-              无崩溃转储 ✓
+              {t('无崩溃转储 ✓')}
             </div>
           ) : coreDumps.map((d) => (
             <div key={d.container} style={{ padding: '10px 12px', marginBottom: 6, background: 'var(--err-bg)', border: '1px solid var(--err)', borderRadius: 4, boxShadow: '0 0 0 3px color-mix(in oklch, var(--err) 12%, transparent)' }}>
@@ -312,12 +313,12 @@ function InfraResourcePanel({ obs, topo }) {
                 <ObsDetector kind="external" mini />
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '3px 10px', fontFamily: 'var(--font-mono)', fontSize: 10.5 }}>
-                <span style={{ color: 'var(--fg-3)' }}>可写层</span><span style={{ color: 'var(--err)', fontWeight: 600 }}>{d.rw_size_gb} GiB</span>
-                <span style={{ color: 'var(--fg-3)' }}>判定</span><span style={{ color: 'var(--fg-2)' }}>SizeRw 突增 → 疑似 core-dump (D15)</span>
+                <span style={{ color: 'var(--fg-3)' }}>{t('可写层')}</span><span style={{ color: 'var(--err)', fontWeight: 600 }}>{d.rw_size_gb} GiB</span>
+                <span style={{ color: 'var(--fg-3)' }}>{t('判定')}</span><span style={{ color: 'var(--fg-2)' }}>{t('SizeRw 突增 → 疑似 core-dump (D15)')}</span>
               </div>
             </div>
           ))}
-          <div style={{ marginTop: 8, fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--fg-4)' }}>平时此处为「无」· 出现即醒目警示(上次事故盲点)</div>
+          <div style={{ marginTop: 8, fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--fg-4)' }}>{t('平时此处为「无」· 出现即醒目警示(上次事故盲点)')}</div>
         </div>
       </div>
     </div>
@@ -344,7 +345,7 @@ function UnavailableBand({ label, note, link, onClick, tall }) {
     <div style={{ background: 'var(--surface)', borderBottom: '1px solid var(--border-strong)' }}>
       <div style={{ padding: '7px 14px', display: 'flex', alignItems: 'center', gap: 10, background: 'var(--surface-2)', borderBottom: '1px solid var(--border)' }}>
         <ObsKap>{label}</ObsKap>
-        <span className="chip neutral" style={{ fontSize: 9.5, height: 15 }}>暂不可用</span>
+        <span className="chip neutral" style={{ fontSize: 9.5, height: 15 }}>{t('暂不可用')}</span>
         <span style={{ flex: 1 }} />
         <ObsDrill onClick={onClick}>{link}</ObsDrill>
       </div>
@@ -362,7 +363,7 @@ function LayerCard({ layer, L = {}, metrics, highlight, last, noReach }) {
   const unknown = !state;
   const dn = state === 'error'; const dg = state === 'warn';
   const reach = L.reachable;
-  const [rw, rc] = reach === false ? ['不可达', 'var(--err)'] : reach === true ? ['可达', 'var(--ok)'] : ['—', 'var(--fg-3)'];
+  const [rw, rc] = reach === false ? [t('不可达'), 'var(--err)'] : reach === true ? [t('可达'), 'var(--ok)'] : ['—', 'var(--fg-3)'];
   return (
     <div style={{
       borderRight: last ? 'none' : '1px solid var(--border)',
@@ -375,16 +376,16 @@ function LayerCard({ layer, L = {}, metrics, highlight, last, noReach }) {
         <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, color: 'var(--fg)', fontWeight: 500 }}>{OBS_LAYERS[layer].label}</span>
         <span style={{ flex: 1 }} />
         {unknown
-          ? <span className="chip neutral" style={{ fontSize: 9.5, height: 15 }}>未知</span>
+          ? <span className="chip neutral" style={{ fontSize: 9.5, height: 15 }}>{t('未知')}</span>
           : <ObsHealthChip state={state === 'error' ? 'down' : state === 'warn' ? 'degraded' : 'ok'} mini />}
       </div>
       {!noReach && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontFamily: 'var(--font-mono)', fontSize: 10, paddingBottom: 6, borderBottom: '1px solid var(--border-faint)' }}>
           <span style={{ width: 5, height: 5, borderRadius: '50%', background: rc, animation: reach === false ? 'pulse 1.5s ease-in-out infinite' : 'none' }} />
-          <span style={{ color: 'var(--fg-3)' }}>探测</span>
+          <span style={{ color: 'var(--fg-3)' }}>{t('探测')}</span>
           <span style={{ color: rc, fontWeight: 500 }}>{rw}</span>
           <span style={{ flex: 1 }} />
-          <span style={{ color: 'var(--fg-4)', fontSize: 9 }}>哨兵</span>
+          <span style={{ color: 'var(--fg-4)', fontSize: 9 }}>{t('哨兵')}</span>
         </div>
       )}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
@@ -402,9 +403,9 @@ function LayerCard({ layer, L = {}, metrics, highlight, last, noReach }) {
 function Legend() {
   return (
     <span style={{ display: 'inline-flex', gap: 10, fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--fg-3)' }}>
-      <span><span style={{ display: 'inline-block', width: 8, height: 8, background: 'var(--info)', opacity: 0.55, marginRight: 4, verticalAlign: 'middle' }} />普通</span>
-      <span><span style={{ display: 'inline-block', width: 8, height: 8, background: 'var(--warn)', marginRight: 4, verticalAlign: 'middle' }} />警示</span>
-      <span><span style={{ display: 'inline-block', width: 8, height: 8, background: 'var(--err)', marginRight: 4, verticalAlign: 'middle' }} />严重</span>
+      <span><span style={{ display: 'inline-block', width: 8, height: 8, background: 'var(--info)', opacity: 0.55, marginRight: 4, verticalAlign: 'middle' }} />{t('普通')}</span>
+      <span><span style={{ display: 'inline-block', width: 8, height: 8, background: 'var(--warn)', marginRight: 4, verticalAlign: 'middle' }} />{t('警示')}</span>
+      <span><span style={{ display: 'inline-block', width: 8, height: 8, background: 'var(--err)', marginRight: 4, verticalAlign: 'middle' }} />{t('严重')}</span>
     </span>
   );
 }

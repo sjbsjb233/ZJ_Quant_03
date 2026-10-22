@@ -2,6 +2,7 @@
 import React from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { endpoints } from '../../lib/api';
+import { t } from '../../lib/i18n';
 
 // Light label/tone helpers — keep tones in sync with the chip style classes.
 export function tone(value, kind = 'icir') {
@@ -65,7 +66,7 @@ export function useUniverses() {
 }
 
 // Generic empty / loading helpers tuned for terminal-density.
-export function MiniEmpty({ label = '暂无数据' }) {
+export function MiniEmpty({ label = t('暂无数据') }) {
   return (
     <div style={{
       padding: 32, color: 'var(--fg-3)', fontFamily: 'var(--font-mono)',
@@ -74,7 +75,7 @@ export function MiniEmpty({ label = '暂无数据' }) {
   );
 }
 
-export function MiniLoading({ label = '加载中…' }) {
+export function MiniLoading({ label = t('加载中…') }) {
   return (
     <div style={{
       padding: 24, color: 'var(--fg-3)', fontFamily: 'var(--font-mono)',
@@ -85,7 +86,7 @@ export function MiniLoading({ label = '加载中…' }) {
 
 // Compact error state — surfaces the backend's error envelope (code + message)
 // so a failed/unreachable backend reads as an ERROR, never as empty data.
-export function MiniError({ error, onRetry, label = '加载失败' }) {
+export function MiniError({ error, onRetry, label = t('加载失败') }) {
   const e = error?.apiError || {};
   return (
     <div style={{
@@ -97,7 +98,7 @@ export function MiniError({ error, onRetry, label = '加载失败' }) {
         {e.message || String(error?.message || error || '')}
       </div>
       {onRetry && (
-        <button className="btn ghost sm" style={{ marginTop: 8 }} onClick={onRetry}>↻ 重试</button>
+        <button className="btn ghost sm" style={{ marginTop: 8 }} onClick={onRetry}>{t('↻ 重试')}</button>
       )}
     </div>
   );
@@ -106,10 +107,10 @@ export function MiniError({ error, onRetry, label = '加载失败' }) {
 // ─── 受控降级展示 (设计 §11) ────────────────────────────────────────────────
 // Severity → label + color. Keep in sync with the engine's catalogue (§14).
 export const SEVERITY_META = {
-  critical: { label: '严重', color: 'var(--err)', bg: 'var(--err-bg)' },
-  high: { label: '高', color: 'var(--warn)', bg: 'var(--warn-bg)' },
-  medium: { label: '中', color: 'var(--info)', bg: 'var(--info-bg)' },
-  low: { label: '低', color: 'var(--fg-3)', bg: 'var(--surface-3)' },
+  critical: { label: t('严重'), color: 'var(--err)', bg: 'var(--err-bg)' },
+  high: { label: t('高'), color: 'var(--warn)', bg: 'var(--warn-bg)' },
+  medium: { label: t('中'), color: 'var(--info)', bg: 'var(--info-bg)' },
+  low: { label: t('低'), color: 'var(--fg-3)', bg: 'var(--surface-3)' },
 };
 
 // Map a run (status + degradation_level/count + error) → a display badge spec.
@@ -118,20 +119,20 @@ export function runStatusInfo(run) {
   const st = run.status;
   const level = run.degradation_level || run.degradation?.level || 'none';
   const count = run.degradation_count ?? run.degradation?.count ?? 0;
-  if (st === 'success') return { label: '成功', color: 'var(--ok)', glyph: '●' };
+  if (st === 'success') return { label: t('成功'), color: 'var(--ok)', glyph: '●' };
   if (st === 'degraded') {
     return level === 'severe'
-      ? { label: `降级(严重) · ${count}`, color: 'var(--err)', glyph: '⚠', severe: true }
-      : { label: `降级 · ${count}`, color: 'var(--warn)', glyph: '▲', degraded: true };
+      ? { label: `${t('降级(严重)')} · ${count}`, color: 'var(--err)', glyph: '⚠', severe: true }
+      : { label: `${t('降级')} · ${count}`, color: 'var(--warn)', glyph: '▲', degraded: true };
   }
   if (st === 'failed') {
     return run.error === 'preflight_blocked'
-      ? { label: '前置校验未通过', color: 'var(--err)', glyph: '⊘', preflight: true }
-      : { label: '失败', color: 'var(--err)', glyph: '✕' };
+      ? { label: t('前置校验未通过'), color: 'var(--err)', glyph: '⊘', preflight: true }
+      : { label: t('失败'), color: 'var(--err)', glyph: '✕' };
   }
-  if (st === 'canceled') return { label: '已取消', color: 'var(--fg-3)', glyph: '⊘' };
-  if (st === 'running') return { label: '运行中', color: 'var(--info)', glyph: '●' };
-  if (st === 'queued' || st === 'pending') return { label: '排队', color: 'var(--fg-3)', glyph: '○' };
+  if (st === 'canceled') return { label: t('已取消'), color: 'var(--fg-3)', glyph: '⊘' };
+  if (st === 'running') return { label: t('运行中'), color: 'var(--info)', glyph: '●' };
+  if (st === 'queued' || st === 'pending') return { label: t('排队'), color: 'var(--fg-3)', glyph: '○' };
   return { label: st || '—', color: 'var(--fg-3)', glyph: '·' };
 }
 
@@ -165,7 +166,7 @@ function CoverageBar({ coverage, threshold }) {
         )}
       </div>
       <div style={{ fontSize: 9.5, color: 'var(--fg-3)', marginTop: 2, fontFamily: 'var(--font-mono)' }}>
-        覆盖率 {(coverage * 100).toFixed(1)}%{threshold != null ? ` · 阈值 ${(threshold * 100).toFixed(0)}%` : ''}
+        {t('覆盖率')} {(coverage * 100).toFixed(1)}%{threshold != null ? ` · ${t('阈值')} ${(threshold * 100).toFixed(0)}%` : ''}
       </div>
     </div>
   );
@@ -186,7 +187,7 @@ function DegradationRow({ ev, blocked }) {
         </td>
         <td style={{ padding: '4px 12px' }}>
           <span style={{ color: meta.color, background: meta.bg, padding: '1px 6px', borderRadius: 2, fontSize: 9.5, fontFamily: 'var(--font-mono)' }}>
-            {blocked ? '阻断' : meta.label}
+            {blocked ? t('阻断') : meta.label}
           </span>
         </td>
         <td style={{ padding: '4px 12px', color: 'var(--fg-2)', fontSize: 10.5 }}>{ev.reason}</td>
@@ -195,8 +196,8 @@ function DegradationRow({ ev, blocked }) {
           {e.coverage != null && <CoverageBar coverage={e.coverage} threshold={e.threshold} />}
         </td>
         <td style={{ padding: '4px 12px', color: 'var(--fg-3)', fontSize: 10, textAlign: 'right' }}>
-          {e.affected_symbols != null ? `${e.affected_symbols} 标的` : ''}
-          {e.affected_dates ? ` / ${e.affected_dates} 日` : ''}
+          {e.affected_symbols != null ? t('{n} 标的', { n: e.affected_symbols }) : ''}
+          {e.affected_dates ? ` / ${t('{n} 日', { n: e.affected_dates })}` : ''}
         </td>
         <td style={{ padding: '4px 12px', color: 'var(--info)', fontSize: 10 }}>{ev.suggested_action}</td>
       </tr>
@@ -204,12 +205,12 @@ function DegradationRow({ ev, blocked }) {
         <tr style={{ background: 'var(--surface-2)' }}>
           <td colSpan={6} style={{ padding: '8px 16px', fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--fg-2)' }}>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-              <div><span style={{ color: 'var(--fg-3)' }}>期望: </span>{fmtEvidence(e.expected)}</div>
-              <div><span style={{ color: 'var(--fg-3)' }}>实际: </span>{fmtEvidence(e.actual)}</div>
+              <div><span style={{ color: 'var(--fg-3)' }}>{t('期望: ')}</span>{fmtEvidence(e.expected)}</div>
+              <div><span style={{ color: 'var(--fg-3)' }}>{t('实际: ')}</span>{fmtEvidence(e.actual)}</div>
             </div>
             {Array.isArray(e.sample) && e.sample.length > 0 && (
               <div style={{ marginTop: 6 }}>
-                <span style={{ color: 'var(--fg-3)' }}>受影响样本: </span>{e.sample.join(', ')}
+                <span style={{ color: 'var(--fg-3)' }}>{t('受影响样本: ')}</span>{e.sample.join(', ')}
                 {e.affected_symbols > e.sample.length ? ' …' : ''}
               </div>
             )}
@@ -239,7 +240,7 @@ export function DegradationReport({ run, embed }) {
     : events;
   if (rows.length === 0) return null;
 
-  const title = isPreflightBlocked ? '前置校验未通过' : '数据降级报告';
+  const title = isPreflightBlocked ? t('前置校验未通过') : t('数据降级报告');
   const level = run.degradation?.level || (run.has_critical ? 'severe' : 'partial');
   const accent = isPreflightBlocked || level === 'severe' ? 'var(--err)' : 'var(--warn)';
 
@@ -248,13 +249,13 @@ export function DegradationReport({ run, embed }) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 14px', background: 'var(--surface-2)', borderBottom: `1px solid ${accent}` }}>
         <span style={{ color: accent, fontWeight: 600, fontSize: 12 }}>{isPreflightBlocked ? '⊘' : '⚠'} {title}</span>
         <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-3)' }}>
-          {isPreflightBlocked ? `${blocked.length} 项阻断` : `${rows.length} 项降级 · ${level === 'severe' ? '含严重' : '一般'}`}
+          {isPreflightBlocked ? t('{n} 项阻断', { n: blocked.length }) : `${t('{n} 项降级', { n: rows.length })} · ${level === 'severe' ? t('含严重') : t('一般')}`}
         </span>
       </div>
       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
         <thead>
           <tr style={{ borderBottom: '1px solid var(--border-strong)' }}>
-            {['降级项', '级别', '触发原因', '影响', '范围', '建议'].map((c, i) => (
+            {['降级项', '级别', '触发原因', '影响', '范围', '建议'].map((zh) => t(zh)).map((c, i) => (
               <th key={i} style={{ textAlign: i === 4 ? 'right' : 'left', padding: '6px 12px', fontSize: 9.5, color: 'var(--fg-3)', textTransform: 'uppercase', fontFamily: 'var(--font-mono)' }}>{c}</th>
             ))}
           </tr>
