@@ -1,7 +1,8 @@
 // A dense terminal-style table. columns: [{key,label,align,width,render,mono,headColor}].
 import React from 'react';
+import { t } from '../../lib/i18n';
 
-export function DataTable({ columns, rows, rowKey, rowTestId, onRowClick, rowStyle, height = 28, emptyLabel = '未找到数据' }) {
+export function DataTable({ columns, rows, rowKey, rowTestId, onRowClick, rowStyle, height = 28, emptyLabel = t('未找到数据') }) {
   return (
     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
       <thead style={{ position: 'sticky', top: 0, background: 'var(--surface)', zIndex: 1 }}>

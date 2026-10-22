@@ -2,7 +2,7 @@
 
 <img src="assets/readme/banner.svg" alt="FSQ K-line Foundation Model · ZJ Quant" width="100%">
 
-<br>
+<p><b>English</b> &nbsp;|&nbsp; <a href="README.zh-CN.md">简体中文</a></p>
 
 <a href="#results"><img src="https://img.shields.io/badge/OOS_excess_return-17.8%25_·_IR_1.42-3B5BDB?style=flat-square" alt="Out-of-sample"></a>
 <img src="https://img.shields.io/badge/model-41M_decoder--only_Transformer-3B5BDB?style=flat-square" alt="Model">
@@ -232,7 +232,7 @@ Risk control acts at three levels: stock, portfolio and signal.
 ## The research platform
 
 The FSQ factors live in the same console as every other factor in the library, next to market data, data-quality tooling and live system health.
-The UI is a dense, keyboard-driven light theme (Chinese interface).
+The UI is a dense, keyboard-driven light theme, available in English and Chinese.
 
 <table>
 <tr>
@@ -275,36 +275,212 @@ ZJ_Quant_03/
 
 ## Getting started
 
-**Platform.** Everything runs in Docker; one directory holds all state.
+There are three ways in, depending on what you want to do:
+
+| I want to… | Path | Needs a GPU? | Time |
+| :-- | :-- | :-- | :-- |
+| click around the platform with demo data | [A · Run the platform](#a--run-the-platform-with-demo-data) | no | ~15 min (first build) |
+| train FSQ and produce my own factor panel | [B · Train the FSQ model](#b--train-the-fsq-model) | yes, NVIDIA 24 GB | ~24 GPU·h end to end |
+| read or change the code, run the tests | [C · Develop locally](#c--develop-locally) | no | ~5 min |
+
+### Prerequisites
+
+| | Linux | macOS | Windows |
+| :-- | :-- | :-- | :-- |
+| **Supported** | x86-64 or arm64, any recent distribution | 12+ on Intel or Apple silicon | 10 (22H2) / 11, through **WSL 2** |
+| **Container runtime** | [Docker Engine](https://docs.docker.com/engine/install/) 24+ with the Compose v2 plugin | [Docker Desktop](https://docs.docker.com/desktop/setup/install/mac-install/) 4.25+ | [Docker Desktop](https://docs.docker.com/desktop/setup/install/windows-install/) 4.25+ with the WSL 2 backend |
+| **Git** | distribution package | `xcode-select --install` | [Git for Windows](https://git-scm.com/download/win), or Git inside WSL |
+| **Path B (training)** | NVIDIA driver 550+ and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) | not supported (no CUDA) | NVIDIA driver 550+ on Windows, [CUDA on WSL](https://docs.nvidia.com/cuda/wsl-user-guide/) |
+| **Path C (dev)** | Python 3.11+, Node.js 20+ | Python 3.11+, Node.js 20+ | same, installed inside WSL |
+
+Give Docker at least **4 CPUs, 8 GB of memory and 15 GB of free disk**. Docker Desktop sets these under *Settings → Resources*.
+Check your setup before you start:
 
 ```bash
-cd deploy
-cp .env.example .env                       # set JWT_SECRET / LOG_INGEST_TOKEN
-docker compose -f docker-compose.yml -f docker-compose.dev.yml build
-docker compose -f docker-compose.yml -f docker-compose.dev.yml run --rm data-keeper python -m keeper_service.seed_demo
-docker compose -f docker-compose.yml -f docker-compose.dev.yml run --rm web-backend python -m quant_web.seed_users
-docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
-# open http://localhost:${WEB_PORT}   (demo login: admin / admin123)
+docker version            # both Client and Server must answer
+docker compose version    # v2.20 or newer
 ```
 
-**FSQ engine.** Needs a CUDA GPU (24 GB is enough for the base model).
+> [!TIP]
+> **On Windows, work inside WSL 2.** Open an Ubuntu terminal and clone the repository into the Linux file system (for example `~/src`), not under `/mnt/c/`.
+> Builds are several times faster there, and every command below then works exactly as on Linux.
+> If you prefer PowerShell, the commands are the same apart from the lines marked *PowerShell*.
+
+### A · Run the platform with demo data
+
+**1. Clone the repository.**
+
+```bash
+git clone https://github.com/sjbsjb233/ZJ_Quant_03.git
+cd ZJ_Quant_03/deploy
+```
+
+**2. Create the configuration file.** All settings live in one file, `deploy/.env`, which is ignored by Git.
+
+```bash
+cp .env.example .env
+```
+
+Open `.env` in any editor and change these lines. Everything else can keep its default.
+
+```ini
+WEB_PORT=8080                  # the only port the platform publishes; 80 is often taken on desktops
+ALLOWED_ORIGINS=http://localhost:8080
+ENVIRONMENT=DEV
+JWT_SECRET=<a long random string>
+LOG_INGEST_TOKEN=<another long random string>
+ENABLE_SCHEDULER=false         # the demo needs no market-data token; leave the scheduler off
+```
+
+To generate the two secrets, run `openssl rand -hex 32` (Linux, macOS, WSL) or `[guid]::NewGuid().ToString("N")` (*PowerShell*).
+
+**3. Tell Compose to use the local-build overlay.** This saves typing `-f docker-compose.yml -f docker-compose.dev.yml` on every command.
+
+```bash
+export COMPOSE_FILE=docker-compose.yml:docker-compose.dev.yml      # Linux, macOS, WSL
+```
+
+```powershell
+$env:COMPOSE_FILE = "docker-compose.yml;docker-compose.dev.yml"   # PowerShell (note the ;)
+```
+
+**4. Build the images.** The first build downloads base images and Python and Node dependencies and takes 5–15 minutes. Later builds are cached.
+
+```bash
+docker compose build
+```
+
+**5. Load the demo dataset and the demo users.** Both commands are one-off and idempotent.
+
+```bash
+docker compose run --rm data-keeper python -m keeper_service.seed_demo
+docker compose run --rm web-backend python -m quant_web.seed_users
+```
+
+**6. Start the stack.**
+
+```bash
+docker compose up -d
+docker compose ps        # wait until every service shows "running" or "healthy" (≈ 30 s)
+```
+
+**7. Open the console** at <http://localhost:8080> and sign in as `admin` / `admin123`.
+The interface opens in English. The `中文` button in the top bar switches it to Chinese.
+
+<details>
+<summary><b>Stop, update, reset</b></summary>
+
+```bash
+docker compose stop                   # stop, keep everything
+docker compose down                   # remove the containers, keep data (never add -v)
+git pull && docker compose up -d --build   # update to the latest code
+```
+
+All state lives in five folders under `deploy/`: `data/`, `state/`, `keeper-store/`, `factor-store/` and `logs/`.
+Back up or move a deployment by copying `deploy/` after `docker compose down`.
+To start from scratch, run `docker compose down`, delete those five folders, and repeat steps 5–6. On Linux they are owned by root, so use `sudo rm -rf`.
+
+</details>
+
+<details>
+<summary><b>Troubleshooting</b></summary>
+
+| Symptom | Fix |
+| :-- | :-- |
+| `bind: address already in use` | Another program owns the port. Change `WEB_PORT` (and `ALLOWED_ORIGINS`) in `.env`. The dev overlay also publishes 8000, 8100 and 8300 for debugging, so free those or remove the `ports:` entries in `docker-compose.dev.yml`. |
+| `permission denied … docker.sock` on Linux | Add yourself to the docker group with `sudo usermod -aG docker $USER`, then log out and back in. |
+| `exec … no such file or directory` when a container starts on Windows | The scripts were checked out with Windows line endings. Clone inside WSL, or run `git config --global core.autocrlf input` and clone again. |
+| A service keeps restarting, or the build is killed | Docker is short of memory. Raise it to 8 GB or more in Docker Desktop. |
+| Slow first build in mainland China | Point Docker at a registry mirror, and pip and npm at local mirrors. |
+
+Each service writes structured logs. `docker compose logs -f web-backend` follows one, and the console's **Observability → Logs** page shows all of them joined by `trace_id`.
+
+</details>
+
+### B · Train the FSQ model
+
+Training needs a CUDA GPU. The reference setup is a single RTX 4090 (24 GB) on Linux, or Windows with WSL 2. The pipeline runs in its own container, separate from the platform stack.
+
+**1. Check that Docker can see the GPU.**
+
+```bash
+docker run --rm --gpus all nvidia/cuda:12.6.0-base-ubuntu22.04 nvidia-smi
+```
+
+**2. Provide the market data.** The pipeline does not download prices. It reads parquet files that you supply:
+
+| Path (under `packages/fsq_kbar/`) | Contents | Used by |
+| :-- | :-- | :-- |
+| `data/raw/<freq>/<symbol>.parquet` | OHLCV + amount bars for each stock, with `freq` ∈ `1min 5min 15min 30min 60min day week` | corpus, tokenizer, pre-training |
+| `data/panel/daily_panel.parquet` | daily long table for the trading universe (post-adjusted) | calibration, factor, evaluation |
+
+Delisted stocks should be included. Date ranges and the corpus cut-off are set in [`configs/`](packages/fsq_kbar/configs).
+
+**3. Run the pipeline.**
 
 ```bash
 cd packages/fsq_kbar/docker
-docker compose run train all               # corpus → tokenizer → pre-train → calibrate → factor → eval
-# or stage by stage, see packages/fsq_kbar/README.md
+docker compose build
+docker compose run --rm train all          # corpus → tokenizer → pretrain → calibrate → factor → eval
+docker compose run --rm train pretrain     # …or one stage at a time
 ```
 
-**Connect them.** Copy `outputs/factor/factor_panel.parquet` to `deploy/factor-store/fsq/`, or set `FSQ_FACTOR_PANEL`.
-`FSQAlpha` and `FSQWidth` can then be evaluated on any universe from the Factor Library.
+Checkpoints go to `checkpoints/` and results to `outputs/`. The factor panel is written to `outputs/factor/factor_panel.parquet`.
+Optional steps (yearly walk-forward retraining, the Qlib backtest, the SuperMind execution strategy) are described in [`packages/fsq_kbar/README.md`](packages/fsq_kbar/README.md).
 
-**Tests.**
+**4. Load the factors into the platform.** Copy the panel into the platform's factor store:
 
 ```bash
-bash scripts/install_dev.sh             # editable installs, dependency order
-(cd packages/quant_factor && pytest)    # incl. FSQ builtin tests
+mkdir -p ../../../deploy/factor-store/fsq
+cp ../outputs/factor/factor_panel.parquet ../../../deploy/factor-store/fsq/
+```
+
+Alternatively, point the `FSQ_FACTOR_PANEL` environment variable of `factor-api` and `factor-worker` at the file.
+`fsqalpha` and `fsqwidth` can then be evaluated on any universe from **Factors → Factor library → Evaluate**.
+
+<details>
+<summary><b>No GPU? Check the model on a CPU</b></summary>
+
+The model code runs on a CPU (also on macOS), which is enough to inspect the architecture and run small inference experiments:
+
+```bash
+cd packages/fsq_kbar
+python3 -m venv .venv && source .venv/bin/activate        # PowerShell: .venv\Scripts\Activate.ps1
+pip install torch==2.7.0 --index-url https://download.pytorch.org/whl/cpu
+pip install -r requirements.txt
+python -c "from kbarfm.model import build_model; print(sum(p.numel() for p in build_model('base').parameters()))"
+```
+
+</details>
+
+### C · Develop locally
+
+The Python services and libraries are installed in editable mode into one virtual environment, in dependency order:
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate        # PowerShell: .venv\Scripts\Activate.ps1
+bash scripts/install_dev.sh                               # on Windows, run this from WSL or Git Bash
+
+# each package carries its own pytest settings, so run tests from inside it
+(cd packages/quant_factor && pytest)                      # factor library, including the FSQ builtins
+(cd packages/quant_data && pytest)
 (cd apps/factor && pytest)
 ```
+
+Run the console with hot reload against a running stack (path A):
+
+```bash
+cd apps/web/frontend
+npm ci
+npm run dev              # http://localhost:5173; /api is proxied to web-backend on :8000
+```
+
+CI runs the same backend tests and a production frontend build on every pull request.
+
+## Contributing
+
+Issues and pull requests are welcome. Work happens on feature branches that are merged into `develop` through pull requests. `main` only receives releases from `develop`.
+Please keep pull requests focused, add tests for behaviour changes, and make sure CI is green.
 
 ## Roadmap
 
@@ -317,24 +493,11 @@ bash scripts/install_dev.sh             # editable installs, dependency order
 | Live trading | execution and position / risk monitoring | 🗓️ 2027 |
 | FSQ next | larger corpus and model, fundamentals + industry inputs, periodic incremental retraining | 🔬 research |
 
-## Team and citation
+## Acknowledgements
 
-Developed by **Junbai Shen** (lead), **Qianqian Ni** and **Mengyang Gao** at Zhejiang University of Finance & Economics, advised by **Jianhe Liu**.
-The work was submitted as a team report to the Quantitative Trading track of the Zhejiang Provincial College Students' Securities Investment Competition (2026).
+FSQ builds on ideas from FSQ (Mentzer et al., 2023), Qlib (Yang et al., 2020), RoFormer (Su et al., 2024) and the time-series foundation-model literature (Chronos, TimesFM, Moirai, MOMENT, Time-MoE, Timer, Sundial).
 
-```bibtex
-@techreport{shen2026fsq,
-  title       = {FSQ Parallel Tokenization and Quantile Risk Adjustment: A Price-Volume
-                 Forecasting Factor Strategy System Built on a Financial Foundation Model},
-  author      = {Shen, Junbai and Ni, Qianqian and Gao, Mengyang},
-  institution = {Zhejiang University of Finance \& Economics},
-  type        = {Team report, Zhejiang Provincial College Students' Securities Investment Competition},
-  year        = {2026}
-}
-```
-
-<sub>Builds on ideas from FSQ (Mentzer et al., 2023), Qlib (Yang et al., 2020), RoFormer (Su et al., 2024) and the time-series foundation-model literature (Chronos, TimesFM, Moirai, MOMENT, Time-MoE, Timer, Sundial).
-This repository is research code and nothing in it is investment advice.</sub>
+<sub>This repository is research code. Nothing in it is investment advice.</sub>
 
 <br>
 

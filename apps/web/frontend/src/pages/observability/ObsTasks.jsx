@@ -1,6 +1,7 @@
 // 可观测 · 任务 — /observ/tasks (可观测层重构方案 §7.3⑦)
 // 死人开关可视化: 定时任务上次/上次成功/距今/下次 + keeper 任务台账。专治静默故障。
 import React from 'react';
+import { t } from '../../lib/i18n';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { TerminalShell } from '../../components/shell';
@@ -11,9 +12,9 @@ import { ObsJobChip, ObsKap, ObsLive, ObsDetector, agoFrom } from './shared';
 
 // 调度任务展示名 (真实任务名 crawl/quality/maintenance, §7.3⑦注)
 const TASK_META = {
-  crawl: { label: '采集 · crawl', icon: '⇣' },
-  quality: { label: '质检 · quality', icon: '✓' },
-  maintenance: { label: '维护 · maintenance', icon: '⚒' },
+  crawl: { label: t('采集 · crawl'), icon: '⇣' },
+  quality: { label: t('质检 · quality'), icon: '✓' },
+  maintenance: { label: t('维护 · maintenance'), icon: '⚒' },
 };
 
 function hoursSince(ts) {
@@ -36,22 +37,22 @@ export default function ObsTasks() {
       module="observ" current="tasks"
       path={['observ/', 'tasks']}
       fkeys={[
-        { k: 'F1', l: '总览', onClick: () => nav('/observ/overview') },
-        { k: 'F2', l: '告警', onClick: () => nav('/observ/alerts') },
-        { k: 'F5', l: '刷新', onClick: () => q.refetch() },
+        { k: 'F1', l: t('总览'), onClick: () => nav('/observ/overview') },
+        { k: 'F2', l: t('告警'), onClick: () => nav('/observ/alerts') },
+        { k: 'F5', l: t('刷新'), onClick: () => q.refetch() },
       ]}
-      title="任务"
-      subtitle="tasks · 自治定时任务是否按时「成功」跑过 · 专治静默故障 (死人开关)"
+      title={t('任务')}
+      subtitle={t('tasks · 自治定时任务是否按时「成功」跑过 · 专治静默故障 (死人开关)')}
       badge={overdueCount > 0
-        ? <span className="chip err" style={{ fontSize: 10 }}>⚠ {overdueCount} 超期未成功</span>
-        : <ObsLive>正常</ObsLive>}
-      actions={<button className="btn ghost sm" onClick={() => q.refetch()}>↻ 刷新</button>}
+        ? <span className="chip err" style={{ fontSize: 10 }}>{t('⚠ {n} 超期未成功', { n: overdueCount })}</span>
+        : <ObsLive>{t('正常')}</ObsLive>}
+      actions={<button className="btn ghost sm" onClick={() => q.refetch()}>{t('↻ 刷新')}</button>}
     >
-      {q.isLoading ? <Loading label="加载任务…" />
+      {q.isLoading ? <Loading label={t('加载任务…')} />
         : q.error ? <ErrorState error={q.error} onRetry={q.refetch} />
           : !data?.keeper ? (
             <div style={{ flex: 1, display: 'grid', placeItems: 'center', background: 'var(--bg)' }}>
-              <Empty label="数据策管服务未连接" hint="KEEPER_BASE 未设置 (本地写模式)；定时任务台账不可用" />
+              <Empty label={t('数据策管服务未连接')} hint={t('KEEPER_BASE 未设置 (本地写模式)；定时任务台账不可用')} />
             </div>
           ) : (
             <div className="scroll" style={{ flex: 1, minHeight: 0, overflow: 'auto', background: 'var(--bg)' }}>
@@ -59,14 +60,14 @@ export default function ObsTasks() {
                   本页任务台账 / 历史仍读 backend /monitor/tasks (keeper 数据), 展示不变。 */}
               <div style={{ padding: '10px 14px 0', display: 'flex', alignItems: 'center', gap: 8, fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--fg-3)' }}>
                 <ObsDetector kind="external" mini />
-                <span>存活检测 (死人开关) 由哨兵直采 keeper 负责;本页台账/历史仍读后端 (keeper 数据)。</span>
+                <span>{t('存活检测 (死人开关) 由哨兵直采 keeper 负责;本页台账/历史仍读后端 (keeper 数据)。')}</span>
               </div>
 
               {/* scheduled-task cards */}
               <div style={{ padding: '14px 14px 6px' }}>
-                <div style={{ marginBottom: 10 }}><ObsKap>定时任务 · 死人开关 ({'>'}{deadman}h 无成功即超期)</ObsKap></div>
+                <div style={{ marginBottom: 10 }}><ObsKap>{t('定时任务 · 死人开关 (>{h}h 无成功即超期)', { h: deadman })}</ObsKap></div>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
-                  {crons.length === 0 && <div style={{ gridColumn: '1 / -1', padding: 16, textAlign: 'center', color: 'var(--fg-3)', fontFamily: 'var(--font-mono)', fontSize: 11 }}>暂无定时任务记录</div>}
+                  {crons.length === 0 && <div style={{ gridColumn: '1 / -1', padding: 16, textAlign: 'center', color: 'var(--fg-3)', fontFamily: 'var(--font-mono)', fontSize: 11 }}>{t('暂无定时任务记录')}</div>}
                   {crons.map(([name, t]) => <CronCard key={name} name={name} t={t} deadman={deadman} />)}
                 </div>
               </div>
@@ -75,17 +76,17 @@ export default function ObsTasks() {
               <div style={{ padding: '8px 14px 16px' }}>
                 <div style={{ background: 'var(--surface)', border: '1px solid var(--border-strong)', borderRadius: 5, overflow: 'hidden' }}>
                   <div style={{ padding: '7px 14px', display: 'flex', alignItems: 'center', gap: 10, background: 'var(--surface-2)', borderBottom: '1px solid var(--border)' }}>
-                    <ObsKap>任务台账</ObsKap>
-                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-3)' }}>· {jobs.length} 条 · 含调度自治运行</span>
+                    <ObsKap>{t('任务台账')}</ObsKap>
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-3)' }}>· {t('{n} 条', { n: jobs.length })} · {t('含调度自治运行')}</span>
                   </div>
                   <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11, fontFamily: 'var(--font-mono)' }}>
                     <thead><tr style={{ borderBottom: '1px solid var(--border-strong)' }}>
-                      {['类型', '状态', '开始', '结束', '耗时', '发起方', 'trace', ''].map((c) => (
-                        <th key={c} style={{ textAlign: c === '耗时' ? 'right' : 'left', padding: '6px 12px', fontSize: 9, color: 'var(--fg-3)', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{c}</th>
+                      {[t('类型'), t('状态'), t('开始'), t('结束'), t('耗时'), t('发起方'), 'trace', ''].map((c) => (
+                        <th key={c} style={{ textAlign: c === t('耗时') ? 'right' : 'left', padding: '6px 12px', fontSize: 9, color: 'var(--fg-3)', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{c}</th>
                       ))}
                     </tr></thead>
                     <tbody>
-                      {jobs.length === 0 && <tr><td colSpan={8} style={{ padding: 20, textAlign: 'center', color: 'var(--fg-3)' }}>暂无任务记录</td></tr>}
+                      {jobs.length === 0 && <tr><td colSpan={8} style={{ padding: 20, textAlign: 'center', color: 'var(--fg-3)' }}>{t('暂无任务记录')}</td></tr>}
                       {jobs.map((j) => {
                         const bad = j.status === 'failed' || j.status === 'timeout';
                         return (
@@ -127,14 +128,14 @@ function CronCard({ name, t, deadman }) {
           <div style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--fg)', fontWeight: 600 }}>{meta.label}</div>
         </div>
         {overdue
-          ? <span className="chip err" style={{ fontSize: 10.5, height: 19, fontWeight: 600 }}>⚠ 超期未成功</span>
-          : <span className="chip ok" style={{ fontSize: 10.5, height: 19 }}>✓ 正常</span>}
+          ? <span className="chip err" style={{ fontSize: 10.5, height: 19, fontWeight: 600 }}>{t('⚠ 超期未成功')}</span>
+          : <span className="chip ok" style={{ fontSize: 10.5, height: 19 }}>{t('✓ 正常')}</span>}
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
         {[
-          ['上次运行', t.last_run_at ? fmtTs(t.last_run_at) : '从未', false],
-          ['上次成功', t.last_success_at ? fmtTs(t.last_success_at) : '从未', overdue],
-          ['距今', t.last_success_at ? agoFrom(t.last_success_at) : '—', overdue],
+          [t('上次运行'), t.last_run_at ? fmtTs(t.last_run_at) : t('从未'), false],
+          [t('上次成功'), t.last_success_at ? fmtTs(t.last_success_at) : t('从未'), overdue],
+          [t('距今'), t.last_success_at ? agoFrom(t.last_success_at) : '—', overdue],
         ].map(([k, v, hot]) => (
           <div key={k} style={{ display: 'flex', justifyContent: 'space-between', fontFamily: 'var(--font-mono)', fontSize: 11 }}>
             <span style={{ color: 'var(--fg-3)' }}>{k}</span>
@@ -144,7 +145,7 @@ function CronCard({ name, t, deadman }) {
       </div>
       {overdue && (
         <div style={{ marginTop: 11, paddingTop: 10, borderTop: '1px solid var(--err)', fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--err)' }}>
-          ▲ 已超过死人开关阈值 ({'>'}{deadman}h) · 数据写入链路疑似中断
+          {t('▲ 已超过死人开关阈值 (>{h}h) · 数据写入链路疑似中断', { h: deadman })}
         </div>
       )}
     </div>

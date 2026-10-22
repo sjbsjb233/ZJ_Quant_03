@@ -13,6 +13,7 @@ import {
 } from '../../components/ui/KlineToolPanels';
 import { endpoints } from '../../lib/api';
 import { fmtCompact, absTime } from '../../lib/format';
+import { t } from '../../lib/i18n';
 import { downloadCSV, stitchCanvasesToPng } from '../../lib/download';
 
 const RECENT_KEY = 'zjq_recent_charts';
@@ -37,9 +38,9 @@ const FREQ_OPTIONS = [
 ];
 
 const ADJUST_OPTIONS = [
-  { value: 'pre',  label: '前复权' },
-  { value: 'none', label: '不复权' },
-  { value: 'post', label: '后复权' },
+  { value: 'pre',  label: t('前复权') },
+  { value: 'none', label: t('不复权') },
+  { value: 'post', label: t('后复权') },
 ];
 
 const SOURCE_OPTIONS = [
@@ -64,9 +65,9 @@ const RANGE_OPTIONS = [
 ];
 
 const MODE_OPTIONS = [
-  { value: 'single', label: '单 symbol' },
-  { value: 'multi',  label: '多 symbol 对比' },
-  { value: 'diff',   label: '源对比' },
+  { value: 'single', label: t('单 symbol') },
+  { value: 'multi',  label: t('多 symbol 对比') },
+  { value: 'diff',   label: t('源对比') },
 ];
 
 function computeStart(months) {
@@ -313,15 +314,15 @@ export default function KlinePage() {
   const togglePanel = (id) => setPanel((p) => (p === id ? null : id));
 
   const railButtons = [
-    { id: 'main',     i: '∿', l: '主图指标', onClick: () => togglePanel('main') },
-    { id: 'sub',      i: '⊟', l: '副图指标', onClick: () => togglePanel('sub') },
-    { id: 'draw',     i: '✎', l: '绘图工具', onClick: () => togglePanel('draw') },
-    { id: 'marks',    i: '⚑', l: '标记控制', onClick: () => setMarksEnabled((v) => !v), active: marksEnabled },
-    { id: 'mktcap',   i: '¥', l: '市值副图', onClick: () => setShowMktCap((v) => !v), active: showMktCap },
-    { id: 'settings', i: '☰', l: '设置',     onClick: () => togglePanel('settings') },
+    { id: 'main',     i: '∿', l: t('主图指标'), onClick: () => togglePanel('main') },
+    { id: 'sub',      i: '⊟', l: t('副图指标'), onClick: () => togglePanel('sub') },
+    { id: 'draw',     i: '✎', l: t('绘图工具'), onClick: () => togglePanel('draw') },
+    { id: 'marks',    i: '⚑', l: t('标记控制'), onClick: () => setMarksEnabled((v) => !v), active: marksEnabled },
+    { id: 'mktcap',   i: '¥', l: t('市值副图'), onClick: () => setShowMktCap((v) => !v), active: showMktCap },
+    { id: 'settings', i: '☰', l: t('设置'),     onClick: () => togglePanel('settings') },
     null,
-    { id: 'fs',       i: '⇲', l: '全屏',     onClick: toggleFullscreen },
-    { id: 'export',   i: '↗', l: '导出',     onClick: () => togglePanel('export') },
+    { id: 'fs',       i: '⇲', l: t('全屏'),     onClick: toggleFullscreen },
+    { id: 'export',   i: '↗', l: t('导出'),     onClick: () => togglePanel('export') },
   ];
 
   // tool rail / popovers only make sense on the single-instance views
@@ -333,11 +334,11 @@ export default function KlinePage() {
       current="kline"
       path={['viz/', 'kline/', symbol]}
       fkeys={[
-        { k: 'F1', l: '指标', onClick: () => togglePanel('main'), active: panel === 'main' },
-        { k: 'F2', l: '标注', onClick: () => togglePanel('draw'), active: panel === 'draw' },
-        { k: 'F3', l: '对比', onClick: () => setShowCompare((v) => !v), active: showCompare },
-        { k: 'F4', l: '导出', onClick: () => togglePanel('export'), active: panel === 'export' },
-        { k: 'F5', l: '刷新', onClick: () => activeQ.refetch() },
+        { k: 'F1', l: t('指标'), onClick: () => togglePanel('main'), active: panel === 'main' },
+        { k: 'F2', l: t('标注'), onClick: () => togglePanel('draw'), active: panel === 'draw' },
+        { k: 'F3', l: t('对比'), onClick: () => setShowCompare((v) => !v), active: showCompare },
+        { k: 'F4', l: t('导出'), onClick: () => togglePanel('export'), active: panel === 'export' },
+        { k: 'F5', l: t('刷新'), onClick: () => activeQ.refetch() },
       ]}
       titleBar={false}
     >
@@ -404,7 +405,7 @@ export default function KlinePage() {
 
         {/* View: current / all */}
         <div style={{ display: 'inline-flex', border: '1px solid var(--border-strong)', borderRadius: 3, overflow: 'hidden' }}>
-          {[{ value: 'current', label: '当前' }, { value: 'all', label: '含作废' }].map((v, i) => (
+          {[{ value: 'current', label: t('当前') }, { value: 'all', label: t('含作废') }].map((v, i) => (
             <button
               key={v.value}
               data-testid={`kline-view-${v.value}`}
@@ -453,7 +454,7 @@ export default function KlinePage() {
           display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', rowGap: 6,
           fontFamily: 'var(--font-mono)', fontSize: 11, flexShrink: 0,
         }}>
-          <span style={{ color: 'var(--fg-3)', fontSize: 10 }}>对比 symbol:</span>
+          <span style={{ color: 'var(--fg-3)', fontSize: 10 }}>{t('对比 symbol:')}</span>
           <span style={{ color: 'var(--fg)' }}>{symbol}</span>
           {symbols.slice(1).map((s) => (
             <span key={s} style={{
@@ -471,7 +472,7 @@ export default function KlinePage() {
             <>
               <span style={{ color: 'var(--fg-mute)' }}>│</span>
               <div style={{ display: 'inline-flex', border: '1px solid var(--border-strong)', borderRadius: 3, overflow: 'hidden' }}>
-                {[{ value: 'grid', label: '网格' }, { value: 'overlay', label: '叠加' }].map((m, i) => (
+                {[{ value: 'grid', label: t('网格') }, { value: 'overlay', label: t('叠加') }].map((m, i) => (
                   <button
                     key={m.value}
                     data-testid={`kline-compare-mode-${m.value}`}
@@ -494,7 +495,7 @@ export default function KlinePage() {
               <span style={{ color: 'var(--fg-mute)' }}>│</span>
               <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, cursor: 'pointer', color: 'var(--fg-2)' }}>
                 <input type="checkbox" data-testid="kline-diff-toggle" checked={diffMode} onChange={(e) => setDiffMode(e.target.checked)} />
-                源对比 (A vs B)
+                {t('源对比 (A vs B)')}
               </label>
               {diffMode && (
                 <>
@@ -553,12 +554,12 @@ export default function KlinePage() {
         <div style={{ flex: 1 }} />
         {diffActive && (
           <span style={{ fontSize: 10, color: 'var(--info)' }}>
-            源对比 · {sourceA} ▬ vs {sourceB} ▬ · Δ&gt;0.5% 高亮
+            {t('源对比')} · {sourceA} ▬ vs {sourceB} ▬ · {t('Δ>0.5% 高亮')}
           </span>
         )}
         {marksEnabled && batchRevisions.length > 0 && (
           <span data-testid="kline-revision-warning" style={{ fontSize: 10, color: 'var(--warn)' }}>
-            ⚠ {batchRevisions[0].start?.slice(0, 10)} → {batchRevisions[0].end?.slice(0, 10)} 区间被批次修订
+            ⚠ {batchRevisions[0].start?.slice(0, 10)} → {batchRevisions[0].end?.slice(0, 10)} {t('区间被批次修订')}
           </span>
         )}
         {activeQ.isFetching && (
@@ -612,15 +613,15 @@ export default function KlinePage() {
             <KlineExportPanel onPng={exportPng} onCsv={exportCsv} onClose={() => setPanel(null)} top={220} />
           )}
           {toolsEnabled && panel === 'settings' && (
-            <Popover onClose={() => setPanel(null)} top={120} width={180} title="设置" testId="kline-settings-panel">
+            <Popover onClose={() => setPanel(null)} top={120} width={180} title={t('设置')} testId="kline-settings-panel">
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 <button className="btn ghost sm" style={{ fontSize: 10.5, justifyContent: 'flex-start' }}
-                  onClick={() => { klineRef.current?.scrollToRealTime(200); setPanel(null); }}>⇥ 回到最新</button>
+                  onClick={() => { klineRef.current?.scrollToRealTime(200); setPanel(null); }}>{t('⇥ 回到最新')}</button>
                 <button className="btn ghost sm" style={{ fontSize: 10.5, justifyContent: 'flex-start' }}
-                  onClick={() => { klineRef.current?.removeOverlay({}); setPanel(null); }}>✕ 清空所有画线</button>
+                  onClick={() => { klineRef.current?.removeOverlay({}); setPanel(null); }}>{t('✕ 清空所有画线')}</button>
                 <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4, color: 'var(--fg-2)' }}>
                   <input type="checkbox" checked={marksEnabled} onChange={(e) => setMarksEnabled(e.target.checked)} />
-                  显示治理标记
+                  {t('显示治理标记')}
                 </label>
               </div>
             </Popover>
@@ -653,14 +654,14 @@ export default function KlinePage() {
                       <div style={{ flex: 1, minHeight: 0 }}>
                         {cs.length ? (
                           <Kline candles={cs} mainIndicators={mainIndicators} subIndicators={['VOL']} />
-                        ) : <Empty label={`${s} 暂无数据`} />}
+                        ) : <Empty label={t('{s} 暂无数据', { s })} />}
                       </div>
                     </div>
                   );
                 })}
               </div>
             ) : mainCandles.length === 0 ? (
-              <Empty label={`${symbol} 暂无数据`} />
+              <Empty label={t('{s} 暂无数据', { s: symbol })} />
             ) : (
               <Kline
                 ref={klineRef}
@@ -760,24 +761,24 @@ export default function KlinePage() {
                 style={{ fontSize: 10.5, justifyContent: 'flex-start' }}
                 disabled={!infoCandle?._batch_id}
                 onClick={() => infoCandle?._batch_id && nav(`/data/batches/${infoCandle._batch_id}`)}
-              >↗ 跳到批次详情</button>
+              >{t('↗ 跳到批次详情')}</button>
               <button
                 className="btn ghost sm"
                 style={{ fontSize: 10.5, justifyContent: 'flex-start' }}
                 onClick={() => nav(`/data/tables/raw.bars_daily?symbol=${symbol}`)}
-              >↗ 查看行 lineage</button>
+              >{t('↗ 查看行 lineage')}</button>
               <button
                 className="btn ghost sm"
                 data-testid="kline-jump-tablebrowser"
                 style={{ fontSize: 10.5, justifyContent: 'flex-start' }}
                 onClick={() => nav('/data/tables/raw.bars_daily')}
-              >↗ 在表浏览中打开</button>
+              >{t('↗ 在表浏览中打开')}</button>
               <button
                 className="btn ghost sm"
                 style={{ fontSize: 10.5, justifyContent: 'flex-start' }}
                 disabled={!infoCandle}
                 onClick={() => infoCandle && navigator.clipboard?.writeText(JSON.stringify(infoCandle, null, 2))}
-              >⎘ 复制行数据</button>
+              >{t('⎘ 复制行数据')}</button>
             </div>
           </div>
         </div>

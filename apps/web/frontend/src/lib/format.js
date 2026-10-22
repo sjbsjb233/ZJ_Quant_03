@@ -1,4 +1,5 @@
 // Display formatters + status/freshness encodings shared by every page.
+import { t as tr } from './i18n';
 
 export function fmtN(n) {
   if (n === null || n === undefined) return '—';
@@ -31,11 +32,11 @@ export function relTime(value) {
   if (value == null) return '—';
   const t = typeof value === 'string' ? new Date(value) : value;
   const sec = (Date.now() - t.getTime()) / 1000;
-  if (sec < 0) return '刚刚';
-  if (sec < 60) return `${Math.floor(sec)} 秒前`;
-  if (sec < 3600) return `${Math.floor(sec / 60)} 分钟前`;
-  if (sec < 86400) return `${Math.floor(sec / 3600)} 小时前`;
-  if (sec < 86400 * 30) return `${Math.floor(sec / 86400)} 天前`;
+  if (sec < 0) return tr('刚刚');
+  if (sec < 60) return tr('{n} 秒前', { n: Math.floor(sec) });
+  if (sec < 3600) return tr('{n} 分钟前', { n: Math.floor(sec / 60) });
+  if (sec < 86400) return tr('{n} 小时前', { n: Math.floor(sec / 3600) });
+  if (sec < 86400 * 30) return tr('{n} 天前', { n: Math.floor(sec / 86400) });
   return t.toISOString().slice(0, 10);
 }
 
@@ -83,7 +84,7 @@ export function smartTsParts(value, { seconds = false, assumeUtc = true, now = n
     : `${p(t.getHours())}:${p(t.getMinutes())}`;
   const dd = dayDiff(t, now);
   let day = '';
-  if (dd === 1) day = '昨';                                                   // 昨天
+  if (dd === 1) day = tr('昨');                                                   // 昨天
   else if (dd !== 0) day = t.getFullYear() === now.getFullYear()
     ? `${p(t.getMonth() + 1)}-${p(t.getDate())}`                              // 今年
     : `${String(t.getFullYear()).slice(2)}-${p(t.getMonth() + 1)}-${p(t.getDate())}`; // 跨年
@@ -114,7 +115,7 @@ export function dayBoundaryLabel(prevTs, curTs, now = new Date()) {
   const dd = dayDiff(cur, now);
   const pad = (n) => String(n).padStart(2, '0');
   const md = `${pad(cur.getMonth() + 1)}-${pad(cur.getDate())}`;
-  const rel = dd === 0 ? '今天' : dd === 1 ? '昨天' : dd > 1 ? `${dd} 天前` : '';
+  const rel = dd === 0 ? tr('今天') : dd === 1 ? tr('昨天') : dd > 1 ? tr('{n} 天前', { n: dd }) : '';
   return rel ? `${md} · ${rel}` : md;
 }
 

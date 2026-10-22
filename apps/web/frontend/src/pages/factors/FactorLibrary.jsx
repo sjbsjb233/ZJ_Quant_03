@@ -4,6 +4,7 @@ import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { endpoints } from '../../lib/api';
+import { t } from '../../lib/i18n';
 import { TerminalShell, FilterBar, FInput, FSelect, FChip, KpiStrip } from '../../components/shell';
 import { Empty, ErrorState, Loading } from '../../components/ui';
 import { MiniBars } from './charts';
@@ -69,65 +70,65 @@ export default function FactorLibrary() {
     <TerminalShell
       module="factor" current="library"
       path={['factor_mgmt/', 'library']}
-      title="因子库"
-      subtitle={`factors · 共 ${total} · 显示 ${items.length} · sort=${sort}`}
+      title={t('因子库')}
+      subtitle={t('factors · 共 {total} · 显示 {shown} · sort={sort}', { total, shown: items.length, sort })}
       actions={
         <>
-          <button className="btn ghost sm" onClick={exportCsv}>导出 CSV</button>
-          <button className="btn ghost sm" onClick={() => nav('/factors/import')}>去导入因子 →</button>
+          <button className="btn ghost sm" onClick={exportCsv}>{t('导出 CSV')}</button>
+          <button className="btn ghost sm" onClick={() => nav('/factors/import')}>{t('去导入因子 →')}</button>
           <button className="btn sm" data-testid="factor-lib-newrun"
             style={{ background: 'var(--fg)', color: 'var(--bg)', borderColor: 'var(--fg)' }}
-            onClick={() => setRunFor(items[0]?.factor_id || 'mom')}>+ 新建运行</button>
+            onClick={() => setRunFor(items[0]?.factor_id || 'mom')}>{t('+ 新建运行')}</button>
         </>
       }
       filterBar={
         <FilterBar applied={[q, category, status, source, direction, trackingOnly].filter(Boolean)}
           onClear={() => { setQ(''); setCategory(''); setStatus(''); setSource(''); setDirection(''); setTrackingOnly(false); }}>
-          <FInput label="search" placeholder="因子名 / 显示名…" value={q} onChange={setQ} width={180} />
+          <FInput label="search" placeholder={t('因子名 / 显示名…')} value={q} onChange={setQ} width={180} />
           <FSelect label="category" testId="factor-lib-filter-cat" value={category} onChange={setCategory} width={120} options={[
-            { value: '', label: '全部' },
-            ...FACTOR_CATEGORIES.map((c) => ({ value: c.id, label: c.l })),
+            { value: '', label: t('全部') },
+            ...FACTOR_CATEGORIES.map((c) => ({ value: c.id, label: t(c.l) })),
           ]} />
           <FSelect label="status" testId="factor-lib-filter-status" value={status} onChange={setStatus} width={110} options={[
-            { value: '', label: '全部' },
-            { value: 'enabled', label: '启用' },
-            { value: 'disabled', label: '停用' },
-            { value: 'archived', label: '归档' },
+            { value: '', label: t('全部') },
+            { value: 'enabled', label: t('启用') },
+            { value: 'disabled', label: t('停用') },
+            { value: 'archived', label: t('归档') },
           ]} />
           <FSelect label="source" testId="factor-lib-filter-src" value={source} onChange={setSource} width={100} options={[
-            { value: '', label: '全部' },
+            { value: '', label: t('全部') },
             { value: 'builtin', label: 'builtin' },
             { value: 'upload', label: 'upload' },
             { value: 'inbox', label: 'inbox' },
           ]} />
           <FSelect label="direction" value={direction} onChange={setDirection} width={80} options={[
-            { value: '', label: '全部' },
-            { value: '+', label: '+ 正' },
-            { value: '-', label: '− 反' },
+            { value: '', label: t('全部') },
+            { value: '+', label: t('+ 正') },
+            { value: '-', label: t('− 反') },
           ]} />
           <FSelect label="sort" value={sort} onChange={setSort} width={150} options={[
-            { value: 'icir_annual_desc', label: 'ICIR 年化 ↓' },
+            { value: 'icir_annual_desc', label: t('ICIR 年化 ↓') },
             { value: 'icir_desc', label: 'ICIR ↓' },
             { value: 'rank_ic_desc', label: 'Rank IC ↓' },
-            { value: 'updated_desc', label: '更新时间 ↓' },
+            { value: 'updated_desc', label: t('更新时间 ↓') },
           ]} />
-          {trackingOnly && <FChip tone="info" onX={() => setTrackingOnly(false)}>仅日常跟踪</FChip>}
+          {trackingOnly && <FChip tone="info" onX={() => setTrackingOnly(false)}>{t('仅日常跟踪')}</FChip>}
           {!trackingOnly && (
-            <span onClick={() => setTrackingOnly(true)} style={{ color: 'var(--info)', cursor: 'pointer', fontSize: 10 }}>+ 仅日常跟踪</span>
+            <span onClick={() => setTrackingOnly(true)} style={{ color: 'var(--info)', cursor: 'pointer', fontSize: 10 }}>{t('+ 仅日常跟踪')}</span>
           )}
         </FilterBar>
       }
     >
       <div data-testid="factor-lib-kpi">
       <KpiStrip cells={[
-        { label: 'TOTAL', value: kpi.total ?? 0, sub: '已加载', testId: 'factor-lib-kpi-total' },
+        { label: 'TOTAL', value: kpi.total ?? 0, sub: t('已加载'), testId: 'factor-lib-kpi-total' },
         { label: 'ENABLED', value: kpi.enabled ?? 0, tone: 'ok', testId: 'factor-lib-kpi-enabled' },
-        { label: 'DISABLED', value: kpi.disabled ?? 0, sub: '低分', tone: 'neutral', testId: 'factor-lib-kpi-disabled' },
-        { label: 'ARCHIVED', value: kpi.archived ?? 0, sub: '历史', tone: 'neutral', testId: 'factor-lib-kpi-archived' },
+        { label: 'DISABLED', value: kpi.disabled ?? 0, sub: t('低分'), tone: 'neutral', testId: 'factor-lib-kpi-disabled' },
+        { label: 'ARCHIVED', value: kpi.archived ?? 0, sub: t('历史'), tone: 'neutral', testId: 'factor-lib-kpi-archived' },
         { label: 'DAILY TRACK', value: kpi.tracked ?? 0, sub: 'auto re-eval', tone: 'info', testId: 'factor-lib-kpi-tracked' },
         { label: 'TOP ICIR', value: fmtNum(kpi.top_icir, 2), sub: kpi.top_icir_id || '—', tone: 'ok', testId: 'factor-lib-kpi-topicir' },
         { label: 'DECAYING', value: kpi.decaying ?? 0, sub: '7d ↓ > 30%', tone: 'warn', testId: 'factor-lib-kpi-decaying' },
-        { label: 'NEVER EVAL', value: kpi.never_eval ?? 0, sub: '待评估', tone: 'warn', testId: 'factor-lib-kpi-nevereval' },
+        { label: 'NEVER EVAL', value: kpi.never_eval ?? 0, sub: t('待评估'), tone: 'warn', testId: 'factor-lib-kpi-nevereval' },
       ]} />
       </div>
 
@@ -143,12 +144,12 @@ export default function FactorLibrary() {
       )}
 
       <div className="scroll" style={{ flex: 1, minHeight: 0 }} data-testid="factor-lib-table">
-        {qry.isLoading && <Loading label="加载因子列表…" />}
+        {qry.isLoading && <Loading label={t('加载因子列表…')} />}
         {!qry.isLoading && qry.isError && (
           <ErrorState error={qry.error} onRetry={() => qry.refetch()} />
         )}
         {!qry.isLoading && !qry.isError && items.length === 0 && (
-          <Empty label="还没有因子" hint="去『因子导入』或先启用内置因子" />
+          <Empty label={t('还没有因子')} hint={t('去『因子导入』或先启用内置因子')} />
         )}
         {!qry.isLoading && !qry.isError && items.length > 0 && (
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
@@ -156,7 +157,7 @@ export default function FactorLibrary() {
               <tr style={{ borderBottom: '1px solid var(--border-strong)' }}>
                 {[
                   { l: '', a: 'center', w: 30 },
-                  { l: 'factor_id / 显示名', a: 'left' },
+                  { l: t('factor_id / 显示名'), a: 'left' },
                   { l: 'cat', a: 'left' },
                   { l: 'src', a: 'left' },
                   { l: 'dir', a: 'center' },
@@ -195,17 +196,17 @@ export default function FactorLibrary() {
                   <td style={{ padding: '0 10px' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 500, color: 'var(--fg)' }}>{f.factor_id}</span>
-                      <span style={{ color: 'var(--fg-3)', fontSize: 10.5 }}>· {f.display_name}</span>
-                      {f.tags?.includes('核心') && <span className="chip ok" style={{ height: 14, fontSize: 9, padding: '0 4px' }}>核心</span>}
-                      {f.never_eval && <span className="chip warn" style={{ height: 14, fontSize: 9, padding: '0 4px' }}>未评估</span>}
-                      {f.decaying && <span className="chip warn" style={{ height: 14, fontSize: 9, padding: '0 4px' }}>衰减</span>}
+                      <span style={{ color: 'var(--fg-3)', fontSize: 10.5 }}>· {t(f.display_name)}</span>
+                      {f.tags?.includes('核心') && <span className="chip ok" style={{ height: 14, fontSize: 9, padding: '0 4px' }}>{t('核心')}</span>}
+                      {f.never_eval && <span className="chip warn" style={{ height: 14, fontSize: 9, padding: '0 4px' }}>{t('未评估')}</span>}
+                      {f.decaying && <span className="chip warn" style={{ height: 14, fontSize: 9, padding: '0 4px' }}>{t('衰减')}</span>}
                       {f.degradation_level === 'severe' && (
-                        <span className="chip" data-testid="factor-lib-degraded" title="最近评估含严重降级,结果可能不可用于决策"
-                          style={{ height: 14, fontSize: 9, padding: '0 4px', color: 'var(--err)', background: 'var(--err-bg)' }}>降级(严重)</span>
+                        <span className="chip" data-testid="factor-lib-degraded" title={t('最近评估含严重降级,结果可能不可用于决策')}
+                          style={{ height: 14, fontSize: 9, padding: '0 4px', color: 'var(--err)', background: 'var(--err-bg)' }}>{t('降级(严重)')}</span>
                       )}
                       {f.degradation_level === 'partial' && (
-                        <span className="chip warn" data-testid="factor-lib-degraded" title="最近评估存在降级项"
-                          style={{ height: 14, fontSize: 9, padding: '0 4px' }}>降级</span>
+                        <span className="chip warn" data-testid="factor-lib-degraded" title={t('最近评估存在降级项')}
+                          style={{ height: 14, fontSize: 9, padding: '0 4px' }}>{t('降级')}</span>
                       )}
                     </div>
                   </td>
@@ -242,7 +243,7 @@ export default function FactorLibrary() {
                   </td>
                   <td style={{ padding: '0 10px', fontFamily: 'var(--font-mono)', fontSize: 10 }}>
                     {f.tracking_enabled ? (
-                      <span style={{ color: 'var(--ok)' }}>● 跟踪 · {f.tracking_universe_id || f.last_universe_id || '—'}</span>
+                      <span style={{ color: 'var(--ok)' }}>● {t('跟踪')} · {f.tracking_universe_id || f.last_universe_id || '—'}</span>
                     ) : <span style={{ color: 'var(--fg-4)' }}>○ off</span>}
                   </td>
                   <td style={{ padding: '0 10px', fontFamily: 'var(--font-mono)', color: 'var(--fg-3)', fontSize: 10.5 }}>
@@ -252,10 +253,10 @@ export default function FactorLibrary() {
                     <span data-testid={`factor-lib-row-${f.factor_id}-action-toggle`}
                       onClick={() => patch.mutate({ factorId: f.factor_id, body: { status: f.status === 'enabled' ? 'disabled' : 'enabled' } })}
                       style={{ marginRight: 8, cursor: 'pointer', color: 'var(--fg-3)' }}>
-                      {f.status === 'enabled' ? '停用' : '启用'}
+                      {f.status === 'enabled' ? t('停用') : t('启用')}
                     </span>
                     <span data-testid={`factor-lib-row-${f.factor_id}-action-eval`}
-                      onClick={() => setRunFor(f.factor_id)} style={{ marginRight: 8, cursor: 'pointer', color: 'var(--info)' }}>评估 →</span>
+                      onClick={() => setRunFor(f.factor_id)} style={{ marginRight: 8, cursor: 'pointer', color: 'var(--info)' }}>{t('评估 →')}</span>
                   </td>
                 </tr>
               ))}
@@ -282,14 +283,14 @@ function BatchActionBar({ count, onClear, onEnable, onDisable, onTrack, onArchiv
       height: 28, padding: '0 14px', background: 'var(--info-bg)', borderBottom: '1px solid var(--border)',
       display: 'flex', alignItems: 'center', gap: 12, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg-2)', flexShrink: 0,
     }}>
-      <span style={{ color: 'var(--info)' }}>● 已选 {count} 个因子</span>
+      <span style={{ color: 'var(--info)' }}>● {t('已选 {count} 个因子', { count })}</span>
       <span style={{ color: 'var(--fg-mute)' }}>│</span>
-      <a onClick={onEnable} style={{ cursor: 'pointer' }}>批量启用</a>
-      <a onClick={onDisable} style={{ cursor: 'pointer' }}>批量停用</a>
-      <a onClick={onTrack} style={{ cursor: 'pointer', color: 'var(--ok)' }}>加入篮子</a>
-      <a onClick={onArchive} style={{ color: 'var(--err)', cursor: 'pointer' }}>归档</a>
+      <a onClick={onEnable} style={{ cursor: 'pointer' }}>{t('批量启用')}</a>
+      <a onClick={onDisable} style={{ cursor: 'pointer' }}>{t('批量停用')}</a>
+      <a onClick={onTrack} style={{ cursor: 'pointer', color: 'var(--ok)' }}>{t('加入篮子')}</a>
+      <a onClick={onArchive} style={{ color: 'var(--err)', cursor: 'pointer' }}>{t('归档')}</a>
       <div style={{ flex: 1 }} />
-      <a onClick={onClear} style={{ color: 'var(--fg-3)', cursor: 'pointer' }}>取消选择</a>
+      <a onClick={onClear} style={{ color: 'var(--fg-3)', cursor: 'pointer' }}>{t('取消选择')}</a>
     </div>
   );
 }

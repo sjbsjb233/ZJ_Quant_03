@@ -2,6 +2,7 @@
 // drawer, modal, and the destructive-confirm dialog.
 import React, { useState } from 'react';
 import { absTime, relTime, statusMeta } from '../../lib/format';
+import { t } from '../../lib/i18n';
 
 export function StatusChip({ status, size = 11 }) {
   const m = statusMeta(status);
@@ -33,13 +34,13 @@ export function RelTime({ value }) {
   return <span title={absTime(value)}>{relTime(value)}</span>;
 }
 
-export function Loading({ label = '加载中…' }) {
+export function Loading({ label = t('加载中…') }) {
   return <div style={{ padding: 40, textAlign: 'center', color: 'var(--fg-3)', fontFamily: 'var(--font-mono)', fontSize: 12 }}>
     <span className="dot running" style={{ width: 8, height: 8 }} /> {label}
   </div>;
 }
 
-export function Empty({ label = '暂无数据', hint }) {
+export function Empty({ label = t('暂无数据'), hint }) {
   return <div style={{ padding: 40, textAlign: 'center', color: 'var(--fg-3)', fontSize: 12 }}>
     <div style={{ fontSize: 24, color: 'var(--fg-4)', marginBottom: 8 }}>∅</div>
     <div>{label}</div>
@@ -54,7 +55,7 @@ export function ErrorState({ error, onRetry }) {
       <div style={{ fontSize: 24, marginBottom: 8 }}>✕</div>
       <div style={{ fontFamily: 'var(--font-mono)' }}>{e.code || 'ERROR'}</div>
       <div style={{ color: 'var(--fg-2)', marginTop: 6 }}>{e.message || String(error?.message || error)}</div>
-      {onRetry && <button className="btn sm" style={{ marginTop: 12 }} onClick={onRetry}>重试</button>}
+      {onRetry && <button className="btn sm" style={{ marginTop: 12 }} onClick={onRetry}>{t('重试')}</button>}
     </div>
   );
 }
@@ -91,24 +92,24 @@ export function Modal({ width = 460, onClose, title, children, footer }) {
 }
 
 // Destructive confirm requiring the user to type a phrase (vacuum / invalidate style).
-export function DangerConfirm({ phrase, title, onCancel, onConfirm, children, confirmLabel = '确认执行', busy }) {
+export function DangerConfirm({ phrase, title, onCancel, onConfirm, children, confirmLabel = t('确认执行'), busy }) {
   const [typed, setTyped] = useState('');
   const [checked, setChecked] = useState(!phrase);
   const ok = (!phrase || typed === phrase) && checked && !busy;
   return (
     <Modal width={520} onClose={onCancel} title={title}
       footer={<>
-        <button className="btn sm" onClick={onCancel}>取消</button>
-        <button className="btn sm danger" disabled={!ok} onClick={onConfirm}>{busy ? '执行中…' : confirmLabel}</button>
+        <button className="btn sm" onClick={onCancel}>{t('取消')}</button>
+        <button className="btn sm danger" disabled={!ok} onClick={onConfirm}>{busy ? t('执行中…') : confirmLabel}</button>
       </>}>
       {children}
       <label style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '12px 0', fontSize: 12, color: 'var(--fg-2)' }}>
         <input type="checkbox" checked={checked} onChange={(e) => setChecked(e.target.checked)} style={{ accentColor: 'var(--fg)' }} />
-        我已确认这是经过审慎判断的操作
+        {t('我已确认这是经过审慎判断的操作')}
       </label>
       {phrase && (
         <>
-          <div style={{ fontSize: 11, color: 'var(--fg-3)', marginBottom: 4 }}>请输入 <b style={{ color: 'var(--err)' }}>{phrase}</b> 以确认:</div>
+          <div style={{ fontSize: 11, color: 'var(--fg-3)', marginBottom: 4 }}>{t('请输入')} <b style={{ color: 'var(--err)' }}>{phrase}</b> {t('以确认:')}</div>
           <input value={typed} onChange={(e) => setTyped(e.target.value)} placeholder={phrase}
             style={{ width: '100%', height: 30, padding: '0 10px', background: 'var(--surface-2)', border: `1px solid ${typed === phrase ? 'var(--ok)' : 'var(--err)'}`, borderRadius: 3, fontFamily: 'var(--font-mono)', color: 'var(--fg)' }} />
         </>

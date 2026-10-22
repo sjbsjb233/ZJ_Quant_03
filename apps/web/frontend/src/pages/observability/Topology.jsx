@@ -2,6 +2,7 @@
 // 容器健康/重启/OOM/内存/CPU/写层 地图 + 宿主资源(磁盘) + 明细表。L0 存活、CPU 饱和、
 // core-dump 纳入节点态;后端离线时用哨兵实时帧渲染存活 (简版地图),不空白报错。
 import React from 'react';
+import { t } from '../../lib/i18n';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { TerminalShell } from '../../components/shell';
@@ -81,18 +82,18 @@ export default function Topology() {
       module="observ" current="topology"
       path={['observ/', 'topology']}
       fkeys={[
-        { k: 'F1', l: '总览', onClick: () => nav('/observ/overview') },
-        { k: 'F2', l: '告警', onClick: () => nav('/observ/alerts') },
-        { k: 'F3', l: '日志', onClick: () => nav('/observ/logs') },
-        { k: 'F5', l: '刷新', onClick: () => { q.refetch(); obs.refetch(); } },
+        { k: 'F1', l: t('总览'), onClick: () => nav('/observ/overview') },
+        { k: 'F2', l: t('告警'), onClick: () => nav('/observ/alerts') },
+        { k: 'F3', l: t('日志'), onClick: () => nav('/observ/logs') },
+        { k: 'F5', l: t('刷新'), onClick: () => { q.refetch(); obs.refetch(); } },
       ]}
-      title="拓扑"
-      subtitle={beDown ? 'topology · 后端不可达 · 哨兵实时存活 (简版地图)' : 'topology · 容器 / 层健康地图 · 外部观察视角'}
-      badge={<ObsRealtime state={obs.source} detail={beDown ? '后端故障' : ''} />}
-      actions={<button className="btn ghost sm" onClick={() => { q.refetch(); obs.refetch(); }}>↻ 刷新</button>}
-      statusMiddle={<span>{containers.length} 节点 · {beDown ? '哨兵实时帧' : q.data?.sentinel ? '哨兵在线' : '哨兵未上线 (合成视图)'}</span>}
+      title={t('拓扑')}
+      subtitle={beDown ? t('topology · 后端不可达 · 哨兵实时存活 (简版地图)') : t('topology · 容器 / 层健康地图 · 外部观察视角')}
+      badge={<ObsRealtime state={obs.source} detail={beDown ? t('后端故障') : ''} />}
+      actions={<button className="btn ghost sm" onClick={() => { q.refetch(); obs.refetch(); }}>{t('↻ 刷新')}</button>}
+      statusMiddle={<span>{t('{n} 节点', { n: containers.length })} · {beDown ? t('哨兵实时帧') : q.data?.sentinel ? t('哨兵在线') : t('哨兵未上线 (合成视图)')}</span>}
     >
-      {q.isLoading && !beDown ? <Loading label="加载拓扑…" />
+      {q.isLoading && !beDown ? <Loading label={t('加载拓扑…')} />
         : (
           <div className="scroll" style={{ flex: 1, minHeight: 0, overflow: 'auto', background: 'var(--bg)' }}>
             {beDown && <ObsDegradeBanner scope="topology" />}
@@ -100,16 +101,16 @@ export default function Topology() {
             {/* graph */}
             <div style={{ background: 'var(--surface)', borderBottom: '1px solid var(--border-strong)' }}>
               <div style={{ padding: '7px 14px', display: 'flex', alignItems: 'center', gap: 14, background: 'var(--surface-2)', borderBottom: '1px solid var(--border)' }}>
-                <ObsKap>健康地图</ObsKap>
+                <ObsKap>{t('健康地图')}</ObsKap>
                 <span style={{ display: 'inline-flex', gap: 12, fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-3)' }}>
-                  <span><span className="dot ok" />正常</span>
-                  <span><span className="dot warn" />降级</span>
-                  <span><span className="dot err" />故障</span>
-                  <span style={{ color: 'var(--fg-4)' }}>—— 数据流</span>
-                  <span style={{ color: 'var(--fg-4)' }}>┄┄ 哨兵观察</span>
+                  <span><span className="dot ok" />{t('正常')}</span>
+                  <span><span className="dot warn" />{t('降级')}</span>
+                  <span><span className="dot err" />{t('故障')}</span>
+                  <span style={{ color: 'var(--fg-4)' }}>{t('—— 数据流')}</span>
+                  <span style={{ color: 'var(--fg-4)' }}>{t('┄┄ 哨兵观察')}</span>
                 </span>
                 <span style={{ flex: 1 }} />
-                {(down + degraded) > 0 && <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--err)', fontWeight: 600 }}>⚠ {down} 故障 · {degraded} 降级</span>}
+                {(down + degraded) > 0 && <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--err)', fontWeight: 600 }}>{t('⚠ {d} 故障 · {g} 降级', { d: down, g: degraded })}</span>}
               </div>
               <div style={{ position: 'relative', height, padding: '0 24px' }}>
                 <svg width="100%" height={height} style={{ position: 'absolute', inset: 0, left: 24, overflow: 'visible' }}>
@@ -135,11 +136,11 @@ export default function Topology() {
             <div style={{ background: 'var(--surface)', borderBottom: '1px solid var(--border-strong)' }}>
               <div style={{ padding: '7px 14px', display: 'flex', alignItems: 'center', gap: 10, background: 'var(--surface-2)', borderBottom: '1px solid var(--border)' }}>
                 <ObsResMark res="disk" tone={disks.some((d) => d.state === 'error') ? 'err' : disks.some((d) => d.state === 'warn') ? 'warn' : 'ok'} />
-                <ObsKap>宿主资源 · 磁盘水位</ObsKap>
-                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-3)' }}>· 宿主级 · 哨兵 statvfs 直采 · 非单容器</span>
+                <ObsKap>{t('宿主资源 · 磁盘水位')}</ObsKap>
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-3)' }}>{t('· 宿主级 · 哨兵 statvfs 直采 · 非单容器')}</span>
               </div>
               <div style={{ padding: '12px 18px', display: 'flex', flexDirection: 'column', gap: 11, maxWidth: 640 }}>
-                {disks.length === 0 ? <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--fg-mute)' }}>哨兵未上报磁盘 (未挂载宿主分区)</span>
+                {disks.length === 0 ? <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--fg-mute)' }}>{t('哨兵未上报磁盘 (未挂载宿主分区)')}</span>
                   : disks.map((d) => <ObsMeter key={d.mount} label={d.mount} pct={d.used_pct} warnAt={85} dangerAt={95} />)}
               </div>
             </div>
@@ -147,12 +148,12 @@ export default function Topology() {
             {/* container detail table */}
             <div style={{ background: 'var(--surface)' }}>
               <div style={{ padding: '7px 14px', display: 'flex', alignItems: 'center', gap: 10, background: 'var(--surface-2)', borderBottom: '1px solid var(--border)' }}>
-                <ObsKap>容器明细</ObsKap><span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-3)' }}>· {containers.length} 节点 · 点击行 → 日志</span>
+                <ObsKap>{t('容器明细')}</ObsKap><span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-3)' }}>· {t('{n} 节点', { n: containers.length })} · {t('点击行 → 日志')}</span>
               </div>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11, fontFamily: 'var(--font-mono)' }}>
                 <thead><tr style={{ borderBottom: '1px solid var(--border-strong)' }}>
-                  {['容器', '层', '探测', '健康', '重启', '强杀', 'CPU%', '内存%', '写层', '运行时长', '最后观测', '告警', ''].map((c) => (
-                    <th key={c} style={{ textAlign: ['CPU%', '内存%', '重启', '写层'].includes(c) ? 'right' : 'left', padding: '5px 9px', fontSize: 9, color: 'var(--fg-3)', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.04em', whiteSpace: 'nowrap' }}>{c}</th>
+                  {[t('容器'), t('层'), t('探测'), t('健康'), t('重启'), t('强杀'), 'CPU%', t('内存%'), t('写层'), t('运行时长'), t('最后观测'), t('告警'), ''].map((c) => (
+                    <th key={c} style={{ textAlign: ['CPU%', t('内存%'), t('重启'), t('写层')].includes(c) ? 'right' : 'left', padding: '5px 9px', fontSize: 9, color: 'var(--fg-3)', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.04em', whiteSpace: 'nowrap' }}>{c}</th>
                   ))}
                 </tr></thead>
                 <tbody>
@@ -163,7 +164,7 @@ export default function Topology() {
                       <tr key={n.name} onClick={() => !n.synthetic && nav(`/observ/logs?source=${n.layer}`)} style={{ borderBottom: '1px solid var(--border-faint)', height: 30, cursor: n.synthetic ? 'default' : 'pointer', background: dn ? 'var(--err-bg)' : dg ? 'color-mix(in oklch, var(--warn-bg) 50%, transparent)' : i % 2 ? 'rgba(0,0,0,0.012)' : 'transparent' }}>
                         <td style={{ padding: '0 9px', color: 'var(--fg)', fontWeight: 500 }}>{n.name}</td>
                         <td style={{ padding: '0 9px' }}><ObsLayerMark layer={n.layer} /></td>
-                        <td style={{ padding: '0 9px' }}>{n.reachable === false ? <span style={{ color: 'var(--err)', fontWeight: 600 }}>不可达</span> : n.reachable === true ? <span style={{ color: 'var(--ok)' }}>可达</span> : <span style={{ color: 'var(--fg-mute)' }}>—</span>}</td>
+                        <td style={{ padding: '0 9px' }}>{n.reachable === false ? <span style={{ color: 'var(--err)', fontWeight: 600 }}>{t('不可达')}</span> : n.reachable === true ? <span style={{ color: 'var(--ok)' }}>{t('可达')}</span> : <span style={{ color: 'var(--fg-mute)' }}>—</span>}</td>
                         <td style={{ padding: '0 9px' }}>{n._state === 'unknown' ? <span style={{ color: 'var(--fg-mute)' }}>—</span> : <ObsHealthChip state={n._state === 'down' ? 'down' : n._state === 'degraded' ? 'degraded' : 'ok'} mini />}</td>
                         <td style={{ padding: '0 9px', textAlign: 'right', color: n.restart_count > 0 ? 'var(--err)' : 'var(--fg-2)', fontWeight: n.restart_count > 0 ? 600 : 400, fontVariantNumeric: 'tabular-nums' }}>{n.restart_count != null ? (n.restart_count > 0 ? `↑ ${n.restart_count}` : 0) : '—'}</td>
                         <td style={{ padding: '0 9px' }}>{n.oom_killed ? <span className="chip err" style={{ fontSize: 9.5, height: 15 }}>OOM</span> : <span style={{ color: 'var(--fg-mute)' }}>—</span>}</td>
@@ -173,7 +174,7 @@ export default function Topology() {
                         <td style={{ padding: '0 9px', color: dn ? 'var(--err)' : 'var(--fg-2)' }}>{fmtUptime(n.uptime_s)}</td>
                         <td style={{ padding: '0 9px', color: 'var(--fg-3)', fontSize: 10.5 }}>{n.last_seen ? agoFrom(n.last_seen) : '—'}</td>
                         <td style={{ padding: '0 9px' }}>{n.alerts?.length ? <span className="chip err" style={{ fontSize: 9.5, height: 15 }}>▲ {n.alerts.length}</span> : <span style={{ color: 'var(--fg-mute)' }}>—</span>}</td>
-                        <td style={{ padding: '0 9px', textAlign: 'right' }}>{!n.synthetic && <ObsDrill>日志</ObsDrill>}</td>
+                        <td style={{ padding: '0 9px', textAlign: 'right' }}>{!n.synthetic && <ObsDrill>{t('日志')}</ObsDrill>}</td>
                       </tr>
                     );
                   })}
@@ -198,7 +199,7 @@ function TopoNode({ n, onClick }) {
   const mem = n.mem_pct; const cpu = n.cpu_pct;
   const dump = (n.rw_size_gb ?? 0) >= CORE_DUMP_GB;
   return (
-    <div onClick={onClick} title={`运行时长 ${fmtUptime(n.uptime_s)}${n.cpu_pct != null ? ` · cpu ${Math.round(n.cpu_pct)}%` : ''}${n.alerts?.length ? ` · ${n.alerts.length} 活跃告警` : ''}`}
+    <div onClick={onClick} title={`${t('运行时长')} ${fmtUptime(n.uptime_s)}${n.cpu_pct != null ? ` · cpu ${Math.round(n.cpu_pct)}%` : ''}${n.alerts?.length ? ` · ${t('{n} 活跃告警', { n: n.alerts.length })}` : ''}`}
       style={{
         position: 'absolute', left: n.x, top: n.y, width: NW, height: NH,
         background: dn ? 'var(--err-bg)' : 'var(--surface)',
@@ -211,11 +212,11 @@ function TopoNode({ n, onClick }) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
         <ObsLayerMark layer={n.layer} />
         <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5, color: 'var(--fg)', fontWeight: 500, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{n.name}</span>
-        {dump && <span title="崩溃转储"><ObsResMark res="dump" tone="err" /></span>}
+        {dump && <span title={t('崩溃转储')}><ObsResMark res="dump" tone="err" /></span>}
         <span className="dot" style={{ margin: 0, background: col, animation: dn ? 'pulse 1.4s ease-in-out infinite' : 'none' }} />
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--fg-3)' }}>
-        <span style={{ color: n.reachable === false ? 'var(--err)' : 'var(--fg-4)' }}>{n.reachable === false ? '不可达' : n.status}</span>
+        <span style={{ color: n.reachable === false ? 'var(--err)' : 'var(--fg-4)' }}>{n.reachable === false ? t('不可达') : n.status}</span>
         <span style={{ flex: 1 }} />
         {n.restart_count > 0 && <span style={{ color: 'var(--err)', fontWeight: 600 }}>↺{n.restart_count}</span>}
         {n.oom_killed && <span className="chip err" style={{ fontSize: 8.5, height: 13, padding: '0 3px' }}>OOM</span>}

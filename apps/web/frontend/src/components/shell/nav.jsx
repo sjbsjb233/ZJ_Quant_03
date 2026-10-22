@@ -1,61 +1,62 @@
 // Navigation config + glyphs for the terminal shell (mirrors the design handoff).
 import React from 'react';
+import { t } from '../../lib/i18n';
 
 export const MODULES = [
-  { id: 'data', label: '数据管理', en: 'DATA', enabled: true, to: '/data/dashboard' },
-  { id: 'viz', label: '数据可视化', en: 'VIZ', enabled: true, to: '/data/charts' },
-  { id: 'factor', label: '因子管理', en: 'FACTOR', enabled: true, badge: 'NEW', to: '/factors/library' },
+  { id: 'data', label: t('数据管理'), en: 'DATA', enabled: true, to: '/data/dashboard' },
+  { id: 'viz', label: t('数据可视化'), en: 'VIZ', enabled: true, to: '/data/charts' },
+  { id: 'factor', label: t('因子管理'), en: 'FACTOR', enabled: true, badge: 'NEW', to: '/factors/library' },
   // 可观测：合并旧「日志中心」+「因子日志」并新增监控/外部观察 (可观测层重构方案 §7.1)。
-  { id: 'observ', label: '可观测', en: 'OBSERV', enabled: true, badge: 'NEW', to: '/observ/overview' },
-  { id: 'strategy', label: '策略管理', en: 'STRATEGY', enabled: false, phase: 'Q4', to: '/strategies' },
-  { id: 'live', label: '实盘交易', en: 'LIVE', enabled: false, phase: '2027', to: '/live' },
+  { id: 'observ', label: t('可观测'), en: 'OBSERV', enabled: true, badge: 'NEW', to: '/observ/overview' },
+  { id: 'strategy', label: t('策略管理'), en: 'STRATEGY', enabled: false, phase: 'Q4', to: '/strategies' },
+  { id: 'live', label: t('实盘交易'), en: 'LIVE', enabled: false, phase: '2027', to: '/live' },
 ];
 
 // 因子层重构 §2.1：新增「因子篮子 / 因子优选 / 入选集合」三个一级页签；
 // 「因子相关性」并入篮子（301 重定向）。因子日志已并入「可观测」(§7.1)。
 export const FACTOR_NAV = [
-  { id: 'library',     label: '因子库',      to: '/factors/library' },
-  { id: 'baskets',     label: '因子篮子',    to: '/factors/baskets',    badge: 'NEW' },
-  { id: 'screener',    label: '因子优选',    to: '/factors/screening',  badge: 'NEW' },
-  { id: 'selections',  label: '入选集合',    to: '/factors/selections' },
-  { id: 'queue',       label: '任务队列',    to: '/factors/tasks',      badge: 'LIVE' },
-  { id: 'pools',       label: '股票池',      to: '/factors/universe' },
-  { id: 'import',      label: '因子导入',    to: '/factors/import',      warn: true },
+  { id: 'library',     label: t('因子库'),      to: '/factors/library' },
+  { id: 'baskets',     label: t('因子篮子'),    to: '/factors/baskets',    badge: 'NEW' },
+  { id: 'screener',    label: t('因子优选'),    to: '/factors/screening',  badge: 'NEW' },
+  { id: 'selections',  label: t('入选集合'),    to: '/factors/selections' },
+  { id: 'queue',       label: t('任务队列'),    to: '/factors/tasks',      badge: 'LIVE' },
+  { id: 'pools',       label: t('股票池'),      to: '/factors/universe' },
+  { id: 'import',      label: t('因子导入'),    to: '/factors/import',      warn: true },
 ];
 
 // 日志中心 tab 已并入「可观测」(/observ/*)，故此处删除 (§7.1)。
 export const DATA_NAV = [
-  { id: 'overview', label: '总览', to: '/data/dashboard', hot: true },
-  { id: 'batches', label: '批次台账', to: '/data/batches' },
-  { id: 'sources', label: '数据源', to: '/data/sources' },
-  { id: 'fields', label: '字段注册表', to: '/data/fields' },
-  { id: 'tables', label: '表浏览', to: '/data/tables' },
-  { id: 'quality', label: '数据质量', to: '/data/quality', warn: true },
-  { id: 'maintenance', label: '维护操作', to: '/data/maintenance' },
-  { id: 'audit', label: '审计日志', to: '/data/audit' },
+  { id: 'overview', label: t('总览'), to: '/data/dashboard', hot: true },
+  { id: 'batches', label: t('批次台账'), to: '/data/batches' },
+  { id: 'sources', label: t('数据源'), to: '/data/sources' },
+  { id: 'fields', label: t('字段注册表'), to: '/data/fields' },
+  { id: 'tables', label: t('表浏览'), to: '/data/tables' },
+  { id: 'quality', label: t('数据质量'), to: '/data/quality', warn: true },
+  { id: 'maintenance', label: t('维护操作'), to: '/data/maintenance' },
+  { id: 'audit', label: t('审计日志'), to: '/data/audit' },
 ];
 
 // 可观测模块侧栏 (顺序即重要性, 可观测层重构方案 §7.2)。
 export const OBSERV_NAV = [
-  { id: 'overview', label: '总览', to: '/observ/overview', hot: true },
-  { id: 'alerts', label: '告警', to: '/observ/alerts', warn: true },
-  { id: 'topology', label: '拓扑', to: '/observ/topology' },
-  { id: 'logs', label: '日志', to: '/observ/logs' },
-  { id: 'stream', label: '实时流', to: '/observ/stream', badge: 'LIVE' },
-  { id: 'sessions', label: '会话', to: '/observ/sessions' },
-  { id: 'tasks', label: '任务', to: '/observ/tasks' },
-  { id: 'rules', label: '规则', to: '/observ/rules' },
+  { id: 'overview', label: t('总览'), to: '/observ/overview', hot: true },
+  { id: 'alerts', label: t('告警'), to: '/observ/alerts', warn: true },
+  { id: 'topology', label: t('拓扑'), to: '/observ/topology' },
+  { id: 'logs', label: t('日志'), to: '/observ/logs' },
+  { id: 'stream', label: t('实时流'), to: '/observ/stream', badge: 'LIVE' },
+  { id: 'sessions', label: t('会话'), to: '/observ/sessions' },
+  { id: 'tasks', label: t('任务'), to: '/observ/tasks' },
+  { id: 'rules', label: t('规则'), to: '/observ/rules' },
 ];
 
 // 数据可视化层重构 · VIZ Layer v2 §3：新增「市场全景」「行业视图」两个分析视角，
 // 让 raw.universe / reference.sectors / 市值列首次进入前端可视化。
 export const VIZ_NAV = [
-  { id: 'center', label: '可视化中心', to: '/data/charts' },
-  { id: 'market', label: '市场全景', to: '/data/charts/market', hot: true, badge: 'NEW' },
-  { id: 'industry', label: '行业视图', to: '/data/charts/industry', badge: 'NEW' },
-  { id: 'kline', label: 'K 线工作台', to: '/data/charts/kline' },
-  { id: 'fundamentals', label: '财务时间序列', to: '/data/charts/fundamentals' },
-  { id: 'explorer', label: '通用图表浏览器', to: '/data/charts/explorer' },
+  { id: 'center', label: t('可视化中心'), to: '/data/charts' },
+  { id: 'market', label: t('市场全景'), to: '/data/charts/market', hot: true, badge: 'NEW' },
+  { id: 'industry', label: t('行业视图'), to: '/data/charts/industry', badge: 'NEW' },
+  { id: 'kline', label: t('K 线工作台'), to: '/data/charts/kline' },
+  { id: 'fundamentals', label: t('财务时间序列'), to: '/data/charts/fundamentals' },
+  { id: 'explorer', label: t('通用图表浏览器'), to: '/data/charts/explorer' },
 ];
 
 export function NavGlyph({ id }) {

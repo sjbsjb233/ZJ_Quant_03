@@ -7,6 +7,7 @@ import { getLastTraceId } from '../../lib/logger';
 import { useObsStatus } from '../../lib/obsStatus';
 import { ObsRealtime } from '../../pages/observability/shared';
 import { DATA_NAV, FACTOR_NAV, MODULES, NavGlyph, OBSERV_NAV, VIZ_NAV } from './nav';
+import { locale, setLocale, t } from '../../lib/i18n';
 
 export function ModuleStrip({ current, env = 'PROD' }) {
   const nav = useNavigate();
@@ -26,7 +27,7 @@ export function ModuleStrip({ current, env = 'PROD' }) {
           return (
             <div key={m.id}
               onClick={() => m.enabled && nav(m.to)}
-              title={m.enabled ? '' : `${m.label} · 计划 ${m.phase}`}
+              title={m.enabled ? '' : t('{label} · 计划 {phase}', { label: m.label, phase: m.phase })}
               style={{
                 padding: '0 12px', display: 'inline-flex', alignItems: 'center', gap: 5,
                 cursor: m.enabled ? 'pointer' : 'not-allowed',
@@ -48,10 +49,12 @@ export function ModuleStrip({ current, env = 'PROD' }) {
       <span style={{ color: 'var(--fg-mute)', margin: '0 12px' }}>│</span>
       <span style={{ color: 'var(--fg-3)' }}>{user?.username}@{user?.nickname || 'data'} · {user?.role}</span>
       <span style={{ color: 'var(--fg-mute)', margin: '0 12px' }}>│</span>
-      <button className="btn ghost" onClick={toggle} title="切换主题" data-testid="topbar-theme-toggle"
+      <button className="btn ghost" onClick={toggle} title={t('切换主题')} data-testid="topbar-theme-toggle"
         style={{ height: 18, padding: '0 6px', fontSize: 11 }}>{theme === 'dark' ? '☀' : '☾'}</button>
-      <button className="btn ghost" onClick={logout} title="登出" data-testid="topbar-logout"
-        style={{ height: 18, padding: '0 6px', fontSize: 10, color: 'var(--fg-3)' }}>登出</button>
+      <button className="btn ghost" onClick={logout} title={t('登出')} data-testid="topbar-logout"
+        style={{ height: 18, padding: '0 6px', fontSize: 10, color: 'var(--fg-3)' }}>{t('登出')}</button>
+      <button className="btn ghost" onClick={() => setLocale(locale === 'en' ? 'zh' : 'en')} title={t('切换语言')} data-testid="topbar-locale-toggle"
+        style={{ height: 18, padding: '0 6px', fontSize: 10, color: 'var(--fg-3)' }}>{locale === 'en' ? '中文' : 'EN'}</button>
       <span style={{ color: 'var(--fg-mute)', margin: '0 6px 0 6px' }}>│</span>
       <span className="kbd" style={{ fontSize: 9, height: 14, lineHeight: '14px' }}>⌘K</span>
     </div>
@@ -62,8 +65,8 @@ export function TerminalSidebar({ module = 'data', current }) {
   const nav = module === 'viz' ? VIZ_NAV : module === 'factor' ? FACTOR_NAV
     : module === 'observ' ? OBSERV_NAV : DATA_NAV;
   const moduleLabel =
-    module === 'viz' ? '数据可视化' : module === 'factor' ? '因子管理'
-      : module === 'observ' ? '可观测' : '数据管理';
+    t(module === 'viz' ? '数据可视化' : module === 'factor' ? '因子管理'
+      : module === 'observ' ? '可观测' : '数据管理');
   // 总览 / 拓扑 在哨兵 SSE 实时在线时点亮 LIVE 徽标 (可观测层重构方案 §7A.7)。
   // shared singleton, so the extra subscription is free (StatusBar already uses it).
   const { source } = useObsStatus();
@@ -122,11 +125,11 @@ export function TerminalSidebar({ module = 'data', current }) {
             color: current === 'statusref' ? 'var(--fg)' : 'var(--fg-3)', fontSize: 11,
           }}>
             <span style={{ fontFamily: 'var(--font-mono)' }}>◑</span>
-            <span>状态徽标速查</span>
+            <span>{t('状态徽标速查')}</span>
           </Link>
         )}
         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-          <span>命令面板</span><span className="kbd" style={{ fontSize: 9, height: 14, lineHeight: '14px' }}>⌘K</span>
+          <span>{t('命令面板')}</span><span className="kbd" style={{ fontSize: 9, height: 14, lineHeight: '14px' }}>⌘K</span>
         </div>
       </div>
     </aside>
@@ -225,15 +228,15 @@ export function SystemStatusPill() {
   const nav = useNavigate();
   const { status, firing, source } = useObsStatus();
   const map = {
-    ok: { c: 'var(--ok)', txt: '正常', en: source === 'delayed' ? '轮询' : 'live' },
-    degraded: { c: 'var(--warn)', txt: '降级', en: firing ? `· ${firing}` : '' },
-    down: { c: 'var(--err)', txt: source === 'stale' ? '观测中断' : '故障', en: firing ? `· ${firing}` : '' },
+    ok: { c: 'var(--ok)', txt: t('正常'), en: source === 'delayed' ? t('轮询') : 'live' },
+    degraded: { c: 'var(--warn)', txt: t('降级'), en: firing ? `· ${firing}` : '' },
+    down: { c: 'var(--err)', txt: t(source === 'stale' ? '观测中断' : '故障'), en: firing ? `· ${firing}` : '' },
   };
   const m = map[status] || map.ok;
   const to = status === 'ok' ? '/observ/overview' : '/observ/alerts';
-  const title = source === 'stale' ? '实时观测中断 · 哨兵与后端均不可达 · 点击进入可观测'
+  const title = t(source === 'stale' ? '实时观测中断 · 哨兵与后端均不可达 · 点击进入可观测'
     : source === 'delayed' ? '系统状态 (SSE 断, 轮询回退) · 点击进入可观测'
-      : '系统状态 (哨兵实时裁决) · 点击进入可观测';
+      : '系统状态 (哨兵实时裁决) · 点击进入可观测');
   return (
     <span data-testid="system-status-pill" data-state={status} data-source={source}
       onClick={() => nav(to)} title={title}
@@ -290,7 +293,7 @@ function TraceChip() {
   return (
     <span
       data-testid="statusbar-trace"
-      title={`${traceId} · 点击进入日志中心`}
+      title={`${traceId} · ${t('点击进入日志中心')}`}
       onClick={() => {
         navigator.clipboard?.writeText(traceId);
         setCopied(true);
@@ -328,23 +331,23 @@ export function StatusBar({ middle, right }) {
   const compState = (s) => (source === 'stale' ? 'error' : s);
 
   // hover 即见根因线索 (reachable / cpu / uptime / 重启 / 上次成功)。
-  const reach = (k) => (layers[k]?.reachable === false ? '不可达' : layers[k]?.reachable === true ? '可达' : '—');
+  const reach = (k) => (layers[k]?.reachable === false ? t('不可达') : layers[k]?.reachable === true ? t('可达') : '—');
   const beTip = (() => {
     const b = layers.backend || {};
-    return `后端 (web-backend) — 探测 ${reach('backend')}${b.cpu_pct != null ? ` · cpu ${b.cpu_pct}%` : ''}`;
+    return `${t('后端')} (web-backend) — ${t('探测')} ${reach('backend')}${b.cpu_pct != null ? ` · cpu ${b.cpu_pct}%` : ''}`;
   })();
   const dataTip = (() => {
     const d = layers.data || {}; const hd = d.health || {};
-    const bits = [`探测 ${reach('data')}`];
+    const bits = [`${t('探测')} ${reach('data')}`];
     if (hd.uptime_s != null) bits.push(`uptime ${Math.round(hd.uptime_s / 60)}m`);
-    if (d.restart_count) bits.push(`重启 ×${d.restart_count}`);
+    if (d.restart_count) bits.push(`${t('重启')} ×${d.restart_count}`);
     if (d.oom_killed) bits.push('OOM');
-    if (hd.last_job_success_at) bits.push(`上次成功 ${String(hd.last_job_success_at).slice(0, 16)}`);
+    if (hd.last_job_success_at) bits.push(`${t('上次成功')} ${String(hd.last_job_success_at).slice(0, 16)}`);
     if (d.cpu_pct != null) bits.push(`cpu ${d.cpu_pct}%`);
     if (d.mem_pct != null) bits.push(`mem ${d.mem_pct}%`);
-    return `数据层 (data-keeper) ${bits.join(' · ')}`;
+    return `${t('数据层')} (data-keeper) ${bits.join(' · ')}`;
   })();
-  const monTip = `监控层 — 哨兵: ${sentinelOnline ? '在线' : '离线/未上线'} · 实时: ${source === 'live' ? '哨兵 SSE' : source === 'delayed' ? '轮询回退' : '中断'}`;
+  const monTip = `${t('监控层')} — ${t('哨兵')}: ${t(sentinelOnline ? '在线' : '离线/未上线')} · ${t('实时')}: ${t(source === 'live' ? '哨兵 SSE' : source === 'delayed' ? '轮询回退' : '中断')}`;
 
   const label = `${health?.cluster || '—'}${health?.environment ? ` · ${health.environment}` : ''}`;
 
@@ -355,23 +358,23 @@ export function StatusBar({ middle, right }) {
       fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-3)', flexShrink: 0,
     }}>
       {/* 5 层存活/裁决点 (哨兵真相 + 后端叠加) */}
-      <CompDot label="frontend" state={layers.frontend?.state} title={`前端 — 探测 ${reach('frontend')}`} />
+      <CompDot label="frontend" state={layers.frontend?.state} title={`${t('前端')} — ${t('探测')} ${reach('frontend')}`} />
       <CompDot label="backend" state={layers.backend?.state} title={beTip} pulse={layers.backend?.reachable === false} />
       <CompDot label="data" state={layers.data?.state} title={dataTip} pulse={layers.data?.reachable === false} />
       <CompDot label="factor" state={layers.factor?.state}
-        title={`因子层 — 探测 ${reach('factor')}${layers.factor?.cpu_pct != null ? ` · cpu ${layers.factor.cpu_pct}%` : ''} · mem ${layers.factor?.mem_pct ?? '—'}%`} />
+        title={`${t('因子层')} — ${t('探测')} ${reach('factor')}${layers.factor?.cpu_pct != null ? ` · cpu ${layers.factor.cpu_pct}%` : ''} · mem ${layers.factor?.mem_pct ?? '—'}%`} />
       <CompDot label="monitor" state={layers.monitor?.state} title={monTip} />
       <span style={{ color: 'var(--fg-mute)' }}>│</span>
       {/* 子组件 (元数据库 / 数据湖) */}
-      <CompDot label="db" state={compState(comp.db?.state)} title="web-backend 元数据库 (审计 + app_log)" />
-      <CompDot label="warehouse" state={compState(comp.warehouse?.state)} title="parquet 数据湖 /data (所有数据读取)" />
+      <CompDot label="db" state={compState(comp.db?.state)} title={t('web-backend 元数据库 (审计 + app_log)')} />
+      <CompDot label="warehouse" state={compState(comp.warehouse?.state)} title={t('parquet 数据湖 /data (所有数据读取)')} />
       <span style={{ color: 'var(--fg-mute)' }}>│</span>
       <span data-testid="status-cluster">{label}</span>
       {middle && (<><span style={{ color: 'var(--fg-mute)' }}>│</span>{middle}</>)}
       <div style={{ flex: 1 }} />
       {firing > 0 && (
         <span data-testid="statusbar-alerts" onClick={() => nav('/observ/alerts')}
-          title={`${firing} 条触发中告警 · 点击查看`}
+          title={t('{n} 条触发中告警 · 点击查看', { n: firing })}
           style={{
             display: 'inline-flex', alignItems: 'center', gap: 5, cursor: 'pointer',
             padding: '0 8px', borderRadius: 8, lineHeight: '14px',
