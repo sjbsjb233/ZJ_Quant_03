@@ -1,0 +1,28 @@
+# =====================================================================
+# 量价预测因子生成（报告4.2.3 / 4.2.4）
+# 90日回看窗口 -> 分位数预测头单次确定性前向 -> q0.1/q0.5/q0.9
+# 原始信号 alpha = q0.5 / (q0.9 - q0.1 + eps)，横截面z-score标准化
+# =====================================================================
+provider_uri: ~/.qlib/qlib_data/cn_data
+region: cn
+pool: csi300                  # csi300 / csi800，可由命令行 --pool 覆盖
+
+model_ckpt: checkpoints/base/backbone_final.pt
+tokenizer_ckpt: checkpoints/tokenizer/tokenizer_final.pt
+
+lookback: 90                  # 回看窗口（日频K线，表7.2）
+horizon: 10                   # 预测期 H=10（表7.2）
+epsilon: 1.0e-3               # 防除零小常数（附录B）
+quantile_pair: [0.1, 0.9]     # 风险调整分母的分位点对
+batch_size: 512
+device: cuda
+
+# 样本外区间（表7.2：预训练数据截至2025-06-30，严格时间隔离）
+start: "2025-07-01"
+end: "2026-06-18"
+
+# 波动率映射校准区间：训练期内拟合、样本外冻结（5.1节）
+calib_start: "2024-01-01"
+calib_end: "2025-06-30"
+
+output_dir: outputs/factor

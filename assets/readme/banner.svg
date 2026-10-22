@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="400" viewBox="0 0 1280 400" role="img" aria-label="FSQ K-line Foundation Model · ZJ Quant">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#F8FAFF"/>
+      <stop offset="0.55" stop-color="#EEF2FF"/>
+      <stop offset="1" stop-color="#E6FCF5"/>
+    </linearGradient>
+    <linearGradient id="band" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#3B5BDB" stop-opacity="0.10"/>
+      <stop offset="1" stop-color="#3B5BDB" stop-opacity="0.28"/>
+    </linearGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#1B2A41" stroke-opacity="0.045" stroke-width="1"/>
+    </pattern>
+    <style>
+      .sans { font-family: -apple-system, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif; }
+      .mono { font-family: 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace; }
+    </style>
+  </defs>
+  <rect width="1280" height="400" rx="20" fill="url(#bg)"/>
+  <rect width="1280" height="400" rx="20" fill="url(#grid)"/>
+  <rect x="0.5" y="0.5" width="1279" height="399" rx="19.5" fill="none" stroke="#3B5BDB" stroke-opacity="0.12"/>
+
+  <!-- left: title block -->
+  <g class="sans">
+    <rect x="64" y="66" width="214" height="30" rx="15" fill="#3B5BDB" fill-opacity="0.10"/>
+    <circle cx="82" cy="81" r="4.5" fill="#3B5BDB"/>
+    <text x="94" y="86" font-size="14" font-weight="600" fill="#3B5BDB" letter-spacing="0.6">ZJ QUANT · RESEARCH</text>
+    <text x="62" y="152" font-size="54" font-weight="800" fill="#1B2A41" letter-spacing="-1">FSQ K-line</text>
+    <text x="62" y="212" font-size="54" font-weight="800" fill="#3B5BDB" letter-spacing="-1">Foundation Model</text>
+    <text x="64" y="256" font-size="19" fill="#4A5A70">A finance-native model that reads candlesticks like a language,</text>
+    <text x="64" y="282" font-size="19" fill="#4A5A70">and the quant platform that turns its forecasts into a portfolio.</text>
+  </g>
+  <g class="mono" font-size="13" fill="#1B2A41">
+    <rect x="64" y="310" width="176" height="30" rx="8" fill="#FFFFFF" stroke="#D0D7E2"/>
+    <text x="80" y="330">41M-param decoder</text>
+    <rect x="250" y="310" width="176" height="30" rx="8" fill="#FFFFFF" stroke="#D0D7E2"/>
+    <text x="266" y="330">3.06B K-line corpus</text>
+    <rect x="436" y="310" width="196" height="30" rx="8" fill="#FFFFFF" stroke="#D0D7E2"/>
+    <text x="452" y="330">strict out-of-sample</text>
+  </g>
+
+  <!-- right: candles → FSQ tokens → quantile fan -->
+  <g transform="translate(720,70)">
+    <rect x="0" y="0" width="500" height="270" rx="16" fill="#FFFFFF" fill-opacity="0.78" stroke="#D0D7E2"/>
+    <!-- candles -->
+    <g stroke-width="1.6">
+      <line x1="34" y1="96" x2="34" y2="150" stroke="#E03131"/><rect x="28" y="108" width="12" height="30" fill="#E03131"/>
+      <line x1="56" y1="82" x2="56" y2="132" stroke="#E03131"/><rect x="50" y="90" width="12" height="28" fill="#E03131"/>
+      <line x1="78" y1="88" x2="78" y2="140" stroke="#12B886"/><rect x="72" y="96" width="12" height="32" fill="#12B886"/>
+      <line x1="100" y1="70" x2="100" y2="126" stroke="#E03131"/><rect x="94" y="78" width="12" height="36" fill="#E03131"/>
+      <line x1="122" y1="58" x2="122" y2="104" stroke="#E03131"/><rect x="116" y="64" width="12" height="26" fill="#E03131"/>
+      <line x1="144" y1="62" x2="144" y2="118" stroke="#12B886"/><rect x="138" y="70" width="12" height="34" fill="#12B886"/>
+    </g>
+    <text x="30" y="40" class="sans" font-size="13" font-weight="600" fill="#6B7A90" letter-spacing="0.5">K-LINES (OHLCVA)</text>
+    <!-- arrow -->
+    <path d="M168 104 H206" stroke="#3B5BDB" stroke-width="2" fill="none"/>
+    <path d="M200 98 L208 104 L200 110" stroke="#3B5BDB" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <!-- token grid: 6 steps × 4 groups -->
+    <text x="222" y="40" class="sans" font-size="13" font-weight="600" fill="#6B7A90" letter-spacing="0.5">FSQ TOKENS [8,8,8,5]</text>
+    <g>
+      <rect x="222" y="56" width="18" height="18" rx="3" fill="#3B5BDB" fill-opacity="0.90"/><rect x="244" y="56" width="18" height="18" rx="3" fill="#3B5BDB" fill-opacity="0.55"/><rect x="266" y="56" width="18" height="18" rx="3" fill="#3B5BDB" fill-opacity="0.75"/><rect x="288" y="56" width="18" height="18" rx="3" fill="#3B5BDB" fill-opacity="0.35"/><rect x="310" y="56" width="18" height="18" rx="3" fill="#3B5BDB" fill-opacity="0.65"/><rect x="332" y="56" width="18" height="18" rx="3" fill="#3B5BDB" fill-opacity="0.85"/>
+      <rect x="222" y="78" width="18" height="18" rx="3" fill="#5C7CFA" fill-opacity="0.45"/><rect x="244" y="78" width="18" height="18" rx="3" fill="#5C7CFA" fill-opacity="0.80"/><rect x="266" y="78" width="18" height="18" rx="3" fill="#5C7CFA" fill-opacity="0.30"/><rect x="288" y="78" width="18" height="18" rx="3" fill="#5C7CFA" fill-opacity="0.70"/><rect x="310" y="78" width="18" height="18" rx="3" fill="#5C7CFA" fill-opacity="0.90"/><rect x="332" y="78" width="18" height="18" rx="3" fill="#5C7CFA" fill-opacity="0.50"/>
+      <rect x="222" y="100" width="18" height="18" rx="3" fill="#12B886" fill-opacity="0.70"/><rect x="244" y="100" width="18" height="18" rx="3" fill="#12B886" fill-opacity="0.40"/><rect x="266" y="100" width="18" height="18" rx="3" fill="#12B886" fill-opacity="0.85"/><rect x="288" y="100" width="18" height="18" rx="3" fill="#12B886" fill-opacity="0.55"/><rect x="310" y="100" width="18" height="18" rx="3" fill="#12B886" fill-opacity="0.30"/><rect x="332" y="100" width="18" height="18" rx="3" fill="#12B886" fill-opacity="0.75"/>
+      <rect x="222" y="122" width="18" height="18" rx="3" fill="#F59F00" fill-opacity="0.55"/><rect x="244" y="122" width="18" height="18" rx="3" fill="#F59F00" fill-opacity="0.85"/><rect x="266" y="122" width="18" height="18" rx="3" fill="#F59F00" fill-opacity="0.40"/><rect x="288" y="122" width="18" height="18" rx="3" fill="#F59F00" fill-opacity="0.70"/><rect x="310" y="122" width="18" height="18" rx="3" fill="#F59F00" fill-opacity="0.60"/><rect x="332" y="122" width="18" height="18" rx="3" fill="#F59F00" fill-opacity="0.90"/>
+    </g>
+    <!-- arrow -->
+    <path d="M360 98 H392" stroke="#3B5BDB" stroke-width="2" fill="none"/>
+    <path d="M386 92 L394 98 L386 104" stroke="#3B5BDB" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <!-- quantile fan -->
+    <text x="404" y="40" class="sans" font-size="13" font-weight="600" fill="#6B7A90" letter-spacing="0.5">FORECAST</text>
+    <path d="M404 98 L476 58 L476 136 Z" fill="url(#band)"/>
+    <path d="M404 98 L476 84" stroke="#3B5BDB" stroke-width="2.4" fill="none"/>
+    <path d="M404 98 L476 58" stroke="#3B5BDB" stroke-width="1" stroke-dasharray="3 3" fill="none"/>
+    <path d="M404 98 L476 136" stroke="#3B5BDB" stroke-width="1" stroke-dasharray="3 3" fill="none"/>
+    <!-- formula strip -->
+    <line x1="24" y1="176" x2="476" y2="176" stroke="#E6EAF0"/>
+    <text x="250" y="214" text-anchor="middle" class="mono" font-size="20" fill="#1B2A41">α = q<tspan font-size="14" dy="5">0.5</tspan><tspan dy="-5"> / (q</tspan><tspan font-size="14" dy="5">0.9</tspan><tspan dy="-5"> − q</tspan><tspan font-size="14" dy="5">0.1</tspan><tspan dy="-5"> + ε)</tspan></text>
+    <text x="250" y="244" text-anchor="middle" class="sans" font-size="13.5" fill="#6B7A90">expected return ÷ forecast uncertainty → a stock-ranking signal</text>
+  </g>
+</svg>

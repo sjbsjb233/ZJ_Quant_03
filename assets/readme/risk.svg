@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="360" viewBox="0 0 1280 360" role="img" aria-label="Risk control: drawdown alerts, hedge ladder and cash tiers">
+  <defs>
+    <style>
+      .sans { font-family: -apple-system, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif; }
+      .mono { font-family: 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace; }
+      .t { font-size: 15px; font-weight: 700; fill: #1B2A41; }
+      .s { font-size: 12.5px; fill: #4A5A70; }
+      .m { font-size: 11.5px; fill: #6B7A90; }
+      .lab { font-size: 12px; font-weight: 700; letter-spacing: 1.4px; }
+    </style>
+  </defs>
+  <rect width="1280" height="360" fill="#FFFFFF"/>
+
+  <!-- left: ladder -->
+  <rect x="16" y="16" width="820" height="328" rx="18" fill="#FFFBF2" stroke="#FFE8B3"/>
+  <text x="44" y="50" class="sans lab" fill="#E67700">PORTFOLIO-LEVEL LADDER · ZERO HEDGE IN CALM MARKETS, MORE AS RISK RISES</text>
+  <g class="sans">
+    <!-- columns: x, label, dd, hedge, cash, color, height -->
+    <g transform="translate(44,0)">
+      <rect x="0" y="252" width="140" height="28" rx="6" fill="#12B886"/>
+      <text x="70" y="271" text-anchor="middle" font-size="13" font-weight="700" fill="#FFF">hedge 0%</text>
+      <text x="0" y="96" class="t">Normal</text>
+      <text x="0" y="118" class="s">no alert</text>
+      <text x="0" y="140" class="m">cash 3% · full exposure</text>
+      <text x="0" y="300" class="mono m">DD &lt; 5%</text>
+    </g>
+    <g transform="translate(200,0)">
+      <rect x="0" y="232" width="140" height="48" rx="6" fill="#94D82D"/>
+      <text x="70" y="261" text-anchor="middle" font-size="13" font-weight="700" fill="#FFF">hedge 20%</text>
+      <text x="0" y="96" class="t">Level 1 · watch</text>
+      <text x="0" y="118" class="s">no new positions</text>
+      <text x="0" y="140" class="m">intraday NAV tracking</text>
+      <text x="0" y="300" class="mono m">DD ≥ 5%</text>
+    </g>
+    <g transform="translate(356,0)">
+      <rect x="0" y="196" width="140" height="84" rx="6" fill="#FAB005"/>
+      <text x="70" y="243" text-anchor="middle" font-size="13" font-weight="700" fill="#FFF">hedge 60%</text>
+      <text x="0" y="96" class="t">Level 2 · de-risk</text>
+      <text x="0" y="118" class="s">exposure → 50–70%</text>
+      <text x="0" y="140" class="m">cash 10%</text>
+      <text x="0" y="300" class="mono m">DD ≥ 8%</text>
+    </g>
+    <g transform="translate(512,0)">
+      <rect x="0" y="174" width="140" height="106" rx="6" fill="#FD7E14"/>
+      <text x="70" y="232" text-anchor="middle" font-size="13" font-weight="700" fill="#FFF">hedge 80%</text>
+      <text x="0" y="96" class="t">Multiple triggers</text>
+      <text x="0" y="118" class="s">any two level-2</text>
+      <text x="0" y="140" class="m">conditions at once</text>
+      <text x="0" y="300" class="mono m">2 of 3 signals</text>
+    </g>
+    <g transform="translate(668,0)">
+      <rect x="0" y="152" width="140" height="128" rx="6" fill="#E03131"/>
+      <text x="70" y="222" text-anchor="middle" font-size="13" font-weight="700" fill="#FFF">hedge 100%</text>
+      <text x="0" y="96" class="t">Level 3 · defend</text>
+      <text x="0" y="118" class="s">exposure → 20–30%</text>
+      <text x="0" y="140" class="m">beta fully hedged</text>
+      <text x="0" y="300" class="mono m">DD ≥ 12%</text>
+    </g>
+  </g>
+  <text x="44" y="322" class="sans m">Level 2 also fires when &gt; 30% of the pool sits in the top-20% volatility bucket, or crowded names exceed 20% of holdings.</text>
+  <text x="44" y="338" class="sans m">Release: DD back within 8% and a normal volatility forecast for 3 days, then rebuild weekly. Hedge with IF (CSI 300) or IC (CSI 800) futures.</text>
+
+  <!-- right: stock + signal level -->
+  <rect x="852" y="16" width="412" height="156" rx="18" fill="#F5F7FF" stroke="#DBE4FF"/>
+  <text x="880" y="50" class="sans lab" fill="#3B5BDB">STOCK LEVEL · BEFORE RANKING</text>
+  <g class="sans">
+    <text x="880" y="80" class="s">• forecast volatility, top 20% of cross-section → down-weight</text>
+    <text x="880" y="102" class="s">• crowding: abnormal turnover, price–volume divergence,</text>
+    <text x="892" y="120" class="s">capital concentration: any two → cut or exclude</text>
+    <text x="880" y="142" class="s">• suspended / ST / limit-locked → never traded</text>
+  </g>
+  <rect x="852" y="188" width="412" height="156" rx="18" fill="#F3FCF8" stroke="#C3FAE8"/>
+  <text x="880" y="222" class="sans lab" fill="#0CA678">SIGNAL LEVEL · IS THE FACTOR STILL WORKING?</text>
+  <g class="sans">
+    <text x="880" y="252" class="s">• 20-day rolling RankIC &lt; 0.02 for 5 days → defensive mode,</text>
+    <text x="892" y="270" class="s">stop opening positions</text>
+    <text x="880" y="292" class="s">• RankIC &gt; 0.03 for 5 days → resume</text>
+    <text x="880" y="322" class="m">out of sample: never triggered on either pool</text>
+  </g>
+</svg>

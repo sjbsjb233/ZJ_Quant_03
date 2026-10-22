@@ -1,0 +1,61 @@
+# =====================================================================
+# 组合回测 —— 中证800池（报告表3.1 / 表7.2 / 第5、6章）
+# =====================================================================
+provider_uri: ~/.qlib/qlib_data/cn_data
+region: cn
+pool: csi800
+benchmark: SH000906
+account: 100000000
+
+factor_panel: outputs/factor/quantile_panel_csi800.parquet
+calib_panel: outputs/factor/quantile_panel_calib_csi800.parquet
+signal_path: outputs/factor/score_csi800.pkl
+
+start: "2025-07-01"
+end: "2026-06-18"
+
+portfolio:
+  topk: 200                       # 表3.1：中证800池 k=200
+  n_drop: 10                      # n=10
+  rebalance_freq: 5
+  hold_thresh: 5
+  open_cost: 0.0015
+  close_cost: 0.0015
+  min_cost: 5
+  limit_threshold: 0.095
+  deal_price: close
+  risk_degree_normal: 0.97
+
+risk:
+  vol_downweight_q: 0.80
+  vol_exclude_q: 0.95
+  vol_downweight_scale: 0.7
+  crowding_min_signals: 2
+  turnover_z: 2.0
+  turnover_q: 0.85
+  pv_corr: -0.30
+  pv_band_pos: 0.80
+  conc_q: 0.90
+  dd_levels: [0.05, 0.08, 0.12]
+  dd_exposure: [0.97, 0.97, 0.60, 0.25]
+  dd_release: 0.08
+  release_days: 3
+  ric_window: 20
+  ric_fail: 0.02
+  ric_recover: 0.03
+  ric_days: 5
+  hedge_ladder: [0.0, 0.2, 0.6, 0.8, 1.0]
+  vol_breadth: 0.30
+  crowd_hold_share: 0.20
+  futures: IC                     # 中证800池以IC合约对冲中盘敞口（5.4）
+  futures_multiplier: 200
+
+regimes:
+  trend_up:    ["2025-07-01", "2025-10-31"]
+  oscillation: ["2025-11-01", "2026-01-31"]
+  drawdown:    ["2026-02-01", "2026-03-31"]
+  recovery:    ["2026-04-01", "2026-06-18"]
+
+risk_free: 0.02
+industry_map: data/industry_map.csv
+output_dir: outputs/backtest_csi800

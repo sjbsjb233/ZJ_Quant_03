@@ -1,0 +1,40 @@
+# =====================================================================
+# 自回归预训练 —— compact规格（报告表4.4 / 表4.5）
+# =====================================================================
+model:
+  name: compact
+  n_layers: 8
+  d_model: 448
+  d_ff: 1344
+  n_heads: 7
+  fsq_levels: [8, 8, 8, 5]
+  max_context: 384
+  dropout_ffn: 0.15
+  dropout_resid: 0.15
+  dropout_attn: 0.10
+  dropout_token: 0.05
+  grad_checkpoint: true
+  quantiles: [0.1, 0.5, 0.9]
+  horizon: 10
+
+train:
+  tokenizer_ckpt: checkpoints/tokenizer/tokenizer_final.pt
+  corpus_manifest: data/corpus/manifest.parquet
+  context: 384
+  batch_size: 32
+  grad_accum: 12
+  lr: 8.0e-4                    # 表4.5：compact规格学习率
+  weight_decay: 0.02            # 表4.5：compact规格权重衰减
+  warmup_steps: 1500
+  min_lr_ratio: 0.10
+  token_budget: 750000000
+  quantile_loss_weight: 0.5
+  scheduled_sampling_max: 0.25
+  scheduled_sampling_warmup: 20000
+  grad_clip: 1.0
+  bf16: true
+  num_workers: 8
+  seed: 42
+  ckpt_dir: checkpoints/compact
+  log_every: 50
+  save_every: 2000

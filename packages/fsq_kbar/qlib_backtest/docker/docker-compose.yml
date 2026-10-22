@@ -1,0 +1,23 @@
+# 单机单卡容器化部署（附录A：Docker + RTX 4090/4090D 24GB）
+services:
+  kbarfm:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: kbarfm:latest
+    container_name: kbarfm
+    shm_size: "16gb"            # DataLoader 多进程共享内存
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    volumes:
+      - ..:/workspace           # 代码与输出
+      - ~/.qlib:/root/.qlib     # Qlib 行情数据目录（日频 + 1分钟）
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    tty: true
+    stdin_open: true

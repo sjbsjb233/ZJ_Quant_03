@@ -1,0 +1,141 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="600" viewBox="0 0 1280 600" role="img" aria-label="FSQ tokenizer and parallel-group autoregressive model">
+  <defs>
+    <style>
+      .sans { font-family: -apple-system, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif; }
+      .mono { font-family: 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace; }
+      .t { font-size: 15px; font-weight: 700; fill: #1B2A41; }
+      .s { font-size: 12.5px; fill: #4A5A70; }
+      .m { font-size: 11.5px; fill: #6B7A90; }
+      .lab { font-size: 12px; font-weight: 700; letter-spacing: 1.4px; fill: #3B5BDB; }
+    </style>
+    <marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M1 1 L9 5 L1 9" fill="none" stroke="#3B5BDB" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <linearGradient id="fan" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#3B5BDB" stop-opacity="0.06"/>
+      <stop offset="1" stop-color="#3B5BDB" stop-opacity="0.26"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="600" fill="#FFFFFF"/>
+
+  <!-- ══ Stage 1: tokenizer ══ -->
+  <rect x="16" y="16" width="600" height="568" rx="18" fill="#F8FAFF" stroke="#DBE4FF"/>
+  <text x="44" y="50" class="sans lab">STAGE 1 · K-LINE TOKENIZER (FSQ AUTO-ENCODER)</text>
+
+  <g class="sans">
+    <rect x="44" y="70" width="544" height="58" rx="10" fill="#FFFFFF" stroke="#DBE4FF"/>
+    <text x="62" y="94" class="t">Input  x ∈ ℝ<tspan font-size="11" dy="-6">T×6</tspan></text>
+    <text x="62" y="114" class="s">open · high · low · close · volume · amount, z-scored per dimension and clipped to ±5</text>
+
+    <rect x="44" y="144" width="544" height="58" rx="10" fill="#FFFFFF" stroke="#DBE4FF"/>
+    <text x="62" y="168" class="t">Transformer encoder</text>
+    <text x="62" y="188" class="s">2 layers · d = 192 · FFN 768 · 6 heads → linear projection to G = 4 scalars</text>
+
+    <!-- FSQ core -->
+    <rect x="44" y="218" width="544" height="196" rx="12" fill="#EDF2FF" stroke="#3B5BDB" stroke-width="1.6"/>
+    <text x="62" y="244" class="t">Finite Scalar Quantization</text>
+    <text x="62" y="264" class="s">tanh bound → round each scalar onto a fixed grid · straight-through gradient</text>
+  </g>
+  <!-- 4 level rulers -->
+  <g class="mono" font-size="12" fill="#1B2A41">
+    <g transform="translate(78,284)">
+      <text x="0" y="0">z¹ · 8</text>
+      <line x1="58" y1="-4" x2="300" y2="-4" stroke="#91A7FF" stroke-width="2"/>
+      <g fill="#3B5BDB"><circle cx="58" cy="-4" r="4"/><circle cx="92.6" cy="-4" r="4"/><circle cx="127.1" cy="-4" r="4"/><circle cx="161.7" cy="-4" r="4"/><circle cx="196.3" cy="-4" r="4"/><circle cx="230.9" cy="-4" r="7" fill="#F59F00"/><circle cx="265.4" cy="-4" r="4"/><circle cx="300" cy="-4" r="4"/></g>
+    </g>
+    <g transform="translate(78,314)">
+      <text x="0" y="0">z² · 8</text>
+      <line x1="58" y1="-4" x2="300" y2="-4" stroke="#91A7FF" stroke-width="2"/>
+      <g fill="#3B5BDB"><circle cx="58" cy="-4" r="4"/><circle cx="92.6" cy="-4" r="7" fill="#F59F00"/><circle cx="127.1" cy="-4" r="4"/><circle cx="161.7" cy="-4" r="4"/><circle cx="196.3" cy="-4" r="4"/><circle cx="230.9" cy="-4" r="4"/><circle cx="265.4" cy="-4" r="4"/><circle cx="300" cy="-4" r="4"/></g>
+    </g>
+    <g transform="translate(78,344)">
+      <text x="0" y="0">z³ · 8</text>
+      <line x1="58" y1="-4" x2="300" y2="-4" stroke="#91A7FF" stroke-width="2"/>
+      <g fill="#3B5BDB"><circle cx="58" cy="-4" r="4"/><circle cx="92.6" cy="-4" r="4"/><circle cx="127.1" cy="-4" r="4"/><circle cx="161.7" cy="-4" r="4"/><circle cx="196.3" cy="-4" r="7" fill="#F59F00"/><circle cx="230.9" cy="-4" r="4"/><circle cx="265.4" cy="-4" r="4"/><circle cx="300" cy="-4" r="4"/></g>
+    </g>
+    <g transform="translate(78,374)">
+      <text x="0" y="0">z⁴ · 5</text>
+      <line x1="58" y1="-4" x2="300" y2="-4" stroke="#91A7FF" stroke-width="2"/>
+      <g fill="#3B5BDB"><circle cx="58" cy="-4" r="4"/><circle cx="118.5" cy="-4" r="4"/><circle cx="179" cy="-4" r="4"/><circle cx="239.5" cy="-4" r="7" fill="#F59F00"/><circle cx="300" cy="-4" r="4"/></g>
+    </g>
+    <text x="78" y="402" font-size="11.5" fill="#6B7A90">−1 (bounded) ─────────────────────────── +1</text>
+  </g>
+  <g class="sans">
+    <rect x="404" y="282" width="166" height="112" rx="10" fill="#FFFFFF" stroke="#BAC8FF"/>
+    <text x="487" y="306" text-anchor="middle" class="mono" font-size="20" font-weight="700" fill="#3B5BDB">(5, 1, 4, 3)</text>
+    <text x="487" y="330" text-anchor="middle" class="s">one token per bar</text>
+    <text x="487" y="352" text-anchor="middle" class="mono" font-size="12" fill="#1B2A41">8×8×8×5 = 2,560</text>
+    <text x="487" y="370" text-anchor="middle" class="m">implicit states,</text>
+    <text x="487" y="386" text-anchor="middle" class="m">no codebook lookup</text>
+  </g>
+
+  <g class="sans">
+    <rect x="44" y="430" width="544" height="58" rx="10" fill="#FFFFFF" stroke="#DBE4FF"/>
+    <text x="62" y="454" class="t">Transformer decoder → reconstruction x̂</text>
+    <text x="62" y="474" class="s">2 layers · d = 192 · trained end to end, no commitment / entropy loss</text>
+
+    <rect x="44" y="502" width="544" height="66" rx="10" fill="#FFFFFF" stroke="#DBE4FF"/>
+    <text x="62" y="524" class="t">Structure-constrained loss</text>
+    <text x="62" y="546" class="mono" font-size="10.8" fill="#1B2A41">1.0·Huber + 0.40·return + 0.25·log(vol, amt) + 0.15·candle-geometry hinge</text>
+    <text x="62" y="562" class="m">keeps returns, volume and candle geometry, the parts that matter for stock selection</text>
+  </g>
+
+  <!-- ══ Stage 2: autoregressive model ══ -->
+  <rect x="664" y="16" width="600" height="568" rx="18" fill="#F8FAFF" stroke="#DBE4FF"/>
+  <text x="692" y="50" class="sans lab">STAGE 2 · PARALLEL-GROUP AUTOREGRESSIVE MODEL</text>
+  <path d="M616 300 H660" stroke="#3B5BDB" stroke-width="2" marker-end="url(#ah)"/>
+
+  <!-- token sequence -->
+  <g class="mono" font-size="11.5" fill="#1B2A41">
+    <rect x="692" y="72" width="76" height="30" rx="6" fill="#FFFFFF" stroke="#BAC8FF"/><text x="700" y="92">(5,1,4,3)</text>
+    <rect x="776" y="72" width="76" height="30" rx="6" fill="#FFFFFF" stroke="#BAC8FF"/><text x="784" y="92">(4,2,4,2)</text>
+    <rect x="860" y="72" width="76" height="30" rx="6" fill="#FFFFFF" stroke="#BAC8FF"/><text x="868" y="92">(6,1,3,3)</text>
+    <text x="948" y="92" fill="#6B7A90">· · ·</text>
+    <rect x="992" y="72" width="76" height="30" rx="6" fill="#FFFFFF" stroke="#BAC8FF"/><text x="1000" y="92">(3,5,2,4)</text>
+    <text x="1084" y="92" class="sans" font-size="12" fill="#6B7A90">90-day lookback</text>
+  </g>
+  <g class="sans">
+    <rect x="692" y="118" width="544" height="104" rx="12" fill="#FFFFFF" stroke="#3B5BDB" stroke-width="1.6"/>
+    <text x="710" y="144" class="t">Causal decoder-only Transformer</text>
+    <text x="710" y="166" class="s">Pre-LN RMSNorm · RoPE · SwiGLU FFN · SDPA attention · context 384</text>
+    <text x="710" y="188" class="s">base: 10 layers, d = 640, 41.2 M params · compact: 8 layers, d = 448, 16.2 M</text>
+    <text x="710" y="208" class="m">self-sampling (p ≤ 0.15) against exposure bias · AdamW + cosine schedule</text>
+  </g>
+  <g stroke="#3B5BDB" stroke-width="1.6" fill="none" marker-end="url(#ah)">
+    <path d="M800 222 V 246"/><path d="M1100 222 V 246"/>
+  </g>
+  <!-- heads -->
+  <g class="sans">
+    <rect x="692" y="250" width="262" height="120" rx="12" fill="#FFFFFF" stroke="#DBE4FF"/>
+    <text x="710" y="274" class="t">4 parallel token heads</text>
+    <g class="mono" font-size="12" fill="#FFFFFF">
+      <rect x="710" y="288" width="50" height="26" rx="5" fill="#3B5BDB"/><text x="717" y="306">8 cls</text>
+      <rect x="766" y="288" width="50" height="26" rx="5" fill="#5C7CFA"/><text x="773" y="306">8 cls</text>
+      <rect x="822" y="288" width="50" height="26" rx="5" fill="#748FFC"/><text x="829" y="306">8 cls</text>
+      <rect x="878" y="288" width="50" height="26" rx="5" fill="#91A7FF"/><text x="885" y="306">5 cls</text>
+    </g>
+    <text x="710" y="338" class="s">29 outputs instead of 2,560 · one</text>
+    <text x="710" y="356" class="s">backbone pass per step · Σ cross-entropy</text>
+
+    <rect x="974" y="250" width="262" height="120" rx="12" fill="#FFFFFF" stroke="#DBE4FF"/>
+    <text x="992" y="274" class="t">Monotone quantile head</text>
+    <path d="M996 330 L 1100 296 L 1100 352 Z" fill="url(#fan)"/>
+    <path d="M996 330 L 1100 318" stroke="#3B5BDB" stroke-width="2.2"/>
+    <g class="mono" font-size="11.5" fill="#3B5BDB"><text x="1108" y="300">q0.9</text><text x="1108" y="322">q0.5</text><text x="1108" y="354">q0.1</text></g>
+    <text x="1150" y="300" class="m">base +</text>
+    <text x="1150" y="316" class="m">softplus Δ</text>
+    <text x="992" y="366" class="m">0.5 × pinball loss · next-10-day return</text>
+  </g>
+  <path d="M1105 370 V 394" stroke="#3B5BDB" stroke-width="1.6" fill="none" marker-end="url(#ah)"/>
+
+  <!-- factor construction -->
+  <g class="sans">
+    <rect x="692" y="398" width="544" height="170" rx="12" fill="#EDF2FF" stroke="#3B5BDB" stroke-width="1.6"/>
+    <text x="710" y="424" class="t">From forecast to factor: one deterministic pass, no Monte-Carlo</text>
+    <text x="964" y="466" text-anchor="middle" class="mono" font-size="22" fill="#1B2A41">α = q<tspan font-size="15" dy="5">0.5</tspan><tspan dy="-5"> / (q</tspan><tspan font-size="15" dy="5">0.9</tspan><tspan dy="-5"> − q</tspan><tspan font-size="15" dy="5">0.1</tspan><tspan dy="-5"> + 10</tspan><tspan font-size="14" dy="-8">−3</tspan><tspan dy="8">)</tspan></text>
+    <text x="710" y="500" class="s">• median sets the direction, band width sets the confidence</text>
+    <text x="710" y="520" class="s">• 1% / 99% winsorise → cross-sectional z-score → rank → top-k</text>
+    <text x="710" y="540" class="s">• width (q0.9 − q0.1) → isotonic map → forward volatility for the risk budget</text>
+    <text x="710" y="558" class="m">risk adjustment adds ~8–12% relative RankIC over the median alone</text>
+  </g>
+</svg>

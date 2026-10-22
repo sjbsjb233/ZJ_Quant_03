@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="330" viewBox="0 0 1280 330" role="img" aria-label="Read, forecast, decide">
+  <defs>
+    <style>
+      .sans { font-family: -apple-system, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif; }
+      .mono { font-family: 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace; }
+      .h { font-size: 21px; font-weight: 700; fill: #1B2A41; }
+      .p { font-size: 15px; fill: #4A5A70; }
+      .k { font-size: 12.5px; font-weight: 700; letter-spacing: 1.2px; }
+    </style>
+    <linearGradient id="fan" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#3B5BDB" stop-opacity="0.08"/>
+      <stop offset="1" stop-color="#3B5BDB" stop-opacity="0.26"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="330" fill="#FFFFFF"/>
+
+  <!-- panel 1: read -->
+  <g>
+    <rect x="8" y="8" width="400" height="314" rx="16" fill="#F8FAFF" stroke="#DBE4FF"/>
+    <text x="36" y="46" class="sans k" fill="#3B5BDB">STEP 1 · READ</text>
+    <text x="36" y="78" class="sans h">Turn price charts into words</text>
+    <g stroke-width="1.5">
+      <line x1="60" y1="112" x2="60" y2="170" stroke="#E03131"/><rect x="54" y="122" width="12" height="34" fill="#E03131"/>
+      <line x1="84" y1="100" x2="84" y2="150" stroke="#12B886"/><rect x="78" y="108" width="12" height="30" fill="#12B886"/>
+      <line x1="108" y1="118" x2="108" y2="176" stroke="#12B886"/><rect x="102" y="128" width="12" height="36" fill="#12B886"/>
+      <line x1="132" y1="104" x2="132" y2="160" stroke="#E03131"/><rect x="126" y="112" width="12" height="38" fill="#E03131"/>
+    </g>
+    <path d="M160 138 H196" stroke="#3B5BDB" stroke-width="2"/>
+    <path d="M190 132 L198 138 L190 144" stroke="#3B5BDB" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <g class="mono" font-size="12.5" fill="#1B2A41">
+      <rect x="212" y="104" width="60" height="28" rx="6" fill="#FFFFFF" stroke="#BAC8FF"/><text x="242" y="123" text-anchor="middle">3·5·2·4</text>
+      <rect x="278" y="104" width="60" height="28" rx="6" fill="#FFFFFF" stroke="#BAC8FF"/><text x="308" y="123" text-anchor="middle">6·1·7·0</text>
+      <rect x="344" y="104" width="60" height="28" rx="6" fill="#FFFFFF" stroke="#BAC8FF"/><text x="374" y="123" text-anchor="middle">2·2·5·3</text>
+      <rect x="212" y="142" width="60" height="28" rx="6" fill="#FFFFFF" stroke="#BAC8FF"/><text x="242" y="161" text-anchor="middle">7·4·1·2</text>
+      <text x="282" y="161" fill="#6B7A90">…</text>
+    </g>
+    <text x="36" y="222" class="sans p">Each day's candle (open, high, low, close,</text>
+    <text x="36" y="244" class="sans p">volume, turnover) is compressed into four small</text>
+    <text x="36" y="266" class="sans p">numbers, a "word" out of 2,560 possible ones,</text>
+    <text x="36" y="288" class="sans p">learned from 2.8 billion historical bars.</text>
+  </g>
+
+  <!-- panel 2: forecast -->
+  <g transform="translate(436,0)">
+    <rect x="8" y="8" width="400" height="314" rx="16" fill="#F8FAFF" stroke="#DBE4FF"/>
+    <text x="36" y="46" class="sans k" fill="#3B5BDB">STEP 2 · FORECAST</text>
+    <text x="36" y="78" class="sans h">Predict a range, not a point</text>
+    <path d="M48 150 C 80 140, 100 158, 128 146 S 170 136, 190 140" stroke="#1B2A41" stroke-width="2" fill="none"/>
+    <path d="M190 140 L 370 96 L 370 186 Z" fill="url(#fan)"/>
+    <path d="M190 140 L 370 128" stroke="#3B5BDB" stroke-width="2.6"/>
+    <path d="M190 140 L 370 96" stroke="#3B5BDB" stroke-width="1.1" stroke-dasharray="4 3"/>
+    <path d="M190 140 L 370 186" stroke="#3B5BDB" stroke-width="1.1" stroke-dasharray="4 3"/>
+    <g class="sans" font-size="12.5" fill="#3B5BDB" font-weight="600">
+      <text x="250" y="102">optimistic (90%)</text>
+      <text x="270" y="120">typical (50%)</text>
+      <text x="250" y="190">pessimistic (10%)</text>
+    </g>
+    <text x="36" y="222" class="sans p">From the last 90 days of "words", the model</text>
+    <text x="36" y="244" class="sans p">gives a pessimistic, typical and optimistic</text>
+    <text x="36" y="266" class="sans p">10-day return in one pass. The width of the</text>
+    <text x="36" y="288" class="sans p">range shows how sure the model is.</text>
+  </g>
+
+  <!-- panel 3: decide -->
+  <g transform="translate(872,0)">
+    <rect x="8" y="8" width="400" height="314" rx="16" fill="#F3FCF8" stroke="#C3FAE8"/>
+    <text x="36" y="46" class="sans k" fill="#0CA678">STEP 3 · DECIDE</text>
+    <text x="36" y="78" class="sans h">Rank, buy the best, add brakes</text>
+    <g class="sans" font-size="13">
+      <rect x="36" y="98" width="200" height="22" rx="5" fill="#12B886" fill-opacity="0.90"/><text x="46" y="114" fill="#FFFFFF" font-weight="600">high return · narrow range</text>
+      <rect x="36" y="126" width="164" height="22" rx="5" fill="#12B886" fill-opacity="0.65"/><text x="46" y="142" fill="#FFFFFF">buy</text>
+      <rect x="36" y="154" width="120" height="22" rx="5" fill="#ADB5BD" fill-opacity="0.65"/><text x="46" y="170" fill="#FFFFFF">skip</text>
+      <rect x="36" y="182" width="84" height="22" rx="5" fill="#ADB5BD" fill-opacity="0.45"/><text x="46" y="198" fill="#FFFFFF">skip</text>
+    </g>
+    <g class="sans" font-size="12.5" fill="#1B2A41">
+      <rect x="258" y="98" width="122" height="106" rx="10" fill="#FFFFFF" stroke="#C3FAE8"/>
+      <text x="270" y="120" font-weight="700" fill="#0CA678">safety brakes</text>
+      <text x="270" y="142">risk budget</text>
+      <text x="270" y="162">crowding check</text>
+      <text x="270" y="182">drawdown alarms</text>
+      <text x="270" y="198" font-size="11.5" fill="#6B7A90">+ index hedge</text>
+    </g>
+    <text x="36" y="244" class="sans p">Stocks are ranked by return ÷ uncertainty.</text>
+    <text x="36" y="266" class="sans p">The top names are held in equal weights, and</text>
+    <text x="36" y="288" class="sans p">risk rules step in before losses grow.</text>
+  </g>
+</svg>

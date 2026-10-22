@@ -1,0 +1,35 @@
+# =====================================================================
+# K线标记化器（报告4.1节，配置对齐表4.2）
+# Transformer自编码器 + 有限标量量化(FSQ)
+# =====================================================================
+model:
+  in_dim: 6                  # OHLCVA 六维
+  d_model: 192               # 模型维度
+  n_heads: 6                 # 注意力头数
+  d_ff: 768                  # 前馈网络维度
+  n_layers: 2                # 编码器/解码器各2层轻量Transformer
+  dropout: 0.1
+  fsq_levels: [8, 8, 8, 5]   # G=4，隐式状态数 8*8*8*5=2560
+
+# 4.1.2 结构约束重构损失四项权重（λ1..λ4，验证集消融初值）
+loss:
+  w_huber: 1.0               # 数值重构（Huber）
+  w_return: 0.40             # 收益保持（对数收益一致）
+  w_volume: 0.25             # 量额重构（对数域）
+  w_structure: 0.15          # K线结构一致性（铰链项）
+
+train:
+  corpus_manifest: data/corpus/manifest.parquet
+  window: 384                # 训练窗口长度（根）
+  batch_size: 256
+  lr: 3.0e-4
+  weight_decay: 0.01
+  warmup_steps: 1000
+  max_steps: 200000
+  grad_clip: 1.0
+  bf16: true
+  num_workers: 8
+  seed: 42
+  ckpt_dir: checkpoints/tokenizer
+  log_every: 100
+  save_every: 5000

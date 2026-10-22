@@ -8,7 +8,7 @@ version = "0.2.0"
 description = "Data layer for the multi-factor quantitative trading system (raw/reference/metadata governance, append-only + current-view, PIT, field extensibility)."
 requires-python = ">=3.11"
 dependencies = [
-    "duckdb>=1.0",
+    "duckdb>=1.0,<2",       # 2.0 breaks open-result reuse + lambda syntax used by reader/migration
     "pyarrow>=15.0",
     "polars>=1.0",
 ]

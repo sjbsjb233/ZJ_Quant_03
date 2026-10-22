@@ -1,0 +1,28 @@
+# compact规格自回归预训练配置（报告4.2.2，表4.4/表4.5）
+model_size: compact          # 8层 / d=448 / ff=1344 / 7头，约16M参数
+tokenizer_ckpt: checkpoints/tokenizer/tokenizer_final.pt
+
+data:
+  corpus_dir: data/corpus
+  seq_len: 384
+  horizon: 10
+  batch_size: 32
+  num_workers: 8
+  rebalance_alpha: 0.5
+  volamt_mask_p: 0.05
+
+train:
+  steps: 120000
+  # lr / weight_decay 默认取自MODEL_FAMILY（表4.5：8e-4 / 0.02）
+  warmup_steps: 1500
+  grad_clip: 1.0
+  grad_accum: 2
+  grad_checkpointing: true
+  bf16: true
+  quantile_loss_weight: 0.5
+  self_sampling_max_p: 0.15
+  self_sampling_ramp_steps: 60000
+  seed: 42
+  log_every: 50
+  ckpt_every: 10000
+  out_dir: checkpoints/foundation

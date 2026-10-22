@@ -1,0 +1,37 @@
+# K线标记化器训练配置（报告4.1，表4.2）
+data:
+  corpus_dir: data/corpus
+  seq_len: 128
+  batch_size: 256
+  num_workers: 8
+  rebalance_alpha: 0.5       # 类别再平衡强度（3.2.3）
+  volamt_mask_p: 0.05        # 量额随机屏蔽正则（表3.3）
+
+model:
+  d_in: 6                    # OHLCVA六维
+  d_model: 192
+  ff_dim: 768
+  n_heads: 6
+  n_enc_layers: 2
+  n_dec_layers: 2
+  fsq_levels: [8, 8, 8, 5]   # G=4，隐式状态数2560（4.1.1）
+
+loss:                        # 结构约束重构损失（4.1.2）
+  huber: 1.0                 # λ1 数值重构
+  ret: 0.40                  # λ2 收益保持
+  volamt: 0.25               # λ3 量额对数域重构
+  structure: 0.15            # λ4 K线结构一致性铰链
+  huber_delta: 1.0
+
+train:
+  steps: 200000
+  lr: 3.0e-4
+  weight_decay: 0.01
+  warmup_steps: 1500
+  grad_clip: 1.0
+  bf16: true
+  seed: 42
+  log_every: 100
+  usage_every: 5000          # FSQ状态利用统计间隔（表4.3口径）
+  ckpt_every: 20000
+  out_dir: checkpoints/tokenizer

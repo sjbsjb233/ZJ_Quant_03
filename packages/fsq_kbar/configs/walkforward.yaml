@@ -1,0 +1,19 @@
+# Walk-forward滚动历史回测配置（参赛报告7.6.4节、附录E）
+# 冻结原则：仅数据边界与输出目录随节点变化，架构、训练超参、
+# 因子构成与组合口径全部沿用下列正文配置，逐年零调参
+base_configs:
+  corpus: configs/corpus.yaml            # 语料治理口径（表3.2—3.5）
+  tokenizer: configs/tokenizer.yaml      # 标记化器（表4.2）
+  pretrain: configs/pretrain_base.yaml   # base规格（表4.4/4.5，与正文一致）
+  factor: configs/factor.yaml            # 因子构成与回看/预测期（表7.2）
+
+vintages:
+  first: 2017                  # Vintage 2017：语料截止2016-12-31、测试2017年度
+  last: 2025                   # Vintage 2025：语料截止2024-12-31、测试2025上半年
+  final_test_end: "2025-06-30" # 与严格样本外区间（2025-07-01起）无缝衔接、互不重叠
+
+corpus_root: data/walkforward    # 逐节点重建语料：data/walkforward/<year>/
+out_root: outputs/walkforward    # 逐节点产物隔离：outputs/walkforward/<year>/
+
+calib_window_months: 18          # 波动率校准窗：截止日前18个月（口径同步骤5）
+calib_sample_every: 5            # 校准截面隔5日采样（口径同步骤5）

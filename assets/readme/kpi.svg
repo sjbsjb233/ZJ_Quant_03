@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="210" viewBox="0 0 1280 210" role="img" aria-label="Out-of-sample headline results">
+  <defs>
+    <style>
+      .sans { font-family: -apple-system, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif; }
+      .mono { font-family: 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace; }
+      .k { font-size: 12px; font-weight: 700; letter-spacing: 1.3px; fill: #6B7A90; }
+      .v { font-size: 40px; font-weight: 800; letter-spacing: -1px; }
+      .u { font-size: 14px; fill: #4A5A70; }
+      .n { font-size: 12px; fill: #6B7A90; }
+    </style>
+  </defs>
+  <rect width="1280" height="210" fill="#FFFFFF"/>
+  <g class="sans">
+    <g transform="translate(8,8)">
+      <rect width="302" height="194" rx="16" fill="#F5F7FF" stroke="#DBE4FF"/>
+      <text x="24" y="38" class="k">ANNUALISED EXCESS RETURN</text>
+      <text x="24" y="96" class="v" fill="#3B5BDB">17.8%</text>
+      <text x="24" y="122" class="u">CSI 800 pool · vs. index</text>
+      <line x1="24" y1="142" x2="278" y2="142" stroke="#DBE4FF"/>
+      <text x="24" y="168" class="n">CSI 300 pool: <tspan font-weight="700" fill="#1B2A41">13.5%</tspan></text>
+    </g>
+    <g transform="translate(326,8)">
+      <rect width="302" height="194" rx="16" fill="#F5F7FF" stroke="#DBE4FF"/>
+      <text x="24" y="38" class="k">INFORMATION RATIO</text>
+      <text x="24" y="96" class="v" fill="#3B5BDB">1.42</text>
+      <text x="24" y="122" class="u">excess return per unit of tracking risk</text>
+      <line x1="24" y1="142" x2="278" y2="142" stroke="#DBE4FF"/>
+      <text x="24" y="168" class="n">CSI 300 pool: <tspan font-weight="700" fill="#1B2A41">1.28</tspan> · Sharpe 2.64 / 2.49</text>
+    </g>
+    <g transform="translate(644,8)">
+      <rect width="302" height="194" rx="16" fill="#F3FCF8" stroke="#C3FAE8"/>
+      <text x="24" y="38" class="k">MAXIMUM DRAWDOWN</text>
+      <text x="24" y="96" class="v" fill="#0CA678">−8.3%</text>
+      <text x="24" y="122" class="u">worst peak-to-trough loss</text>
+      <line x1="24" y1="142" x2="278" y2="142" stroke="#C3FAE8"/>
+      <text x="24" y="168" class="n">CSI 300 pool: <tspan font-weight="700" fill="#1B2A41">−7.3%</tspan> · level-3 alert never hit</text>
+    </g>
+    <g transform="translate(962,8)">
+      <rect width="302" height="194" rx="16" fill="#FFFBF2" stroke="#FFE8B3"/>
+      <text x="24" y="38" class="k">FACTOR RANKIC (MEAN)</text>
+      <text x="24" y="96" class="v" fill="#E67700">0.063</text>
+      <text x="24" y="122" class="u">Newey-West t = 8.7 · ICIR 0.57</text>
+      <line x1="24" y1="142" x2="278" y2="142" stroke="#FFE8B3"/>
+      <text x="24" y="168" class="n">CSI 300 pool: <tspan font-weight="700" fill="#1B2A41">0.058</tspan> · t = 8.0</text>
+    </g>
+  </g>
+</svg>
