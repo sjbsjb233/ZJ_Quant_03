@@ -13,6 +13,7 @@
 
 <br><br>
 
+<a href="#quick-start"><b>Quick start</b></a> &nbsp;·&nbsp;
 <a href="#overview"><b>Overview</b></a> &nbsp;·&nbsp;
 <a href="#the-idea-in-one-minute"><b>The idea</b></a> &nbsp;·&nbsp;
 <a href="#system-architecture"><b>Architecture</b></a> &nbsp;·&nbsp;
@@ -20,7 +21,7 @@
 <a href="#results"><b>Results</b></a> &nbsp;·&nbsp;
 <a href="#risk-management"><b>Risk</b></a> &nbsp;·&nbsp;
 <a href="#the-research-platform"><b>Platform</b></a> &nbsp;·&nbsp;
-<a href="#getting-started"><b>Get started</b></a>
+<a href="#getting-started"><b>Setup guide</b></a>
 
 </div>
 
@@ -43,6 +44,26 @@ This repository contains two systems that run side by side and share one data an
 <img src="assets/readme/kpi.svg" alt="Headline out-of-sample results" width="100%">
 
 <sub>Strictly out of sample. The model never saw data after 2025-06-30, and the test runs from 2025-07-01 to 2026-06-18 (235 trading days). Returns are net of a 0.15 % one-way trading cost. Benchmarks are the CSI 300 and CSI 800 indices. Full protocol in <a href="#results">Results</a>.</sub>
+
+## Quick start
+
+Run the platform with demo data in about 15 minutes. You need Docker with Compose v2 and 8 GB of memory. Linux and macOS work out of the box; on Windows, use a WSL 2 terminal. No GPU is needed.
+
+```bash
+git clone https://github.com/sjbsjb233/ZJ_Quant_03.git
+cd ZJ_Quant_03/deploy
+cp .env.example .env        # then edit .env: WEB_PORT=8080, ENABLE_SCHEDULER=false,
+                            # and long random strings for JWT_SECRET and LOG_INGEST_TOKEN
+export COMPOSE_FILE=docker-compose.yml:docker-compose.dev.yml
+
+docker compose build
+docker compose run --rm data-keeper python -m keeper_service.seed_demo
+docker compose run --rm web-backend python -m quant_web.seed_users
+docker compose up -d
+```
+
+Open <http://localhost:8080> and sign in as `admin` / `admin123`.
+For PowerShell, training FSQ on a GPU, local development or troubleshooting, see [Getting started](#getting-started).
 
 ## The idea in one minute
 
@@ -250,29 +271,6 @@ The UI is a dense, keyboard-driven light theme, available in English and Chinese
 
 <sub>Screenshots come from a local deployment loaded with the platform's built-in demo dataset, so the values in them are illustrative. Strategy results are reported in <a href="#results">Results</a>.</sub>
 
-## Repository layout
-
-```
-ZJ_Quant_03/
-├── packages/
-│   ├── fsq_kbar/              ★ FSQ engine: kbarfm/ (data · model · train · factor · risk · portfolio · eval)
-│   │   ├── scripts/              corpus → tokenizer → pre-train → calibrate → factor → eval → walk-forward
-│   │   ├── configs/              every hyper-parameter, one YAML per stage
-│   │   ├── supermind/            execution-side strategy (stocks + index futures)
-│   │   └── qlib_backtest/        Qlib two-pass risk backtest, attribution, sensitivity
-│   ├── quant_factor/          factor contract, evaluation engine, neutralisation, correlation
-│   │   └── src/quant_factor/builtin/fsq.py   ← FSQAlpha / FSQWidth
-│   ├── quant_data/            point-in-time parquet lake, governance, quality, lineage
-│   └── quant_strategy/        strategy library (platform roadmap)
-├── apps/
-│   ├── data-keeper/           single-writer ingest + scheduler
-│   ├── factor/                factor API + worker queue
-│   ├── web/                   React console + FastAPI gateway
-│   └── obs-sentinel/          out-of-process watchdog
-├── deploy/                    docker-compose (prod + dev overlay), .env template
-└── assets/readme/             figures in this README (charts rebuilt by src/make_charts.py)
-```
-
 ## Getting started
 
 There are three ways in, depending on what you want to do:
@@ -476,6 +474,29 @@ npm run dev              # http://localhost:5173; /api is proxied to web-backend
 ```
 
 CI runs the same backend tests and a production frontend build on every pull request.
+
+## Repository layout
+
+```
+ZJ_Quant_03/
+├── packages/
+│   ├── fsq_kbar/              ★ FSQ engine: kbarfm/ (data · model · train · factor · risk · portfolio · eval)
+│   │   ├── scripts/              corpus → tokenizer → pre-train → calibrate → factor → eval → walk-forward
+│   │   ├── configs/              every hyper-parameter, one YAML per stage
+│   │   ├── supermind/            execution-side strategy (stocks + index futures)
+│   │   └── qlib_backtest/        Qlib two-pass risk backtest, attribution, sensitivity
+│   ├── quant_factor/          factor contract, evaluation engine, neutralisation, correlation
+│   │   └── src/quant_factor/builtin/fsq.py   ← FSQAlpha / FSQWidth
+│   ├── quant_data/            point-in-time parquet lake, governance, quality, lineage
+│   └── quant_strategy/        strategy library (platform roadmap)
+├── apps/
+│   ├── data-keeper/           single-writer ingest + scheduler
+│   ├── factor/                factor API + worker queue
+│   ├── web/                   React console + FastAPI gateway
+│   └── obs-sentinel/          out-of-process watchdog
+├── deploy/                    docker-compose (prod + dev overlay), .env template
+└── assets/readme/             figures in this README (charts rebuilt by src/make_charts.py)
+```
 
 ## Contributing
 
