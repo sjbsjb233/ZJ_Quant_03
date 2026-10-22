@@ -269,8 +269,6 @@ The UI is a dense, keyboard-driven light theme, available in English and Chinese
 </tr>
 </table>
 
-<sub>Screenshots come from a local deployment loaded with the platform's built-in demo dataset, so the values in them are illustrative. Strategy results are reported in <a href="#results">Results</a>.</sub>
-
 ## Getting started
 
 There are three ways in, depending on what you want to do:
