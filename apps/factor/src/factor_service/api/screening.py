@@ -152,7 +152,7 @@ def _resolve_weights(db: Session, weights_param: str | None) -> dict:
         return dict(p.weights_json or scoring.WEIGHT_TEMPLATES[scoring.DEFAULT_TEMPLATE])
     try:
         return json.loads(weights_param)
-    except Exception:
+    except json.JSONDecodeError:
         raise ApiError("INVALID_PARAMETER", "weights 非法 JSON")
 
 
@@ -161,7 +161,7 @@ def _parse_json_param(s: str | None, name: str):
         return None
     try:
         return json.loads(s)
-    except Exception:
+    except json.JSONDecodeError:
         raise ApiError("INVALID_PARAMETER", f"{name} 非法 JSON")
 
 
